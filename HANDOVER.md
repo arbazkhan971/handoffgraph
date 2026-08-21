@@ -26,17 +26,19 @@ Source documents that drive everything (full product + 300-day plan):
 
 ## 2. Current state (what exists, what works)
 
-**Version: v0.1.0 "local event spine" + v0.2.0 Codex adapter (hooks, CLI wiring, deterministic IDs). Working and tested (as of 2026-08-21).**
+**Version: v0.5.0-level local core, merged and green (as of 2026-08-22): event spine + Codex/Claude/Pi adapters + MCP server + detection pack + Session Debugger UI. Wave 2 in flight: cross-agent continuation (launch), Cloudflare platform, landing page.**
 
 ### Verified green
 
 ```bash
 go build ./...        # Success
 go vet ./...          # No issues
-go test ./...         # 115+ tests passing in 15 packages
+go test ./...         # 596 passed in 26 packages
 go test -race ./...   # All pass
 gofmt -l .            # clean (no output)
 ```
+
+Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` for go:embed); golden workflow smoke-tested: init → workstream → import → traces → detect → checkpoint (score 70) → `open`.
 
 ### Implemented and tested
 

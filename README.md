@@ -10,7 +10,7 @@ Your agent stops. The work should not.
 
 ## Status
 
-**v0.2.0 (Codex adapter, in progress).** This repository implements the crash-safe local event spine — append-only event storage, deterministic graph/trace reducers, fail-closed redaction, and the evidence-first checkpoint builder — plus the Codex adapter: session capture via Detect/Normalize over native rollout transcripts, hook install/uninstall in the Codex CLI config, deterministic event IDs so re-importing a session is idempotent, and native resume via the non-interactive `codex exec resume` command. Checkpoint-seeded launch (`StartFromCheckpoint`) remains deferred (planned v0.2.x); Claude and Pi adapters, the Session Debugger UI, and Cloudflare sync land in later versions per [ROADMAP.md](ROADMAP.md).
+**v0.5.0-level local core, pre-release** — 596 tests passing, race-clean. Implemented: the crash-safe local event spine (append-only events, SQLite, deterministic graph/trace reducers, fail-closed redaction, checkpoints); **Codex, Claude, and Pi adapters** with merge-safe hook installers, native-rollout normalization with deterministic (idempotent) event IDs, and native resume; the **local MCP stdio server** (9 goal-oriented tools); the **deterministic detection pack**; and the embedded **Session Debugger UI** (`handoffgraph open`). Cross-agent continuation (`continue --to`), the Cloudflare platform, and hosted sync land next per [ROADMAP.md](ROADMAP.md).
 
 ## Quickstart
 
@@ -21,8 +21,9 @@ handoffgraph init
 handoffgraph workstream new "fix checkout race"
 handoffgraph event import ./testdata/fixtures/claude.jsonl
 handoffgraph traces
+handoffgraph detect
 handoffgraph checkpoint --workstream <id> --objective "fix duplicate checkout"
-handoffgraph graph --json
+handoffgraph open            # local session debugger UI
 handoffgraph doctor
 ```
 
@@ -81,12 +82,15 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph status` | Show local capture status |
 | `handoffgraph workstream new <title>` | Create a workstream |
 | `handoffgraph event import <file>` | Import a JSONL event fixture |
-| `handoffgraph install --agent codex` | Install Codex hooks (`--dry-run` previews; `--hook-command`, `--config-dir` optional) |
+| `handoffgraph install --agent codex\|claude\|pi` | Install merge-safe capture hooks (`--dry-run` previews) |
 | `handoffgraph sessions [--agent <name>] [--json]` | List native sessions derived from captured events, or detect native sessions on disk (`--detect`) |
-| `handoffgraph resume <native-session-id> [--agent codex]` | Perform a native resume for codex via `codex exec resume` |
+| `handoffgraph resume <native-session-id>` | Print/perform the native resume invocation |
 | `handoffgraph traces [--json]` | List materialized turn traces |
+| `handoffgraph detect` | Run the deterministic detection pack over traces |
 | `handoffgraph graph [--json]` | Export the derived workstream graph |
 | `handoffgraph checkpoint --workstream <id>` | Build a checkpoint from evidence |
+| `handoffgraph mcp serve` | Run the local MCP stdio server (9 goal-oriented tools) |
+| `handoffgraph open` | Serve the local Session Debugger UI (localhost only) |
 | `handoffgraph redact --preview <file>` | Preview fail-closed redaction |
 | `handoffgraph fixture verify <dir>` | Verify golden fixtures |
 | `handoffgraph version` | Print the HandoffGraph version |
