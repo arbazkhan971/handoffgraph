@@ -1,0 +1,111 @@
+{
+  "schema_version": "hfg.checkpoint.v1",
+  "checkpoint_id": "cp_01M0JW8RA9GV5NRD0TEXCQ3QEH",
+  "workstream_id": "ws_01J2FB5000000000000000001",
+  "objective": "stabilize token refresh",
+  "status": "in_progress",
+  "repository": {
+    "remote": "github.com/acme/checkout",
+    "branch": "fix/auth-expiry",
+    "head": "4c9f2e1",
+    "dirty": true
+  },
+  "source_sessions": [
+    {
+      "provider": "claude",
+      "native_session_id": "claude-7f3a91c2",
+      "session_id": "ses_01J2FB5000000000000000001",
+      "last_event_id": "evt_01J2FB5000000000000000006"
+    },
+    {
+      "provider": "codex",
+      "native_session_id": "codex-rollout-9c81",
+      "session_id": "ses_01J2FB5000000000000000002",
+      "last_event_id": "evt_01J2FB5000000000000000011"
+    },
+    {
+      "provider": "pi",
+      "native_session_id": "pi-review-2a41",
+      "session_id": "ses_01J2FB5000000000000000003",
+      "last_event_id": "evt_01J2FB5000000000000000015"
+    }
+  ],
+  "completed": null,
+  "decisions": [
+    {
+      "text": "refresh the session token on slide, not on every read",
+      "rationale": "the read path is hot and expiry is monotonic",
+      "provenance": "DECLARED",
+      "evidence_refs": [
+        "evt_01J2FB5000000000000000002"
+      ]
+    },
+    {
+      "text": "ship the slide-on-read refresh behind a config flag",
+      "rationale": "reviewer sign-off; read-path latency target met",
+      "provenance": "DECLARED",
+      "evidence_refs": [
+        "evt_01J2FB5000000000000000010",
+        "evt_01J2FB5000000000000003"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "internal/auth/token.go",
+      "status": "edited",
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "provenance": "OBSERVED",
+      "evidence_refs": [
+        "evt_01J2FB5000000000000000004"
+      ]
+    },
+    {
+      "path": "internal/auth/token.go",
+      "status": "edited",
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "provenance": "OBSERVED",
+      "evidence_refs": [
+        "evt_01J2FB5000000000000000009"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "command": "go test ./internal/auth/...",
+      "exit_code": 1,
+      "output_excerpt": "FAIL: TestTokenExpiry — token still valid after slide window",
+      "provenance": "OBSERVED",
+      "evidence_refs": [
+        "evt_01J2FB5000000000000000005"
+      ]
+    },
+    {
+      "command": "go vet ./...",
+      "exit_code": 0,
+      "provenance": "OBSERVED",
+      "evidence_refs": [
+        "evt_01J2FB5000000000000000013"
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "name": "TestTokenExpiry",
+      "result": "passed",
+      "exit_code": 0,
+      "provenance": "OBSERVED",
+      "evidence_refs": [
+        "evt_01J2FB5000000000000000010"
+      ]
+    }
+  ],
+  "failed_approaches": null,
+  "constraints": null,
+  "open_questions": null,
+  "next_actions": null,
+  "integrity": {
+    "graph_root_hash": "sha256:9d2cb0b36b53fb47ce94a8b71452e03e49d705538a21509f4106cb7c8a15205a",
+    "score": 70
+  }
+}

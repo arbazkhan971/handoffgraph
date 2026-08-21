@@ -1,151 +1,130 @@
+// Package adapter defines the provider adapter contract.
+//
+// Adapters normalize provider-native coding-agent telemetry into
+// hfg.event.v1 events. They must be honest about capabilities: unsupported
+// capabilities are reported as unavailable and never fabricated.
 package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"io"
-	"sort"
-	"sync"
 	"time"
 
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
 
-// Name identifies a provider adapter. Values match the provider identifiers
-// in internal/protocol (claude | codex | pi).
-type Name string
-
-// Supported adapter names.
-const (
-	NameClaude Name = "claude"
-	NameCodex  Name = "codex"
-	NamePi     Name = "pi"
-)
-
-// Capabilities declares what an adapter can honestly do. The UI must display
-// missing capabilities instead of manufacturing equivalence.
-type Capabilities struct {
-	// Hooks reports whether the provider supports hook-based observation.
-	Hooks bool
-	// AppServer reports whether the provider exposes an app-server /
-	// structured streaming integration.
-	AppServer bool
-	// ResumeFromCheckpoint reports whether StartFromCheckpoint is
-	// implemented (native resume of a checkpoint-derived session).
-	ResumeFromCheckpoint bool
-	// NativeSessionList reports whether Detect can enumerate sessions
-	// natively (as opposed to scanning on-disk transcript files).
-	NativeSessionList bool
-	// NormalizesKinds lists the canonical hfg.event.v1 kinds this adapter
-	// can produce from native events. Sorted before emitting.
-	NormalizesKinds []string
-}
-
-// SessionRef is a minimal reference to one native agent session.
-type SessionRef struct {
-	Agent           Name
-	NativeSessionID string
-	Path            string
-	StartedAt       time.Time
-	EndedAt         time.Time
-	Model           string
-}
-
-// InstallOptions controls adapter installation into a provider's config.
-//
-// DryRun must be supported by every adapter: a dry run performs all conflict
-// checks and reports what would change without writing anything.
-type InstallOptions struct {
-	DryRun      bool
-	ConfigDir   string
-	HookCommand string
-}
-
-// Sentinel errors returned by adapters. Callers must compare with errors.Is.
+// Sentinel errors adapters may return. Adapters that have their own richer
+// error types should wrap these so callers can use errors.Is uniformly.
 var (
-	// ErrNotDetected is returned by Detect when no native sessions exist.
+	// ErrUnsupported reports a capability this adapter version lacks.
+	ErrUnsupported = errors.New("adapter: capability not supported")
+	// ErrNotDetected reports that no native sessions were found.
 	ErrNotDetected = errors.New("adapter: no native sessions detected")
-	// ErrUnsupported is returned for operations not implemented by this
-	// adapter version (install/resume land incrementally per provider).
-	ErrUnsupported = errors.New("not supported by this adapter version")
-	// ErrHookConflict is returned when installing would overwrite existing
-	// user hook configuration. Never resolve by overwriting; this is a
-	// release-hold condition.
-	ErrHookConflict = errors.New("adapter: install would overwrite existing user hook configuration")
+	// ErrHookConflict reports an existing hook configuration that
+	// HandoffGraph refuses to overwrite (release-hold condition).
+	ErrHookConflict = errors.New("adapter: existing hook configuration conflicts; refusing to overwrite")
 )
 
-// Adapter normalizes one provider's native sessions into hfg.event.v1
-// events and optionally manages that provider's hook configuration and
-// resume flow.
+// InstallScope selects where an adapter installs its hooks.
+type InstallScope string
+
+const (
+	ScopeUser    InstallScope = "user"
+	ScopeProject InstallScope = "project"
+)
+
+// Capabilities declares what a provider supports. The UI must display
+// missing capabilities honestly instead of manufacturing equivalence.
+type Capabilities struct {
+	NativeResume        bool `json:"native_resume"`
+	NativeFork          bool `json:"native_fork"`
+	Hooks               bool `json:"hooks"`
+	ToolEvents          bool `json:"tool_events"`
+	PromptEvents        bool `json:"prompt_events"`
+	CompactionEvents    bool `json:"compaction_events"`
+	DiffEvents          bool `json:"diff_events"`
+	TestExitStatus      bool `json:"test_exit_status"`
+	StructuredStreaming bool `json:"structured_streaming"`
+	SessionEnumeration  bool `json:"session_enumeration"`
+}
+
+// SessionRef references a provider-native session.
+type SessionRef struct {
+	Provider     string    `json:"provider"`
+	NativeID     string    `json:"native_id"`
+	SessionID    string    `json:"session_id,omitempty"`
+	LastEventAt  time.Time `json:"last_event_at,omitempty"`
+	WorkstreamID string    `json:"workstream_id,omitempty"`
+
+	// Optional listing metadata (Detect --detect mode). Zero values mean
+	// unknown; adapters fill what the provider exposes.
+	Path      string    `json:"path,omitempty"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	EndedAt   time.Time `json:"ended_at,omitempty"`
+	Model     string    `json:"model,omitempty"`
+}
+
+// ExecSpec describes how to launch a native agent process.
+type ExecSpec struct {
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Dir     string            `json:"dir,omitempty"`
+}
+
+// Adapter is the narrow provider contract (roadmap §6.2).
 type Adapter interface {
-	// Name returns the stable adapter identifier.
-	Name() Name
-	// Detect enumerates discoverable native sessions, newest first.
-	// Returns ErrNotDetected when none are found.
-	Detect(ctx context.Context) ([]SessionRef, error)
-	// Install wires HandoffGraph hooks into the provider's configuration.
-	// Must honor InstallOptions.DryRun and return ErrHookConflict rather
-	// than overwrite user configuration.
-	Install(ctx context.Context, opts InstallOptions) error
-	// Uninstall removes previously installed HandoffGraph hooks.
-	Uninstall(ctx context.Context) error
-	// Normalize decodes raw native events from src and converts them to
-	// canonical protocol.Events. The source kind is always preserved in
-	// the event payload; provenance is never upgraded.
-	Normalize(ctx context.Context, src io.Reader) ([]protocol.Event, error)
-	// Resume continues an existing native session in the provider's own
-	// CLI. Returns ErrUnsupported until implemented.
-	Resume(ctx context.Context, session SessionRef) error
-	// StartFromCheckpoint launches a new native session seeded from a
-	// portable checkpoint. Returns ErrUnsupported until implemented.
-	StartFromCheckpoint(ctx context.Context, cp protocol.Checkpoint) (SessionRef, error)
-	// Capabilities reports what this adapter version supports.
+	// Name returns the provider name (claude | codex | pi).
+	Name() string
+	// Detect enumerates sessions visible on this machine.
+	Detect(ctx context.Context, dir string) ([]SessionRef, error)
+	// Install registers hooks/config. It MUST merge with existing user
+	// configuration and never overwrite blindly.
+	Install(ctx context.Context, scope InstallScope) error
+	// Uninstall removes HandoffGraph hooks while preserving user config.
+	Uninstall(ctx context.Context, scope InstallScope) error
+	// Normalize converts a provider-native hook payload into canonical events.
+	Normalize(ctx context.Context, raw json.RawMessage) ([]protocol.Event, error)
+	// Resume returns the native resume invocation for a session.
+	Resume(ctx context.Context, ref SessionRef) (ExecSpec, error)
+	// StartFromCheckpoint returns a launch spec seeded by a checkpoint.
+	StartFromCheckpoint(ctx context.Context, cp *protocol.Checkpoint) (ExecSpec, error)
+	// Capabilities declares supported provider features.
 	Capabilities() Capabilities
 }
 
-// Registry holds the registered adapters. Safe for concurrent use.
+// Registry holds installed adapters by provider name.
 type Registry struct {
-	mu       sync.RWMutex
-	adapters map[Name]Adapter
+	byName map[string]Adapter
 }
 
-// NewRegistry returns an empty Registry.
-func NewRegistry() *Registry {
-	return &Registry{adapters: make(map[Name]Adapter)}
-}
-
-// Register adds an adapter. If an adapter with the same name is already
-// registered, the first registration wins and the new one is ignored, so
-// registration order across packages cannot silently replace an adapter.
-func (r *Registry) Register(a Adapter) {
-	if a == nil {
-		return
+// NewRegistry returns an empty registry.
+func NewRegistry(adapters ...Adapter) *Registry {
+	r := &Registry{byName: map[string]Adapter{}}
+	for _, a := range adapters {
+		r.byName[a.Name()] = a
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	name := a.Name()
-	if _, exists := r.adapters[name]; exists {
-		return
-	}
-	r.adapters[name] = a
+	return r
 }
 
-// ByName looks up an adapter by name.
-func (r *Registry) ByName(name Name) (Adapter, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	a, ok := r.adapters[name]
+// Get returns the adapter for a provider name.
+func (r *Registry) Get(name string) (Adapter, bool) {
+	a, ok := r.byName[name]
 	return a, ok
 }
 
-// Names returns all registered adapter names sorted deterministically.
+// Names returns the registered provider names in sorted order.
 func (r *Registry) Names() []string {
-	r.mu.RLock()
-	names := make([]string, 0, len(r.adapters))
-	for name := range r.adapters {
-		names = append(names, string(name))
+	out := make([]string, 0, len(r.byName))
+	for k := range r.byName {
+		out = append(out, k)
 	}
-	r.mu.RUnlock()
-	sort.Strings(names)
-	return names
+	// deterministic order
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
 }

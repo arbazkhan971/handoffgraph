@@ -194,22 +194,21 @@ func TestInstallDefaultHookCommand(t *testing.T) {
 	}
 }
 
-func TestResumeUnsupported(t *testing.T) {
+func TestResumePrintsNativeInvocation(t *testing.T) {
 	seedEvents(t, func(db *storage.DB) {
 		appendSessionEvent(t, db, protocol.ProviderCodex, "sess_resume", protocol.EventSessionStarted,
 			time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC))
 	})
 	app := newRegisteredApp(t)
 
-	_, _, err := runRegisteredApp(app, "resume", "sess_resume")
-	if err == nil {
-		t.Fatal("resume: want error (codex does not support native resume yet), got nil")
+	// Codex supports native resume at v0.2.0: the command prints the exact
+	// native invocation without exec'ing the agent.
+	out, _, err := runRegisteredApp(app, "resume", "sess_resume")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
 	}
-	if !strings.Contains(err.Error(), "does not support native resume yet") {
-		t.Errorf("err = %v, want it to contain %q", err, "does not support native resume yet")
-	}
-	if !strings.Contains(err.Error(), "codex") {
-		t.Errorf("err = %v, want it to mention the agent name %q", err, "codex")
+	if want := "codex resume sess_resume\n"; out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
 	}
 }
 

@@ -1,0 +1,136 @@
+{
+  "nodes": [
+    {
+      "id": "evt_01J2FB5000000000000000003",
+      "kind": "Decision",
+      "label": "decision"
+    },
+    {
+      "id": "evt_01J2FB5000000000000000005",
+      "kind": "Command",
+      "label": "evt_01J2FB5000000000000000005"
+    },
+    {
+      "id": "evt_01J2FB5000000000000000010",
+      "kind": "Test",
+      "label": "evt_01J2FB5000000000000000010"
+    },
+    {
+      "id": "evt_01J2FB5000000000000000013",
+      "kind": "Command",
+      "label": "evt_01J2FB5000000000000000013"
+    },
+    {
+      "id": "evt_01J2FB5000000000000000014",
+      "kind": "Decision",
+      "label": "decision"
+    },
+    {
+      "id": "ses_01J2FB5000000000000000001",
+      "kind": "Session",
+      "label": "claude-7f3a91c2"
+    },
+    {
+      "id": "ses_01J2FB5000000000000000002",
+      "kind": "Session",
+      "label": "codex-rollout-9c81"
+    },
+    {
+      "id": "ses_01J2FB5000000000000000003",
+      "kind": "Session",
+      "label": "pi-review-2a41"
+    },
+    {
+      "id": "ws_01J2FB5000000000000000001",
+      "kind": "Workstream",
+      "label": "ws_01J2FB5000000000000000001"
+    }
+  ],
+  "edges": [
+    {
+      "source": "evt_01J2FB5000000000000000003",
+      "relation": "BASED_ON",
+      "target": "evt_01J2FB5000000000000000002"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000003",
+      "relation": "BELONGS_TO",
+      "target": "ses_01J2FB5000000000000000001"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000003",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000005",
+      "relation": "BELONGS_TO",
+      "target": "ses_01J2FB5000000000000000001"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000005",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000010",
+      "relation": "BELONGS_TO",
+      "target": "ses_01J2FB5000000000000000002"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000010",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000013",
+      "relation": "BELONGS_TO",
+      "target": "ses_01J2FB5000000000000000003"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000013",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000014",
+      "relation": "BASED_ON",
+      "target": "evt_01J2FB5000000000000000010"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000014",
+      "relation": "BASED_ON",
+      "target": "evt_01J2FB5000000000000003"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000014",
+      "relation": "BELONGS_TO",
+      "target": "ses_01J2FB5000000000000000003"
+    },
+    {
+      "source": "evt_01J2FB5000000000000000014",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    },
+    {
+      "source": "ses_01J2FB5000000000000000001",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    },
+    {
+      "source": "ses_01J2FB5000000000000000002",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    },
+    {
+      "source": "ses_01J2FB5000000000000000002",
+      "relation": "CAUSED",
+      "target": "evt_01J2FB5000000000000000007"
+    },
+    {
+      "source": "ses_01J2FB5000000000000000003",
+      "relation": "BELONGS_TO",
+      "target": "ws_01J2FB5000000000000000001"
+    }
+  ]
+}

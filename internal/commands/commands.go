@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/handoffgraph/handoffgraph/internal/adapter"
+	"github.com/handoffgraph/handoffgraph/internal/adapter/claude"
 	"github.com/handoffgraph/handoffgraph/internal/adapter/codex"
+	"github.com/handoffgraph/handoffgraph/internal/adapter/pi"
 	"github.com/handoffgraph/handoffgraph/internal/checkpoint"
 	"github.com/handoffgraph/handoffgraph/internal/cli"
 	"github.com/handoffgraph/handoffgraph/internal/config"
@@ -77,10 +79,11 @@ func Register(app *cli.App) {
 	})
 	app.Register(&cli.Command{
 		Name: "sessions", Summary: "List native sessions known from captured events",
-		Usage: "[--agent <name>] [--json]",
+		Usage: "[--agent <name>] [--json] [--detect]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("agent", "", "filter by provider name")
 			fs.Bool("json", false, "emit JSON")
+			fs.Bool("detect", false, "detect native sessions from disk (HFG_CODEX_SESSIONS_DIR overrides the codex sessions dir)")
 		},
 		Run: sessionsCmd,
 	})
@@ -92,12 +95,29 @@ func Register(app *cli.App) {
 		},
 		Run: resumeCmd,
 	})
+
+	// Lane commands (registered last so lane-specific surfaces are
+	// additive; each exposes its own Register*Cmd).
+	RegisterClaudeCmd(app)
+	RegisterPiCmd(app)
+	RegisterMCPCmd(app)
+	RegisterDetectionCmd(app)
+	RegisterWebUICmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.
+//
+// It builds a fresh registry (and therefore fresh concrete adapters) on
+// every call, so mutating the returned adapter — e.g. pointing the codex
+// adapter at an override sessions directory before Detect — cannot leak
+// into other invocations. If this ever becomes a shared registry, such
+// mutation must be reworked into explicit configuration.
 func resolveAdapter(name string) (adapter.Adapter, error) {
-	reg := codex.DefaultRegistry()
-	a, ok := reg.ByName(adapter.Name(name))
+	if name == "" {
+		name = protocol.ProviderCodex // default agent mirrors the roadmap UX
+	}
+	reg := adapter.NewRegistry(codex.New(), claude.New(), pi.New())
+	a, ok := reg.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q (available: %s)", name, strings.Join(reg.Names(), ", "))
 	}
@@ -453,24 +473,27 @@ func fixtureCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 func installCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	name := stringFlag(fs, "agent")
 	dryRun := boolFlag(fs, "dry-run")
-	hookFlag := stringFlag(fs, "hook-command")
+	_ = stringFlag(fs, "hook-command") // reserved: per-agent commands accept it natively
 	configDir := stringFlag(fs, "config-dir")
-
-	hookCmd := hookFlag
-	if hookCmd == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			hookCmd = "handoffgraph"
-		} else {
-			hookCmd = exe
-		}
-	}
 
 	a, err := resolveAdapter(name)
 	if err != nil {
 		return err
 	}
-	err = a.Install(ctx, adapter.InstallOptions{DryRun: dryRun, HookCommand: hookCmd, ConfigDir: configDir})
+	// Route the config-dir override to adapters that support it without
+	// widening the shared Adapter interface (per-agent commands accept it
+	// natively; this keeps the generic path useful for tests).
+	if configDir != "" {
+		switch v := a.(type) {
+		case *codex.Codex:
+			v.ConfigDir = configDir
+		}
+	}
+	if dryRun {
+		fmt.Fprintf(c.Stdout, "install: agent %s ok (dry run — no changes written)\n", name)
+		return nil
+	}
+	err = a.Install(ctx, adapter.ScopeUser)
 	switch {
 	case errors.Is(err, adapter.ErrHookConflict):
 		return fmt.Errorf("install: %w", err)
@@ -484,16 +507,37 @@ func installCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	if trailer == " (config: )" {
 		trailer = " (config: default)"
 	}
-	if dryRun {
-		trailer = " (dry run — no changes written)"
-	}
 	fmt.Fprintf(c.Stdout, "install: agent %s ok%s\n", name, trailer)
 	return nil
+}
+
+// detectSessionOut is one row of the sessions --detect listing. Times are
+// preformatted as RFC3339 (zero times become "") so the JSON output stays
+// deterministic and free of time.Time marshaling surprises.
+type detectSessionOut struct {
+	Agent           string `json:"agent"`
+	NativeSessionID string `json:"native_session_id"`
+	Path            string `json:"path"`
+	StartedAt       string `json:"started_at"`
+	EndedAt         string `json:"ended_at"`
+	Model           string `json:"model"`
+}
+
+// formatRFC3339OrEmpty renders t as RFC3339, or "" when zero.
+func formatRFC3339OrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 func sessionsCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	agentFilter := stringFlag(fs, "agent")
 	asJSON := boolFlag(fs, "json")
+
+	if boolFlag(fs, "detect") {
+		return sessionsDetect(ctx, c, agentFilter, asJSON)
+	}
 
 	_, db, err := loadConfigAndDB()
 	if err != nil {
@@ -572,6 +616,78 @@ func sessionsCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	return nil
 }
 
+// sessionsDetect enumerates native sessions directly from disk via the
+// adapter's Detect, bypassing config and the database entirely. It is the
+// sessions command's --detect mode.
+func sessionsDetect(ctx context.Context, c *cli.Context, agentFilter string, asJSON bool) error {
+	// Detect enumerates one adapter's native sessions, so an unset --agent
+	// means the default adapter (codex), mirroring install/resume. This does
+	// not touch the DB-backed path, where "" still means "no filter".
+	if agentFilter == "" {
+		agentFilter = protocol.ProviderCodex
+	}
+	a, err := resolveAdapter(agentFilter)
+	if err != nil {
+		return err
+	}
+	// Test/diagnostics hook: point the codex adapter at an override
+	// sessions directory without widening the Adapter interface. Safe
+	// because resolveAdapter builds a fresh registry (and fresh concrete
+	// adapter) per invocation; see its doc comment.
+	if dir := os.Getenv("HFG_CODEX_SESSIONS_DIR"); dir != "" {
+		if cx, ok := a.(*codex.Codex); ok {
+			cx.SessionsDir = dir
+		}
+	}
+
+	refs, err := a.Detect(ctx, ".")
+	if errors.Is(err, adapter.ErrNotDetected) {
+		refs = nil // nothing on disk: an empty listing, not an error
+	} else if err != nil {
+		return fmt.Errorf("sessions: %w", err)
+	}
+
+	// Newest first; Path breaks ties deterministically (same ordering rule
+	// the adapters themselves apply). Sorted before formatting so both text
+	// and JSON output stay deterministic.
+	sort.Slice(refs, func(i, j int) bool {
+		if !refs[i].StartedAt.Equal(refs[j].StartedAt) {
+			return refs[i].StartedAt.After(refs[j].StartedAt)
+		}
+		return refs[i].Path < refs[j].Path
+	})
+
+	out := make([]detectSessionOut, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, detectSessionOut{
+			Agent:           ref.Provider,
+			NativeSessionID: ref.NativeID,
+			Path:            ref.Path,
+			StartedAt:       formatRFC3339OrEmpty(ref.StartedAt),
+			EndedAt:         formatRFC3339OrEmpty(ref.EndedAt),
+			Model:           ref.Model,
+		})
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(c.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+	for _, s := range out {
+		started := s.StartedAt
+		if started == "" {
+			started = "-"
+		}
+		model := s.Model
+		if model == "" {
+			model = "-"
+		}
+		fmt.Fprintf(c.Stdout, "%s\t%s\t%s\t%s\t%s\n", s.Agent, s.NativeSessionID, s.Path, started, model)
+	}
+	return nil
+}
+
 func resumeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	args := fs.Args()
 	if len(args) != 1 {
@@ -583,12 +699,15 @@ func resumeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	if err != nil {
 		return err
 	}
-	if err := a.Resume(ctx, adapter.SessionRef{Agent: adapter.Name(name), NativeSessionID: args[0]}); err != nil {
+	spec, err := a.Resume(ctx, adapter.SessionRef{Provider: name, NativeID: args[0]})
+	if err != nil {
 		if errors.Is(err, adapter.ErrUnsupported) {
 			return fmt.Errorf("resume: %s does not support native resume yet (planned v0.2.x)", name)
 		}
 		return fmt.Errorf("resume: %w", err)
 	}
+	// Print the exact native invocation; never exec the agent from here.
+	fmt.Fprintf(c.Stdout, "%s %s\n", spec.Command, strings.Join(spec.Args, " "))
 	return nil
 }
 

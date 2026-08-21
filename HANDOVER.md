@@ -56,9 +56,9 @@ gofmt -l .            # clean (no output)
 | Synthetic event generator | `internal/fixture` | ✅ (leaf pkg) |
 | Fixture verification harness (+ golden fixture coverage) | `internal/verify` | ✅ tested |
 | Adapter interface + registry (v0.2.0 groundwork) | `internal/adapter` | ✅ tested |
-| Codex adapter (Detect + Normalize + hook Install/Uninstall + deterministic event IDs; native resume deferred) | `internal/adapter/codex` | ✅ tested |
+| Codex adapter (Detect + Normalize + hook Install/Uninstall + deterministic event IDs; exec-based native Resume) | `internal/adapter/codex` | ✅ tested |
 | CLI framework + subcommands (flag helpers, JSONL redact preview) | `internal/cli`, `internal/commands` | ✅ tested |
-| Codex CLI wiring (`install`, `sessions`, `resume`; resume returns not-supported-yet for codex) | `internal/commands` | ✅ tested |
+| Codex CLI wiring (`install`, `sessions`, `resume`; resume performs the resume via `codex exec resume`) | `internal/commands` | ✅ tested |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -75,8 +75,12 @@ checkpoint    --workstream <id> [--objective] [--status]
 redact        --preview <file>
 fixture       verify <dir>
 install       --agent codex [--dry-run --hook-command --config-dir]  install managed hooks
-sessions      [--agent] [--json]  list sessions derived from captured events, per provider
-resume        <id> [--agent]  relaunch an agent from a checkpoint (codex: clean not-supported-yet error)
+sessions      [--agent] [--json] | --detect [--json]
+              list sessions derived from captured events, per provider;
+              --detect lists native sessions directly from disk
+              (~/.codex/sessions; override with HFG_CODEX_SESSIONS_DIR)
+resume        <id> [--agent]  resume a native codex session via `codex exec resume`
+              (non-interactive form so hook observation still captures the run)
 version
 ```
 
@@ -222,6 +226,8 @@ WS=$(/tmp/hfg workstream new "fix checkout race")
 /tmp/hfg doctor
 /tmp/hfg redact --preview testdata/fixtures/claude.jsonl
 /tmp/hfg fixture verify testdata/fixtures
+/tmp/hfg sessions --detect
+/tmp/hfg resume <native-session-id> --agent codex
 ```
 
 Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + content_hash), commands (exit_code 1), tests (failed), a graph root hash, and a score (60 for the claude fixture without next_actions).
@@ -248,7 +254,7 @@ Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + c
 ### Remaining nice-to-haves
 - ~~Consider stable/deterministic event-ID derivation for adapter re-import idempotency~~ — **DONE (2026-08-21):** `internal/ids` deterministic helper derives a stable `evt_<ulid>` from (provider, native session ID, sequence, occurred-at, content hash), so re-importing the same Codex session is idempotent.
 - ~~Codex adapter: hook install/uninstall + `sessions`/`resume` CLI wiring~~ — **DONE (2026-08-21):** managed `[hooks.handoffgraph]` table in `~/.codex/config.toml`, fail-closed with dry-run; `install --agent codex`, `sessions`, `resume` commands wired.
-- Codex native resume (and `StartFromCheckpoint` launch) still open — targeted for a later v0.2.x cut.
+- ~~Codex native resume~~ — **DONE (2026-08-21):** adapter `Resume` launches `codex exec resume <native-session-id>` (non-interactive, so hook observation still captures the resumed run); `StartFromCheckpoint` remains deferred.
 - Acceptance run over 20 real Codex sessions (no config loss, resume path) still open — targeted for v0.2.x/v0.3.0.
 - Codex App Server integration remains deferred (see §9).
 
@@ -269,11 +275,15 @@ core are done and tested (see §8). As of 2026-08-21, hook `Install`/`Uninstall`
 (managed `[hooks.handoffgraph]` table in `~/.codex/config.toml`, fail-closed,
 idempotent, dry-run-safe) and the `install` / `sessions` / `resume` CLI wiring
 are also done and tested, with deterministic event IDs so re-import is
-idempotent (`resume` returns a clean not-supported-yet error for codex).
+idempotent; native `Resume` launches `codex exec resume <native-session-id>`
+(non-interactive so hook observation still captures the run). The verify
+harness now classifies fixtures too: canonical `hfg.event.v1` fixtures go
+through the event-store import path, while native codex rollout fixtures are
+verified via the adapter's `Normalize`.
 Remaining for full v0.2.0 acceptance, in priority order:
 - App Server integration — the release-hold condition for the milestone.
 - Acceptance run: 20 real sessions, no config loss.
-- Native resume works (`StartFromCheckpoint` + native Resume; both still `ErrUnsupported`).
+- Checkpoint-seeded launch (`StartFromCheckpoint`; still `ErrUnsupported`).
 
 ### B. Golden fixtures expansion — DONE (2026-08-21)
 Added: Claude tool success/failure, out-of-order delivery, truncated JSONL,

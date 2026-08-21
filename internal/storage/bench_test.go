@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/handoffgraph/handoffgraph/internal/graph"
+	"github.com/handoffgraph/handoffgraph/internal/ids"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
 
@@ -48,6 +51,109 @@ func BenchmarkAppend(b *testing.B) {
 		ev := newEvent("ws_bench", "ses_bench",
 			string(protocol.EventSessionStarted), base.Add(time.Duration(100+i)*time.Second))
 		if _, err := db.AppendEvent(ctx, ev); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkAppendEvent measures raw ns/op for single-event appends through
+// AppendEvent (marshal + INSERT OR IGNORE) against a real temp SQLite
+// database. It asserts nothing beyond "no error" — it exists to report
+// ns/op and allocations per append, complementing BenchmarkAppend (which
+// uses the same store setup) and TestAppendLatencyP95 (which enforces the
+// p95 < 5ms roadmap gate).
+func BenchmarkAppendEvent(b *testing.B) {
+	db := openBenchDB(b)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-2 * time.Hour)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ev := newEvent("ws_bench", "ses_bench",
+			string(protocol.EventSpanStarted), base.Add(time.Duration(i)*time.Second))
+		if _, err := db.AppendEvent(ctx, ev); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchEvents builds exactly n deterministic events with a realistic kind
+// mix (workstream/session spine, spans, commands, file edits, tests,
+// decisions, logs) so the reducer and hasher do representative work.
+func benchEvents(n int) []*protocol.Event {
+	if n < 2 {
+		n = 2
+	}
+	ws := ids.Workstream()
+	session := ids.Session()
+	traceID := ids.Trace()
+	base := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+
+	mk := func(i int, kind protocol.EventKind, payload any, parent []string) *protocol.Event {
+		ev := newEvent(ws, session, string(kind), base.Add(time.Duration(i)*time.Second))
+		ev.Sequence = int64(i)
+		ev.ParentEventIDs = parent
+		if payload != nil {
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				panic(err)
+			}
+			ev.Payload = raw
+		}
+		return ev
+	}
+
+	events := make([]*protocol.Event, 0, n)
+	events = append(events,
+		mk(0, protocol.EventWorkstreamStarted, map[string]any{"title": "bench workstream"}, nil),
+		mk(1, protocol.EventSessionStarted, map[string]any{"native_session_id": "bench-session"}, nil),
+	)
+	kinds := []protocol.EventKind{
+		protocol.EventSpanStarted,
+		protocol.EventCommandCompleted,
+		protocol.EventFileEdited,
+		protocol.EventTestCompleted,
+		protocol.EventDecisionRecorded,
+		protocol.EventLogObserved,
+	}
+	for i := 2; i < n; i++ {
+		kind := kinds[i%len(kinds)]
+		var payload any
+		switch kind {
+		case protocol.EventSpanStarted:
+			payload = map[string]any{"span_id": ids.Span(), "trace_id": traceID, "span_kind": "COMMAND", "name": fmt.Sprintf("command-%d", i)}
+		case protocol.EventCommandCompleted:
+			payload = map[string]any{"command": fmt.Sprintf("run-%d", i), "exit_code": 0}
+		case protocol.EventFileEdited:
+			payload = map[string]any{"path": fmt.Sprintf("src/file%d.go", i), "status": "edited", "content_hash": fmt.Sprintf("sha256:%064d", i)}
+		case protocol.EventTestCompleted:
+			payload = map[string]any{"name": fmt.Sprintf("Test%d", i), "result": "passed", "exit_code": 0}
+		case protocol.EventDecisionRecorded:
+			payload = map[string]any{"decision": fmt.Sprintf("decision %d", i), "rationale": "bench"}
+		default:
+			payload = map[string]any{"message": fmt.Sprintf("log line %d", i), "level": "info"}
+		}
+		events = append(events, mk(i, kind, payload, nil))
+	}
+	return events
+}
+
+// BenchmarkGraphHash10k measures ns/op for a full deterministic reduce +
+// root-hash over a 10,000-event log (the roadmap's 10k-ingestion property's
+// read-side twin). It asserts nothing about timing — it reports ns/op and
+// allocations for graph.RootHashForEvents at the 10k scale.
+//
+// Note: the reducer's AddNode/AddEdge membership scans are linear, so cost
+// grows super-linearly with log size (~seconds per reduce at 10k events on
+// Apple Silicon at time of writing). The benchmark reports the truth; do
+// not add a timing assertion here until the reducer is indexed.
+func BenchmarkGraphHash10k(b *testing.B) {
+	events := benchEvents(10_000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := graph.RootHashForEvents(events); err != nil {
 			b.Fatal(err)
 		}
 	}

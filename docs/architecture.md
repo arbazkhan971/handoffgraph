@@ -64,7 +64,9 @@ Each provider (Codex, later Claude and Pi) implements one narrow interface:
 `Detect` (enumerate native sessions, newest first), `Normalize` (decode a
 native transcript stream into canonical `hfg.event.v1` events), `Install`
 and `Uninstall` (manage the provider's hook configuration), `Resume`,
-`StartFromCheckpoint`, and `Capabilities`. A registry holds adapters keyed
+`StartFromCheckpoint`, and `Capabilities`. For Codex, `Resume` is exec-based
+(launching `codex exec resume`) and takes an injectable runner so tests never
+spawn processes. A registry holds adapters keyed
 by name; first registration wins so package init order cannot silently
 replace an adapter.
 
@@ -72,8 +74,8 @@ Capabilities are declared honestly: an adapter lists what it supports
 (hooks, app-server integration, checkpoint launch, native session listing,
 normalizable kinds), and callers must surface missing capabilities instead of
 manufacturing equivalence. Operations an adapter version does not implement —
-for Codex today, native `Resume` and `StartFromCheckpoint` — return
-`ErrUnsupported`; they are planned for v0.2.x.
+for Codex today, `StartFromCheckpoint` — return `ErrUnsupported`; they are
+planned for v0.2.x.
 
 Normalization is tolerant and lossless: recognized native event types map to
 canonical kinds (`session_meta` → `session.started`, user/agent messages →
@@ -168,7 +170,7 @@ handoff quality score (documented weights, 0–100) and a graph root hash.
 
 ## Next versions
 
-- **v0.2.x** Codex native resume + checkpoint-seeded launch (currently `ErrUnsupported`).
+- **v0.2.x** Codex checkpoint-seeded launch (`StartFromCheckpoint`, currently `ErrUnsupported`).
 - **v0.3.0** Claude adapter + first Claude→Codex proof.
 - **v0.4.0** Pi extension + local MCP.
 - **v0.5.0** Local Session Debugger (embedded React/Vite UI).

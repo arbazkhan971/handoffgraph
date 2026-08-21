@@ -2,9 +2,10 @@
 
 The Codex adapter captures OpenAI Codex CLI sessions into the local event
 spine. It reads native rollout transcripts, normalizes them into
-`hfg.event.v1` events, and manages a single hook table in the Codex CLI
-config. Native resume and checkpoint-seeded launch are not supported yet
-(planned v0.2.x); both return `ErrUnsupported`.
+`hfg.event.v1` events, manages a single hook table in the Codex CLI config,
+and resumes native sessions by launching `codex exec resume`. Checkpoint-seeded
+launch (`StartFromCheckpoint`) is not supported yet (planned v0.2.x) and
+returns `ErrUnsupported`.
 
 ## Capture
 
@@ -84,11 +85,25 @@ session id, sequence, occurred-at, content hash)`. Importing the same
 session twice yields identical event IDs, and because the event store is
 idempotent on `event_id`, re-import adds no duplicate events.
 
-## Session listing and resume
+## Session listing
 
 - `handoffgraph sessions [--agent codex] [--json]` lists native sessions
   derived from captured events: provider, native session id, event count,
-  first/last seen.
-- `handoffgraph resume <native-session-id> [--agent codex]` is wired, but
-  Codex native resume itself returns "not supported yet (planned v0.2.x)".
-  `StartFromCheckpoint` is likewise deferred.
+  first/last seen. For listing sessions straight from disk instead, see
+  "Detecting local sessions" below.
+
+## Resuming a session
+
+`handoffgraph resume <native-session-id> [--agent codex]` resumes a native
+Codex session by launching `codex exec resume <native-session-id>`. The
+non-interactive `exec` form is chosen deliberately so hook observation still
+captures the resumed run. `StartFromCheckpoint` (launching an agent from a
+HandoffGraph checkpoint) remains deferred and returns `ErrUnsupported`.
+
+## Detecting local sessions
+
+`handoffgraph sessions --detect [--agent codex] [--json]` lists native Codex
+sessions directly from `~/.codex/sessions` without importing them. Override
+the directory with the `HFG_CODEX_SESSIONS_DIR` environment variable. Only
+codex is supported today; if detection is unavailable the command reports an
+empty listing (`ErrNotDetected`).

@@ -10,7 +10,7 @@ Your agent stops. The work should not.
 
 ## Status
 
-**v0.2.0 (Codex adapter, in progress).** This repository implements the crash-safe local event spine — append-only event storage, deterministic graph/trace reducers, fail-closed redaction, and the evidence-first checkpoint builder — plus the Codex adapter: session capture via Detect/Normalize over native rollout transcripts, hook install/uninstall in the Codex CLI config, and deterministic event IDs so re-importing a session is idempotent. Codex native resume and checkpoint-seeded launch remain deferred (planned v0.2.x); Claude and Pi adapters, the Session Debugger UI, and Cloudflare sync land in later versions per [ROADMAP.md](ROADMAP.md).
+**v0.2.0 (Codex adapter, in progress).** This repository implements the crash-safe local event spine — append-only event storage, deterministic graph/trace reducers, fail-closed redaction, and the evidence-first checkpoint builder — plus the Codex adapter: session capture via Detect/Normalize over native rollout transcripts, hook install/uninstall in the Codex CLI config, deterministic event IDs so re-importing a session is idempotent, and native resume via the non-interactive `codex exec resume` command. Checkpoint-seeded launch (`StartFromCheckpoint`) remains deferred (planned v0.2.x); Claude and Pi adapters, the Session Debugger UI, and Cloudflare sync land in later versions per [ROADMAP.md](ROADMAP.md).
 
 ## Quickstart
 
@@ -37,12 +37,18 @@ observation hooks, then import what they capture:
 handoffgraph install --agent codex --dry-run   # preview; writes nothing
 handoffgraph install --agent codex             # manage [hooks.handoffgraph] in ~/.codex/config.toml
 handoffgraph sessions                          # list captured native Codex sessions
+handoffgraph sessions --detect                 # list native Codex sessions found on disk, without importing them
+handoffgraph resume <native-session-id>        # continue a Codex session via codex exec resume
 ```
 
 Install only ever touches the managed `[hooks.handoffgraph]` table: an
 unparseable config is never modified, an existing differing hook is reported
 as a conflict instead of being overwritten, and unrelated keys are preserved.
-Re-importing the same session produces no duplicate events. See
+Re-importing the same session produces no duplicate events. `resume` performs
+the native resume by launching the non-interactive `codex exec resume` form,
+so hook observation still captures the resumed run; `sessions --detect`
+reads native sessions directly from `~/.codex/sessions` without importing
+them (override the directory with `HFG_CODEX_SESSIONS_DIR`). See
 [docs/adapter-codex.md](docs/adapter-codex.md) for details.
 
 ## What it does
@@ -76,8 +82,8 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph workstream new <title>` | Create a workstream |
 | `handoffgraph event import <file>` | Import a JSONL event fixture |
 | `handoffgraph install --agent codex` | Install Codex hooks (`--dry-run` previews; `--hook-command`, `--config-dir` optional) |
-| `handoffgraph sessions [--agent <name>] [--json]` | List native sessions derived from captured events |
-| `handoffgraph resume <native-session-id> [--agent codex]` | Resume a native session (Codex: not supported yet, planned v0.2.x) |
+| `handoffgraph sessions [--agent <name>] [--json]` | List native sessions derived from captured events, or detect native sessions on disk (`--detect`) |
+| `handoffgraph resume <native-session-id> [--agent codex]` | Perform a native resume for codex via `codex exec resume` |
 | `handoffgraph traces [--json]` | List materialized turn traces |
 | `handoffgraph graph [--json]` | Export the derived workstream graph |
 | `handoffgraph checkpoint --workstream <id>` | Build a checkpoint from evidence |
