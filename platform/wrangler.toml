@@ -16,7 +16,7 @@ workers_dev = true
 [[d1_databases]]
 binding = "DB"
 database_name = "handoffgraph"
-database_id = "placeholder-replace-after-create"
+database_id = "e51cf2d3-d955-4308-8fff-e6405110b1bf"
 migrations_dir = "migrations"
 
 # ---------------------------------------------------------------------------
