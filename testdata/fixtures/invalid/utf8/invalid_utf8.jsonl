@@ -1,0 +1,2 @@
+{"schema_version":"hfg.event.v1","event_id":"evt_01J2F9B0000000000000000001","occurred_at":"2026-08-21T14:10:00Z","observed_at":"2026-08-21T14:10:00Z","workstream_id":"ws_01J2F9B0000000000000000001","kind":"workstream.started","provenance":"OBSERVED"}
+{"schema_version":"hfg.event.v1","event_id":"evt_01J2F9B0000000000000000002","occurred_at":"2026-08-21T14:10:01Z","observed_at":"2026-08-21T14:10:01Z","workstream_id":"ws_01J2F9B0000000000000000001","provider":"claude","kind":"log.observed","provenance":"OBSERVED","payload":{"note":"bad byte ÿ here"}}

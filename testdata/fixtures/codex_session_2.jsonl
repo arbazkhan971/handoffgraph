@@ -1,0 +1,7 @@
+{"timestamp":"2026-08-20T09:00:00Z","type":"session_meta","payload":{"id":"5b2e9f60-ab12-4cd3-8ef4-90ab12cd34ef","timestamp":"2026-08-20T09:00:00Z","cwd":"/repo","originator":"codex-cli","cli_version":"0.42.0","model":"gpt-5-codex"}}
+{"timestamp":"2026-08-20T09:00:04Z","type":"event_msg","payload":{"type":"user_message","message":"silence the vet warnings in the codex adapter"}}
+{"timestamp":"2026-08-20T09:00:09Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":{"command":["go","test","./internal/adapter/codex/..."]}}}
+{"timestamp":"2026-08-20T09:00:18Z","type":"response_item","payload":{"type":"function_call_output","output":"ok  \tgithub.com/handoffgraph/handoffgraph/internal/adapter/codex\t0.318s"}}
+{"timestamp":"2026-08-20T09:00:27Z","type":"response_item","payload":{"type":"exec_command","command":"go vet ./...","exit_code":0}}
+{"timestamp":"2026-08-20T09:00:35Z","type":"event_msg","payload":{"type":"agent_message","message":"vet is clean; tests pass"},"turn_id":"turn_02"}
+{"timestamp":"2026-08-20T09:00:40Z","type":"compacted_summary","payload":{"summary":"earlier turns summarized to reclaim context","token_count":5120}}

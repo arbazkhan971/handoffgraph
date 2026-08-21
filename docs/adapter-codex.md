@@ -1,0 +1,94 @@
+# Codex adapter (v0.2.0)
+
+The Codex adapter captures OpenAI Codex CLI sessions into the local event
+spine. It reads native rollout transcripts, normalizes them into
+`hfg.event.v1` events, and manages a single hook table in the Codex CLI
+config. Native resume and checkpoint-seeded launch are not supported yet
+(planned v0.2.x); both return `ErrUnsupported`.
+
+## Capture
+
+Codex stores session transcripts as JSONL rollout files under
+`~/.codex/sessions` (layout varies by version, e.g.
+`sessions/YYYY/MM/DD/rollout-*.jsonl`). `Detect` enumerates them newest
+first; `Normalize` maps recognized line types onto canonical kinds:
+
+| Native | Canonical kind |
+|---|---|
+| `session_meta` | `session.started` |
+| `event_msg{user_message}` | `prompt.submitted` |
+| `event_msg{agent_message}` | `assistant.completed` |
+| `response_item{function_call}` | `tool.started` |
+| `response_item{function_call_output}` | `tool.completed` |
+| `response_item{exec_command, …exit}` | `command.completed` |
+| anything else | `log.observed` (`source_kind` preserved) |
+
+Nothing is dropped silently and no provenance is upgraded: every fact parsed
+from a transcript is `OBSERVED`. Malformed lines fail with their line number.
+
+## What gets installed
+
+`handoffgraph install --agent codex` writes exactly one managed table into
+the Codex CLI config (`~/.codex/config.toml`): `[hooks.handoffgraph]`, with
+the hook command plus six events — `session.started`, `prompt.submitted`,
+`assistant.completed`, `tool.completed`, `command.completed`,
+`session.ended`. Nothing else in the file is created or changed. Uninstall
+removes only that table.
+
+## Config schema
+
+```toml
+[hooks.handoffgraph]
+command = "handoffgraph hook codex"   # override with --hook-command
+
+[hooks.handoffgraph.events]
+session.started       = true
+prompt.submitted      = true
+assistant.completed   = true
+tool.completed        = true
+command.completed     = true
+session.ended         = true
+```
+
+## Conflict behavior (fail-closed)
+
+| Situation | Behavior |
+|---|---|
+| Config unparseable | Never modified |
+| Existing managed hook differs from desired | `ErrHookConflict`; never overwritten |
+| Unrelated keys or tables present | Preserved |
+| Managed table already matches | No-op (install is idempotent) |
+| `--dry-run` | All checks run, nothing written |
+
+Writes are atomic (temp file + rename). A conflicting hook is never resolved
+by overwriting user configuration; resolve it manually or pass
+`--hook-command` to match what is already there.
+
+## Dry-run and flags
+
+```bash
+handoffgraph install --agent codex --dry-run            # preview only
+handoffgraph install --agent codex --hook-command <cmd> # custom hook command
+handoffgraph install --agent codex --config-dir <dir>   # non-default config dir
+```
+
+There is no `uninstall` subcommand yet (planned): removing hooks is currently
+API-only via the adapter's `Uninstall` method. It removes exactly the managed
+table above, under the same fail-closed rules as install (an unparseable
+config is never modified, unrelated keys are preserved).
+
+## Deterministic import
+
+Normalized events derive stable `evt_<ulid>` IDs from `(provider, native
+session id, sequence, occurred-at, content hash)`. Importing the same
+session twice yields identical event IDs, and because the event store is
+idempotent on `event_id`, re-import adds no duplicate events.
+
+## Session listing and resume
+
+- `handoffgraph sessions [--agent codex] [--json]` lists native sessions
+  derived from captured events: provider, native session id, event count,
+  first/last seen.
+- `handoffgraph resume <native-session-id> [--agent codex]` is wired, but
+  Codex native resume itself returns "not supported yet (planned v0.2.x)".
+  `StartFromCheckpoint` is likewise deferred.

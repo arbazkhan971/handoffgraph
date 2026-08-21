@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://handoffgraph.dev/schema/v1/trace.schema.json",
+  "title": "HandoffGraph Turn Trace",
+  "description": "Materialized turn-trace read model (hfg.trace.v1).",
+  "type": "object",
+  "required": ["schema_version", "trace_id", "workstream_id", "session_id", "status", "started_at_ns"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "hfg.trace.v1" },
+    "trace_id": { "type": "string" },
+    "workstream_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "native_turn_id": { "type": "string" },
+    "provider": { "type": "string" },
+    "objective_excerpt": { "type": "string" },
+    "status": {
+      "enum": ["RUNNING", "OK", "ERROR", "CANCELLED", "INTERRUPTED", "COMPACTED", "ABANDONED", "UNKNOWN"]
+    },
+    "started_at_ns": { "type": "integer" },
+    "ended_at_ns": { "type": "integer" },
+    "duration_ns": { "type": "integer" },
+    "span_count": { "type": "integer" },
+    "failed_span_count": { "type": "integer" },
+    "changed_file_count": { "type": "integer" },
+    "verification_state": { "enum": ["verified", "failed", "missing", "unknown"] },
+    "root_span_id": { "type": "string" },
+    "token_input": { "type": "integer" },
+    "token_output": { "type": "integer" },
+    "token_cache_read": { "type": "integer" },
+    "token_cache_write": { "type": "integer" },
+    "cost_amount": { "type": "string" },
+    "cost_currency": { "type": "string" },
+    "cost_provenance": { "enum": ["provider_reported", "catalog_estimate", "user_supplied", "unknown"] },
+    "content_policy": { "enum": ["metadata_only", "sanitized", "full_local", "encrypted"] }
+  }
+}

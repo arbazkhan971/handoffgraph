@@ -1,0 +1,26 @@
+# .gitignore
+
+# Build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+handoffgraph
+
+# Local data (never commit captured sessions)
+.handoffgraph/
+*.db
+*.db-wal
+*.db-shm
+*.db.bak.*
+
+# Go
+vendor/
+
+# OS
+.DS_Store
+
+# Node (future web UI)
+node_modules/
+web/dist/

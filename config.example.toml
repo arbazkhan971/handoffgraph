@@ -1,0 +1,12 @@
+# HandoffGraph example configuration (user scope: ~/.handoffgraph/config.toml).
+# Repository scope (./.handoffgraph.toml) takes precedence where present.
+
+# Local capture policy: metadata_only | full_local | sanitized | encrypted
+capture_policy = "full_local"
+
+# Opt-in, content-free product telemetry (off by default).
+telemetry_enabled = false
+
+# Redaction: additional deny paths (glob-supported) and user regex patterns.
+# redact_deny_paths = ["*.secret", "private/*.env"]
+# redact_patterns  = ["my-custom-[a-z0-9]{20}"]

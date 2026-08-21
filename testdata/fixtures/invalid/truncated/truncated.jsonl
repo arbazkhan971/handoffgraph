@@ -1,0 +1,3 @@
+{"schema_version":"hfg.event.v1","event_id":"evt_01J2F9A0000000000000000001","occurred_at":"2026-08-21T14:00:00Z","observed_at":"2026-08-21T14:00:00Z","workstream_id":"ws_01J2F9A0000000000000000001","kind":"workstream.started","provenance":"OBSERVED"}
+{"schema_version":"hfg.event.v1","event_id":"evt_01J2F9A0000000000000000002","occurred_at":"2026-08-21T14:00:01Z","observed_at":"2026-08-21T14:00:01Z","workstream_id":"ws_01J2F9A0000000000000000001","session_id":"ses_01J2F9A0000000000000000001","provider":"claude","kind":"tool.started","provenance":"OBSERVED","payload":{"tool":"grep"}}
+{"schema_version":"hfg.event.v1","event_id":"evt_01J2F9A0000000000000000003","occurred_at":"2026-08-21T14:00:02Z","observed_at":"2026-08-21T14:00:0

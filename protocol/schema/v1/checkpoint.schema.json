@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://handoffgraph.dev/schema/v1/checkpoint.schema.json",
+  "title": "HandoffGraph Portable Checkpoint",
+  "description": "Evidence-first portable checkpoint (hfg.checkpoint.v1).",
+  "type": "object",
+  "required": ["schema_version", "checkpoint_id", "workstream_id", "objective", "status", "repository"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "hfg.checkpoint.v1" },
+    "checkpoint_id": { "type": "string", "pattern": "^cp_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "workstream_id": { "type": "string" },
+    "objective": { "type": "string" },
+    "status": { "type": "string" },
+    "repository": {
+      "type": "object",
+      "required": ["dirty"],
+      "properties": {
+        "remote": { "type": "string" },
+        "branch": { "type": "string" },
+        "head": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "source_sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["provider", "native_session_id"],
+        "properties": {
+          "provider": { "type": "string" },
+          "native_session_id": { "type": "string" },
+          "session_id": { "type": "string" },
+          "last_event_id": { "type": "string" }
+        }
+      }
+    },
+    "completed": { "type": "array", "items": { "$ref": "#/$defs/evidenceItem" } },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "rationale": { "type": "string" },
+          "provenance": { "enum": ["OBSERVED", "DECLARED", "INFERRED"] },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string" },
+          "status": { "enum": ["created", "edited", "deleted"] },
+          "content_hash": { "type": "string" },
+          "provenance": { "enum": ["OBSERVED", "DECLARED", "INFERRED"] },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+          "command": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "output_excerpt": { "type": "string" },
+          "provenance": { "enum": ["OBSERVED", "DECLARED", "INFERRED"] },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "result": { "enum": ["passed", "failed", "skipped", "error"] },
+          "exit_code": { "type": "integer" },
+          "output_excerpt": { "type": "string" },
+          "provenance": { "enum": ["OBSERVED", "DECLARED", "INFERRED"] },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "failed_approaches": { "type": "array", "items": { "$ref": "#/$defs/evidenceItem" } },
+    "constraints": { "type": "array", "items": { "$ref": "#/$defs/evidenceItem" } },
+    "open_questions": { "type": "array", "items": { "$ref": "#/$defs/evidenceItem" } },
+    "next_actions": { "type": "array", "items": { "$ref": "#/$defs/evidenceItem" } },
+    "integrity": {
+      "type": "object",
+      "properties": {
+        "graph_root_hash": { "type": "string" },
+        "score": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "evidenceItem": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "provenance": { "enum": ["OBSERVED", "DECLARED", "INFERRED"] },
+        "evidence_refs": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

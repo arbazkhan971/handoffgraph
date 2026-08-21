@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://handoffgraph.dev/schema/v1/event.schema.json",
+  "title": "HandoffGraph Event Envelope",
+  "description": "Append-only canonical event envelope (hfg.event.v1). Unknown fields are preserved by readers.",
+  "type": "object",
+  "required": ["schema_version", "event_id", "occurred_at", "observed_at", "kind"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": "hfg.event.v1" },
+    "event_id": { "type": "string", "pattern": "^evt_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "workstream_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "native_session_id": { "type": "string" },
+    "provider": { "enum": ["claude", "codex", "pi"] },
+    "agent": { "type": "string" },
+    "model": { "type": "string" },
+    "kind": { "type": "string" },
+    "parent_event_ids": { "type": "array", "items": { "type": "string" } },
+    "repository_id": { "type": "string" },
+    "git": {
+      "type": "object",
+      "properties": {
+        "branch": { "type": "string" },
+        "head": { "type": "string" },
+        "dirty": { "type": "boolean" },
+        "remote": { "type": "string" }
+      }
+    },
+    "provenance": { "enum": ["OBSERVED", "DECLARED", "INFERRED"] },
+    "payload": { "type": "object" },
+    "redaction": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer" },
+        "fields_removed": { "type": "array", "items": { "type": "string" } },
+        "status": { "enum": ["clean", "redacted", "failed"] }
+      }
+    },
+    "content_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
