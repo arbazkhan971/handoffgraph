@@ -540,7 +540,7 @@ func TestSecurityHeaders(t *testing.T) {
 		t.Run(target, func(t *testing.T) {
 			rec := get(t, h, http.MethodGet, target)
 			for header, want := range map[string]string{
-				"Content-Security-Policy": "default-src 'self'",
+				"Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 				"X-Content-Type-Options":  "nosniff",
 				"Referrer-Policy":         "no-referrer",
 				"X-Frame-Options":         "DENY",

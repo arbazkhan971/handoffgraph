@@ -136,7 +136,21 @@ func Materialize(events []*protocol.Event) *MaterializeResult {
 	// empty or not a known trace are re-resolved to their session's most
 	// recent running trace (or any trace for that session) so evidence from
 	// partial/real hook input is not lost.
+	//
+	// Determinism: iterate in the total (Sequence, SpanID) order — never map
+	// order — so RootSpanID selection and fallback resolution are identical
+	// across materializations of the same event log.
+	ordered := make([]*protocol.Span, 0, len(spans))
 	for _, sp := range spans {
+		ordered = append(ordered, sp)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Sequence != ordered[j].Sequence {
+			return ordered[i].Sequence < ordered[j].Sequence
+		}
+		return ordered[i].SpanID < ordered[j].SpanID
+	})
+	for _, sp := range ordered {
 		tr := traces[sp.TraceID]
 		if tr == nil {
 			tr = resolveTraceForSpan(sp, traces)
@@ -216,11 +230,13 @@ func traceFor(ev *protocol.Event, traces map[string]*protocol.Trace) *protocol.T
 	if tr, ok := traces[id]; ok {
 		return tr
 	}
-	// Fallback: latest trace in the same session.
+	// Fallback: latest trace in the same session (TraceID breaks
+	// StartedAtNS ties so the winner never depends on map order).
 	var best *protocol.Trace
 	for _, tr := range traces {
 		if tr.SessionID == ev.SessionID && tr.Status == protocol.TraceRunning {
-			if best == nil || tr.StartedAtNS > best.StartedAtNS {
+			if best == nil || tr.StartedAtNS > best.StartedAtNS ||
+				(tr.StartedAtNS == best.StartedAtNS && tr.TraceID > best.TraceID) {
 				best = tr
 			}
 		}
@@ -240,11 +256,12 @@ func resolveTraceForSpan(sp *protocol.Span, traces map[string]*protocol.Trace) *
 		}
 	}
 	// Spans inherit their session via their trace_id normally; when absent,
-	// match by session id first, then by provider.
+	// match by session id first, then by provider. TraceID breaks ties.
 	var best *protocol.Trace
 	for _, tr := range traces {
 		if sp.SessionID != "" && tr.SessionID == sp.SessionID {
-			if best == nil || tr.StartedAtNS > best.StartedAtNS {
+			if best == nil || tr.StartedAtNS > best.StartedAtNS ||
+				(tr.StartedAtNS == best.StartedAtNS && tr.TraceID > best.TraceID) {
 				best = tr
 			}
 		}

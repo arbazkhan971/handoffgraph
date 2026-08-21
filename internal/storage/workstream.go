@@ -69,7 +69,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 // ListCheckpoints returns checkpoints for a workstream.
 func (d *DB) ListCheckpoints(ctx context.Context, workstreamID string) ([]*protocol.Checkpoint, error) {
 	rows, err := d.sql.QueryContext(ctx, `
-SELECT raw_json FROM checkpoints WHERE workstream_id = ? ORDER BY created_at`, workstreamID)
+SELECT raw_json FROM checkpoints WHERE workstream_id = ? ORDER BY created_at, id`, workstreamID)
 	if err != nil {
 		return nil, err
 	}

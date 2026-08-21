@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,20 +137,19 @@ func TestVerifyRepoGoldenFixtures(t *testing.T) {
 	if len(res.Failures) > 0 {
 		t.Fatalf("golden fixtures failed verification: %v", res.Failures)
 	}
-	// claude.jsonl + the six golden expansions + codex_session.jsonl +
-	// codex_session_2.jsonl (native codex rollouts, verified NATIVE through
-	// the adapter) + codex_hook_events.jsonl (canonical codex hook events).
-	// The invalid/ subtree must never be picked up here (top-level glob wins
-	// over the recursive walk).
-	const wantFiles = 10
+	// 16 top-level canonical + native fixtures, all clean by contract;
+	// deliberately-broken fixtures live under invalid/ subdirectories.
+	const wantFiles = 16
 	if res.FilesChecked != wantFiles {
 		t.Errorf("FilesChecked = %d, want %d", res.FilesChecked, wantFiles)
 	}
-	// The two native rollouts must be genuinely verified through the adapter,
+	// Native codex rollouts must be genuinely verified through the adapter,
 	// not silently imported or skipped.
 	wantNative := map[string]bool{
-		"codex_session.jsonl":   false,
-		"codex_session_2.jsonl": false,
+		"codex_session.jsonl":     false,
+		"codex_session_2.jsonl":   false,
+		"codex-fork-resume.jsonl": false,
+		"codex-subagent.jsonl":    false,
 	}
 	for _, name := range res.NativeVerified {
 		if _, ok := wantNative[name]; !ok {
@@ -257,18 +257,12 @@ type scriptedNormalizer struct {
 	calls   int
 }
 
-func (s *scriptedNormalizer) normalize(ctx context.Context, _ ioReader) ([]protocol.Event, error) {
+func (s *scriptedNormalizer) normalize(_ context.Context, _ io.Reader) ([]protocol.Event, error) {
 	s.calls++
 	if s.calls%2 == 1 {
 		return s.eventsA, nil
 	}
 	return s.eventsB, nil
-}
-
-// ioReader aliases io.Reader so the table below stays readable; the injected
-// normalizer ignores the stream anyway.
-type ioReader = interface {
-	Read(p []byte) (int, error)
 }
 
 // TestNativeVerificationChecksEnforced proves the native path actually
@@ -321,7 +315,7 @@ func TestNativeVerificationChecksEnforced(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scripted := &scriptedNormalizer{eventsA: tt.a, eventsB: tt.b}
-			res, err := Verify(context.Background(), dir, &VerifyOptions{
+			res, err := Verify(context.Background(), dir, VerifyOptions{
 				NormalizeNative: scripted.normalize,
 			})
 			if err != nil {

@@ -214,8 +214,9 @@ func TestOpenCommandServesAPIAndStopsOnContextCancel(t *testing.T) {
 
 	// The API serves the seeded trace with the debugger's security policy.
 	res := openMustGet(t, base+"/api/traces")
-	if got := res.Header.Get("Content-Security-Policy"); got != "default-src 'self'" {
-		t.Errorf("CSP = %q, want default-src 'self'", got)
+	const wantCSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+	if got := res.Header.Get("Content-Security-Policy"); got != wantCSP {
+		t.Errorf("CSP = %q, want %q", got, wantCSP)
 	}
 	var env struct {
 		Items []*protocol.Trace `json:"items"`

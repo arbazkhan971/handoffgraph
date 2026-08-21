@@ -152,6 +152,12 @@ func Prepare(ctx context.Context, db *storage.DB, opts Options) (*Result, error)
 	if wsID == "" {
 		wsID = cp.WorkstreamID
 	}
+	// Cross-check: an explicit checkpoint from a different workstream must
+	// never be silently re-labeled under this workstream's handoff.
+	if opts.WorkstreamID != "" && cp.WorkstreamID != "" && opts.WorkstreamID != cp.WorkstreamID {
+		return nil, fmt.Errorf("continue: checkpoint %s belongs to workstream %s, not %s",
+			cp.CheckpointID, cp.WorkstreamID, opts.WorkstreamID)
+	}
 
 	// Current repository state for drift detection. When it cannot be
 	// captured the drift report stays zero (Clean=false, unverifiable)

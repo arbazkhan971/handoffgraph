@@ -199,7 +199,38 @@ func (e *Engine) redactMap(m map[string]any, fields *[]string) error {
 					if err := e.redactMap(it, fields); err != nil {
 						return err
 					}
+				case []any:
+					// Nested arrays recurse: a secret inside
+					// [["sk-…"]] must not pass as clean.
+					if err := e.redactSlice(it, fields, k); err != nil {
+						return err
+					}
+					t[i] = it
 				}
+			}
+		}
+	}
+	return nil
+}
+
+// redactSlice applies the pipeline to every item of a nested array,
+// recursing further into maps and arrays. Unclassifiable item types are
+// left as-is (they carry no string content).
+func (e *Engine) redactSlice(items []any, fields *[]string, key string) error {
+	for i, item := range items {
+		switch it := item.(type) {
+		case string:
+			if nv, changed := e.RedactValue(it); changed {
+				items[i] = nv
+				*fields = append(*fields, key)
+			}
+		case map[string]any:
+			if err := e.redactMap(it, fields); err != nil {
+				return err
+			}
+		case []any:
+			if err := e.redactSlice(it, fields, key); err != nil {
+				return err
 			}
 		}
 	}
@@ -307,8 +338,10 @@ func shannonEntropy(s string) float64 {
 }
 
 func looksLikeSecret(s string) bool {
-	// High entropy alone isn't enough; require mixed case + digits or
-	// symbolic characters typical of secrets, and no spaces.
+	// High entropy alone isn't enough; require secret-typical character
+	// mixes and no spaces. Long tokens (>=20 chars) with any two character
+	// classes qualify (a 32-char lowercase hex db_secret is a secret even
+	// without mixed case); shorter ones need upper+lower+digit.
 	if strings.ContainsAny(s, " \t\n") {
 		return false
 	}
@@ -324,6 +357,15 @@ func looksLikeSecret(s string) bool {
 		case r >= '0' && r <= '9':
 			hasDigit = true
 		}
+	}
+	classes := 0
+	for _, b := range []bool{hasUpper, hasLower, hasDigit} {
+		if b {
+			classes++
+		}
+	}
+	if len(s) >= 20 {
+		return classes >= 2
 	}
 	return hasUpper && hasLower && hasDigit
 }

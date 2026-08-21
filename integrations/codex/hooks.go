@@ -410,7 +410,10 @@ func hasTrailingMarker(line string) bool {
 	if idx < 0 {
 		return false
 	}
-	return strings.Contains(line[idx:], "hfg:managed")
+	// Exact trimmed equality: a user comment merely *containing* the marker
+	// text must not mark the block as managed (uninstall would otherwise
+	// delete a user-owned entry).
+	return strings.TrimSpace(line[idx:]) == marker
 }
 
 // blockCommand decodes the `command` key from the body lines of a block,

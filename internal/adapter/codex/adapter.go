@@ -373,6 +373,14 @@ func (c *Codex) Normalize(ctx context.Context, raw json.RawMessage) ([]protocol.
 
 // Resume returns the native resume invocation (codex resume <id>).
 func (c *Codex) Resume(ctx context.Context, ref adapter.SessionRef) (adapter.ExecSpec, error) {
+	// Same guard as claude/pi: reject empty/dash-prefixed ids so a hostile
+	// id cannot smuggle flags into the printed invocation.
+	if ref.NativeID == "" {
+		return adapter.ExecSpec{}, fmt.Errorf("codex resume: session id is required")
+	}
+	if strings.HasPrefix(ref.NativeID, "-") {
+		return adapter.ExecSpec{}, fmt.Errorf("codex resume: invalid session id %q", ref.NativeID)
+	}
 	return adapter.ExecSpec{Command: "codex", Args: []string{"resume", ref.NativeID}}, nil
 }
 
@@ -381,9 +389,16 @@ func (c *Codex) StartFromCheckpoint(ctx context.Context, cp *protocol.Checkpoint
 	if cp == nil {
 		return adapter.ExecSpec{}, fmt.Errorf("checkpoint required")
 	}
+	// Clamp the objective (agent-influenced) and use an explicit `--`
+	// separator so an objective beginning with '-' cannot be parsed as a
+	// flag and a huge objective cannot exceed argv limits.
+	objective := []rune(cp.Objective)
+	if len(objective) > 4000 {
+		objective = objective[:4000]
+	}
 	prompt := fmt.Sprintf("Continue workstream %s (checkpoint %s). Objective: %s. Acknowledge checkpoint %s before acting.",
-		cp.WorkstreamID, cp.CheckpointID, cp.Objective, cp.CheckpointID)
-	return adapter.ExecSpec{Command: "codex", Args: []string{"exec", prompt}}, nil
+		cp.WorkstreamID, cp.CheckpointID, string(objective), cp.CheckpointID)
+	return adapter.ExecSpec{Command: "codex", Args: []string{"exec", "--", prompt}}, nil
 }
 
 // Compile-time interface compliance check.

@@ -46,9 +46,11 @@ func DetectDrift(cp *protocol.Checkpoint, current repository.RepoState) DriftRep
 }
 
 // recordedRepoState reports whether the checkpoint recorded any repository
-// identity. Without a baseline, drift is unverifiable rather than clean.
+// identity baseline. A dirty-only record (no remote/branch/head) is NOT a
+// usable baseline: without an identity field there is nothing to compare,
+// so drift stays unverifiable instead of awarding a clean match.
 func recordedRepoState(rs protocol.RepositoryState) bool {
-	return rs.Remote != "" || rs.Branch != "" || rs.Head != "" || rs.Dirty
+	return rs.Remote != "" || rs.Branch != "" || rs.Head != ""
 }
 
 // knownAndDifferent reports a mismatch only when both values are known and

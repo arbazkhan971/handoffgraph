@@ -24,8 +24,10 @@ var builtinTokenPatterns = []*regexp.Regexp{
 	// OpenAI / Anthropic / generic API keys
 	regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
 	regexp.MustCompile(`\bsk-ant-[A-Za-z0-9\-]{20,}\b`),
-	// Generic bearer/authorization values
-	regexp.MustCompile(`(?i)\b(bearer|authorization|token|api[_-]?key|secret|password|passwd)["']?\s*[:=]\s*["']?[^\s"',;]{8,}`),
+	// Generic keyword-anchored secrets. `[_-]` (not \b) precedes the keyword
+	// so underscore-qualified names like db_password=/api_secret= also anchor;
+	// the value runs to end-of-value so multi-word secrets are fully masked.
+	regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(bearer|authorization|token|api[_-]?key|secret|password|passwd)["']?\s*[:=]\s*["']?[^"',;]{8,}`),
 	// Private key blocks
 	regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----`),
 	// Slack tokens

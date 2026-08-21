@@ -91,8 +91,8 @@ func continueCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 		res.Handoff.ID, launchSourceLabel(res.Handoff.SourceProvider), res.Handoff.TargetAgent, res.Handoff.Mode)
 	fmt.Fprintf(c.Stdout, "checkpoint: %s\n", res.Checkpoint.CheckpointID)
 	fmt.Fprintf(c.Stdout, "drift: %s\n", launchDriftLabel(res.Drift))
-	fmt.Fprintf(c.Stdout, "agent invocation (printed, not executed):\n  %s %s\n\n",
-		res.Spec.Command, strings.Join(res.Spec.Args, " "))
+	fmt.Fprintf(c.Stdout, "agent invocation (printed, not executed):\n  %s\n\n",
+		FormatExecSpec(res.Spec.Command, res.Spec.Args))
 	fmt.Fprintf(c.Stdout, "continuation payload (%d chars):\n\n%s", len(res.Prompt), res.Prompt)
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/handoffgraph/handoffgraph/internal/graph"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
+	"github.com/handoffgraph/handoffgraph/internal/redact"
 	"github.com/handoffgraph/handoffgraph/internal/repository"
 )
 
@@ -56,6 +57,18 @@ func Build(ctx context.Context, opts BuildOptions) (*protocol.Checkpoint, error)
 	// Accumulate evidence from events.
 	sessions := map[string]*protocol.SourceSession{}
 	var lastEventID string
+	// Redaction engine for the portable artifact. The checkpoint is the
+	// export surface that leaves the local store (rendered to another
+	// agent), so its payload-derived fields pass the fail-closed pipeline:
+	// a redaction error aborts the build; a matched secret is masked and
+	// recorded. Local viewing surfaces (graph/traces/webui) intentionally
+	// show full local bodies per the capture policy; upload/share surfaces
+	// will re-run redaction again (double redaction) per docs/privacy.md.
+	engine, err := redact.New(redact.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint redaction engine: %w", err)
+	}
+
 	for _, ev := range opts.Events {
 		if ev.WorkstreamID != "" && ev.WorkstreamID != opts.WorkstreamID {
 			continue
@@ -69,6 +82,10 @@ func Build(ctx context.Context, opts BuildOptions) (*protocol.Checkpoint, error)
 				}
 			}
 			sessions[ev.SessionID].LastEventID = ev.EventID
+		}
+		// Fail closed: a redaction error aborts checkpoint creation.
+		if _, err := engine.RedactEvent(ev); err != nil {
+			return nil, fmt.Errorf("checkpoint redaction (fail-closed) on event %s: %w", ev.EventID, err)
 		}
 		lastEventID = ev.EventID
 		applyEvent(cp, ev)

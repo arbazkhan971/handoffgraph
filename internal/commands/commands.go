@@ -96,15 +96,6 @@ func Register(app *cli.App) {
 		Run: resumeCmd,
 	})
 
-	// Lane commands (registered last so lane-specific surfaces are
-	// additive; each exposes its own Register*Cmd).
-	RegisterClaudeCmd(app)
-	RegisterPiCmd(app)
-	RegisterMCPCmd(app)
-	RegisterDetectionCmd(app)
-	RegisterWebUICmd(app)
-	RegisterCodexCmd(app)
-	RegisterLaunchCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.
@@ -713,8 +704,9 @@ func resumeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 		}
 		return fmt.Errorf("resume: %w", err)
 	}
-	// Print the exact native invocation; never exec the agent from here.
-	fmt.Fprintf(c.Stdout, "%s %s\n", spec.Command, strings.Join(spec.Args, " "))
+	// Print the exact native invocation, shell-quoted for safe copy-paste;
+	// never exec the agent from here.
+	fmt.Fprintln(c.Stdout, FormatExecSpec(spec.Command, spec.Args))
 	return nil
 }
 

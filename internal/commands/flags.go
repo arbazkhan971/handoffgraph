@@ -1,6 +1,35 @@
 package commands
 
-import "flag"
+import (
+	"flag"
+	"fmt"
+	"strings"
+)
+
+// shellQuote renders one argv element for COPY-PASTE display: it is
+// single-quoted whenever it contains anything a shell would interpret, so a
+// crafted value (backticks, $(...), ;, spaces) can never execute when the
+// printed line is pasted. Display only — never used for execution.
+func shellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if strings.ContainsAny(arg, " \t\n'\"`$;&|<>\\*?[](){}#!~") {
+		return "'" + strings.ReplaceAll(arg, "'", `\'`) + "'"
+	}
+	return arg
+}
+
+// FormatExecSpec renders an ExecSpec as a safely quotable display line.
+func FormatExecSpec(command string, args []string) string {
+	parts := append([]string{command}, args...)
+	for i, p := range parts {
+		parts[i] = shellQuote(p)
+	}
+	return strings.Join(parts, " ")
+}
+
+var _ = fmt.Sprintf
 
 // boolFlag returns the value of boolean flag name, or false when the flag is
 // absent or its value is not a bool.
