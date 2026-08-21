@@ -103,6 +103,8 @@ func Register(app *cli.App) {
 	RegisterMCPCmd(app)
 	RegisterDetectionCmd(app)
 	RegisterWebUICmd(app)
+	RegisterCodexCmd(app)
+	RegisterLaunchCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.
@@ -455,7 +457,12 @@ func fixtureCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	if len(args) < 2 || args[0] != "verify" {
 		return fmt.Errorf("usage: fixture verify <dir>")
 	}
-	res, err := verify.Verify(ctx, args[1])
+	// Native codex rollouts are verified through the adapter's stream
+	// normalizer (injected here at the commands layer; the verify package
+	// itself stays free of concrete-adapter imports).
+	res, err := verify.Verify(ctx, args[1], verify.VerifyOptions{
+		NormalizeNative: (&codex.Codex{}).NormalizeStream,
+	})
 	if err != nil {
 		return err
 	}

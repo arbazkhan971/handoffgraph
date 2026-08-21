@@ -1,0 +1,53 @@
+# HandoffGraph hosted platform API (Cloudflare Worker skeleton).
+#
+# Setup (see README.md):
+#   npx wrangler d1 create handoffgraph
+#     -> replace database_id below with the printed id
+#   npx wrangler d1 migrations apply handoffgraph --local
+#   npx wrangler dev
+#   npx wrangler deploy
+
+name = "handoffgraph-api"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+workers_dev = true
+
+# D1 database: workspace-scoped relational state (see migrations/).
+[[d1_databases]]
+binding = "DB"
+database_name = "handoffgraph"
+database_id = "placeholder-replace-after-create"
+migrations_dir = "migrations"
+
+# ---------------------------------------------------------------------------
+# Later versions (intentionally commented out — do not enable until shipped).
+# ---------------------------------------------------------------------------
+
+# v0.8.x: R2 bucket for large span bodies / content-addressed objects.
+# Referenced from spans.body_ref (content hash); bodies are never inlined
+# into D1 rows.
+# [[r2_buckets]]
+# binding = "BODIES"
+# bucket_name = "handoffgraph-bodies"
+
+# v0.9.x: Queue for burst ingestion — POST /v1/event-batches will enqueue
+# instead of writing synchronously once volume requires it.
+# [[queues.producers]]
+# binding = "INGEST_QUEUE"
+# queue = "handoffgraph-ingest"
+#
+# [[queues.consumers]]
+# queue = "handoffgraph-ingest"
+# max_batch_size = 100
+# max_batch_timeout = 5
+# max_retries = 3
+# dead_letter_queue = "handoffgraph-ingest-dlq"
+
+# v0.10.x: Durable Object for live workstream rooms (presence, subscriptions).
+# [[durable_objects.bindings]]
+# name = "WorkstreamRoom"
+# class_name = "WorkstreamRoom"
+#
+# [[migrations]]
+# tag = "v1"
+# new_sqlite_classes = ["WorkstreamRoom"]

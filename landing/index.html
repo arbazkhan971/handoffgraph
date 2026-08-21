@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HandoffGraph — Your agent stops. The work should not.</title>
+<meta name="description" content="Switch AI coding agents without losing the work—or the evidence behind it. Local-first, verified cross-agent continuity for Claude Code, Codex, and Pi.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'">
+<meta name="color-scheme" content="dark">
+<style>
+:root{--bg:#0b0f14;--panel:#10161f;--panel2:#0c121b;--border:#24303f;--text:#e6edf3;--muted:#8b98a9;--blue:#58a6ff;--green:#3fb950;--amber:#d29922;--purple:#bc8cff;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1040px;margin:0 auto;padding:0 22px}
+main>section{padding:40px 0;border-top:1px solid var(--border)}
+h1{font-size:clamp(2.1rem,5.2vw,3.3rem);line-height:1.12;letter-spacing:-.02em;margin:.35em 0}
+h2{font-size:1.45rem;margin:0 0 .5rem;letter-spacing:-.01em}
+h3{margin:0;font-size:1rem}
+p{margin:.4rem 0}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+.muted{color:var(--muted)}
+.small{font-size:.88rem}
+.eyebrow{color:var(--green);font-family:var(--mono);font-size:.78rem;letter-spacing:.09em;text-transform:uppercase;margin:0}
+.cta-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:1.4rem}
+.btn{display:inline-block;padding:10px 18px;border:1px solid var(--border);border-radius:8px;color:var(--text)}
+.btn:hover{text-decoration:none;border-color:var(--blue)}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#08131f;font-weight:600}
+.site-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:16px 22px}
+.brand{display:flex;gap:9px;align-items:center;color:var(--text);font-weight:700}
+.brand svg{color:var(--green)}
+nav a{color:var(--muted);margin-left:16px;font-size:.92rem}
+.hero{padding:62px 22px 46px}
+.hero .sub{font-size:1.15rem;color:var(--muted);max-width:44ch}
+.term{background:#080c11;border:1px solid var(--border);border-radius:10px;padding:16px 18px;font-family:var(--mono);font-size:.9rem;overflow-x:auto;max-width:820px}
+.term div{white-space:pre;margin:.18em 0}
+.p{color:var(--green);user-select:none}
+.c{color:var(--muted)}
+.diagram{width:100%;height:auto;display:block;margin:10px 0 4px}
+.wsbox{fill:none;stroke:var(--border);stroke-dasharray:5 6}
+.dcap{fill:var(--muted);font-family:var(--mono);font-size:11px}
+.ev rect{fill:rgba(63,185,80,.08);stroke:var(--green);stroke-width:1.2}
+.ev text{fill:var(--green);font-size:11.5px}
+.bus line{stroke:var(--green);stroke-dasharray:3 4;stroke-width:1.3}
+.node rect{fill:var(--panel);stroke-width:1.4}
+.node.claude rect{stroke:var(--purple)}
+.node.codex rect{stroke:var(--blue)}
+.node.cp rect{stroke:var(--green);fill:rgba(63,185,80,.06)}
+.nt{fill:var(--text);font-size:13px;font-weight:600}
+.ni{fill:var(--muted);font-family:var(--mono);font-size:10.5px}
+.flow line{stroke:var(--muted);stroke-width:1.6}
+.dla{fill:var(--muted);font-size:11px}
+.levels{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.lvl{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--panel)}
+.tag{display:inline-block;font-family:var(--mono);font-size:.75rem;padding:2px 8px;border-radius:6px;border:1px solid}
+.tag.obs{color:var(--green);border-color:var(--green);background:rgba(63,185,80,.08)}
+.tag.dec{color:var(--blue);border-color:var(--blue);background:rgba(88,166,255,.08)}
+.tag.inf{color:var(--amber);border-color:var(--amber);border-style:dashed;background:rgba(210,153,34,.08)}
+.lvl p{margin:.4rem 0 0;color:var(--muted);font-size:.92rem}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.card{border:1px solid var(--border);border-radius:10px;padding:16px;background:var(--panel)}
+.card h3{display:flex;align-items:center;gap:9px}
+.card svg{color:var(--blue);flex:none}
+.card p{margin:.35rem 0 0;color:var(--muted);font-size:.92rem}
+#privacy ul{list-style:none;padding:0;margin:.6rem 0 0;display:grid;gap:9px;max-width:760px}
+#privacy li{padding-left:24px;position:relative;color:var(--muted)}
+#privacy li::before{content:"✓";position:absolute;left:0;color:var(--green)}
+form{display:grid;gap:14px;max-width:660px;margin-top:1rem}
+.frow{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:4px}
+input,select,textarea{width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 11px;font:inherit}
+textarea{min-height:96px;resize:vertical}
+button{justify-self:start;padding:10px 20px;border-radius:8px;border:1px solid var(--blue);background:var(--blue);color:#08131f;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+#form-status{min-height:1.4em;font-size:.92rem;margin:0}
+#form-status.ok{color:var(--green)}
+#form-status.err{color:var(--amber)}
+#mailto-fallback{border:1px dashed var(--amber);border-radius:10px;padding:14px 16px;max-width:660px}
+footer{padding:28px 22px 48px;color:var(--muted);font-size:.88rem;border-top:1px solid var(--border);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+footer a{color:var(--muted)}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+main>section{animation:fade .5s ease-out both}
+@media (max-width:820px){.grid{grid-template-columns:1fr 1fr}}
+@media (max-width:560px){.grid{grid-template-columns:1fr}.frow{grid-template-columns:1fr}.site-header nav{display:none}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="/"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="18" r="3"/><circle cx="12" cy="6" r="3"/><circle cx="19" cy="18" r="3"/><path d="M6.6 16.1 10.4 8.9M13.6 8.9l3.8 7.2"/></svg>HandoffGraph</a>
+  <nav aria-label="Sections"><a href="#quickstart">Quickstart</a><a href="#graph">How it works</a><a href="#features">Features</a><a href="#privacy">Privacy</a><a href="#waitlist">Waitlist</a></nav>
+</header>
+<main>
+  <section class="hero wrap" id="top">
+    <p class="eyebrow">local-first · open source · Apache-2.0</p>
+    <h1>Your agent stops.<br>The work should not.</h1>
+    <p class="sub">Switch AI coding agents without losing the work—or the evidence behind it.</p>
+    <p class="cta-row"><a class="btn primary" href="#quickstart">Get started</a><a class="btn" href="#waitlist">Join the waitlist</a></p>
+  </section>
+
+  <section id="quickstart" class="wrap">
+    <h2>Quickstart</h2>
+    <p class="muted">Four commands. The second agent starts with everything the first one proved.</p>
+    <div class="term">
+      <div><span class="p">$</span> handoffgraph install <span class="c"># capture events from claude + codex, idempotently</span></div>
+      <div><span class="p">$</span> handoffgraph checkpoint --workstream ws_01JZ… <span class="c"># freeze an evidence-backed state</span></div>
+      <div><span class="p">$</span> handoffgraph continue --to codex <span class="c"># launch codex seeded with that checkpoint</span></div>
+      <div><span class="p">$</span> handoffgraph open <span class="c"># inspect the session debugger while it runs</span></div>
+    </div>
+  </section>
+
+  <section id="graph" class="wrap">
+    <h2>The workstream graph</h2>
+    <p class="muted">Every session becomes a node and every claim becomes evidence. A checkpoint carries the graph forward, so the next agent inherits work — not vibes.</p>
+    <svg class="diagram" viewBox="0 0 800 240" role="img" aria-label="Workstream graph: a claude session and its evidence nodes (files with hashes, commands with exit codes, test runs) feed a verified checkpoint; a codex session continues from that checkpoint.">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#8b98a9"/></marker></defs>
+      <rect class="wsbox" x="8" y="8" width="784" height="226" rx="12"/>
+      <text class="dcap" x="780" y="26" text-anchor="end">workstream ws_01JZ…</text>
+      <g class="ev">
+        <rect x="24" y="34" width="132" height="30" rx="15"/><text x="90" y="53" text-anchor="middle">files + hashes</text>
+        <rect x="170" y="34" width="176" height="30" rx="15"/><text x="258" y="53" text-anchor="middle">commands + exit codes</text>
+        <rect x="360" y="34" width="112" height="30" rx="15"/><text x="416" y="53" text-anchor="middle">test runs</text>
+      </g>
+      <g class="bus">
+        <line x1="90" y1="64" x2="90" y2="96"/><line x1="258" y1="64" x2="258" y2="96"/><line x1="416" y1="64" x2="416" y2="96"/>
+        <line x1="109" y1="96" x2="109" y2="150"/>
+        <line x1="90" y1="96" x2="416" y2="96"/>
+        <line x1="420" y1="96" x2="420" y2="134" marker-end="url(#ah)"/>
+      </g>
+      <g class="node claude">
+        <rect x="24" y="150" width="170" height="66" rx="10"/>
+        <text class="nt" x="109" y="178" text-anchor="middle">claude session</text>
+        <text class="ni" x="109" y="196" text-anchor="middle">ses_01JZ…</text>
+      </g>
+      <g class="node cp">
+        <rect x="330" y="140" width="180" height="86" rx="10"/>
+        <text class="nt" x="420" y="165" text-anchor="middle">checkpoint</text>
+        <text class="ni" x="420" y="182" text-anchor="middle">cp_01JZ…</text>
+        <text class="ni" x="420" y="200" text-anchor="middle">score 87 · 14 evidence refs</text>
+      </g>
+      <g class="node codex">
+        <rect x="620" y="150" width="156" height="66" rx="10"/>
+        <text class="nt" x="698" y="178" text-anchor="middle">codex session</text>
+        <text class="ni" x="698" y="196" text-anchor="middle">starts where claude stopped</text>
+      </g>
+      <g class="flow">
+        <line x1="194" y1="183" x2="322" y2="183" marker-end="url(#ah)"/>
+        <line x1="510" y1="183" x2="612" y2="183" marker-end="url(#ah)"/>
+      </g>
+      <text class="dla" x="258" y="208" text-anchor="middle">verified handoff</text>
+      <text class="dla" x="561" y="208" text-anchor="middle">continue --to codex</text>
+    </svg>
+    <p class="muted small">Evidence nodes are captured from real execution and linked into the checkpoint — nothing in the handoff is asserted without a reference.</p>
+  </section>
+
+  <section id="evidence" class="wrap">
+    <h2>Every claim has a level</h2>
+    <p class="muted">Provenance is preserved end-to-end. An inferred summary can never masquerade as an observed passing test.</p>
+    <div class="levels">
+      <div class="lvl"><span class="tag obs">OBSERVED</span><p>Captured from real execution: files with content hashes, commands with exit codes, test runs, git state.</p></div>
+      <div class="lvl"><span class="tag dec">DECLARED</span><p>Stated by a human or an agent: objectives, constraints, decisions, next actions.</p></div>
+      <div class="lvl"><span class="tag inf">INFERRED</span><p>Derived by analysis: summaries, scores, model output — always labelled, never shown as fact.</p></div>
+    </div>
+  </section>
+
+  <section id="features" class="wrap">
+    <h2>Built for the handoff, not the dashboard</h2>
+    <div class="grid">
+      <div class="card"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>Local-first</h3><p>Events live in SQLite on your machine. No account, no upload, no telemetry.</p></div>
+      <div class="card"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>Verified handoffs</h3><p>Every checkpoint item links to event evidence with content hashes.</p></div>
+      <div class="card"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>Session debugger</h3><p>Replay spans, statuses, and token/cost traces across provider sessions.</p></div>
+      <div class="card"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M3 12h18"/></svg>Cross-agent continuity</h3><p>Claude Code → Codex → Pi. Checkpoints travel with the work.</p></div>
+      <div class="card"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Fail-closed redaction</h3><p>If a deny pattern can’t be applied, export stops — secrets never leak by warning.</p></div>
+      <div class="card"><h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg>Apache-2.0</h3><p>Open source, inspectable, self-hostable. No lock-in, ever.</p></div>
+    </div>
+  </section>
+
+  <section id="privacy" class="wrap">
+    <h2>Privacy is the architecture</h2>
+    <ul>
+      <li>Everything runs locally: events, the workstream graph, and checkpoints live on your disk.</li>
+      <li>Nothing is uploaded — no telemetry, no cookies, no trackers, no third-party requests on this page.</li>
+      <li>Redaction is fail-closed: a broken deny pattern blocks export instead of leaking secrets.</li>
+      <li>Provenance is preserved: inferred summaries are never rendered as observed facts.</li>
+      <li>The waitlist form posts one JSON object to our own worker; if that fails, your answers stay in your browser.</li>
+    </ul>
+  </section>
+
+  <section id="waitlist" class="wrap">
+    <h2>Lose context less</h2>
+    <p class="muted">Tell us how agents fit your week — we’ll open the hosted beta to the worst context-loss cases first.</p>
+    <form id="waitlist-form" novalidate>
+      <noscript><p class="err">JavaScript is off — email <a href="mailto:hello@handoffgraph.dev">hello@handoffgraph.dev</a> to join the waitlist.</p></noscript>
+      <div class="frow">
+        <div><label for="f-name">Name</label><input id="f-name" name="name" required maxlength="200" autocomplete="name"></div>
+        <div><label for="f-email">Email</label><input id="f-email" name="email" type="email" required maxlength="320" autocomplete="email"></div>
+      </div>
+      <div class="frow">
+        <div><label for="f-weekly">Agent sessions per week</label><select id="f-weekly" name="weekly_sessions"><option value="">—</option><option>1–5</option><option>6–20</option><option>21–50</option><option>50+</option></select></div>
+        <div><label for="f-team">Team size</label><select id="f-team" name="team_size"><option value="">—</option><option>Solo</option><option>2–5</option><option>6–20</option><option>21–100</option><option>100+</option></select></div>
+      </div>
+      <div><label for="f-agents">Which agents do you use?</label><input id="f-agents" name="agents_used" maxlength="200" placeholder="e.g. claude + codex, pi, factory droid"></div>
+      <div><label for="f-incident">Your biggest context-loss incident</label><textarea id="f-incident" name="context_loss_incident" maxlength="4000" placeholder="What did it cost you?"></textarea></div>
+      <button type="submit">Join waitlist</button>
+      <p id="form-status" role="status" aria-live="polite"></p>
+      <div id="mailto-fallback" hidden>
+        <p class="small" style="margin-top:0"><a id="mailto-link" class="btn" href="#">Email your answers instead</a></p>
+        <p class="muted small" style="margin-bottom:0">Couldn’t reach the server. Your answers are saved in this browser (localStorage) and pre-filled in the email.</p>
+      </div>
+    </form>
+  </section>
+</main>
+<footer>
+  <span>HandoffGraph · Apache-2.0 · local-first · handoffgraph.dev</span>
+  <span><a href="#privacy">Privacy</a> · <a href="https://github.com/handoffgraph/handoffgraph">GitHub</a></span>
+</footer>
+<script>
+(function () {
+  var form = document.getElementById('waitlist-form');
+  var status = document.getElementById('form-status');
+  var fb = document.getElementById('mailto-fallback');
+  var mail = document.getElementById('mailto-link');
+  var btn = form.querySelector('button');
+  var KEY = 'hfg_waitlist_pending';
+  var FIELDS = ['name', 'email', 'agents_used', 'weekly_sessions', 'team_size', 'context_loss_incident'];
+  function say(msg, cls) { status.textContent = msg; status.className = cls || ''; }
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var data = {};
+    FIELDS.forEach(function (k) { var v = new FormData(form).get(k); data[k] = typeof v === 'string' ? v.trim() : ''; });
+    if (!data.name) { say('Please add your name.', 'err'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(data.email)) { say('That email doesn’t look right.', 'err'); return; }
+    btn.disabled = true;
+    say('Sending…');
+    fetch('/api/waitlist', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) })
+      .then(function (res) {
+        if (res.ok) { say('Thanks — you’re on the list. We’ll email you before the hosted beta opens.', 'ok'); form.reset(); fb.hidden = true; return; }
+        if (res.status >= 400 && res.status < 500) {
+          return res.json().catch(function () { return {}; }).then(function (j) {
+            say('Rejected: ' + (j.error || ('HTTP ' + res.status)) + ' — please check your answers.', 'err');
+          });
+        }
+        throw new Error('HTTP ' + res.status);
+      })
+      .catch(function () {
+        try {
+          var q = JSON.parse(localStorage.getItem(KEY) || '[]');
+          q.push({ data: data, saved_at: new Date().toISOString() });
+          localStorage.setItem(KEY, JSON.stringify(q));
+        } catch (err) { /* storage unavailable — mailto fallback still works */ }
+        var body = FIELDS.map(function (k) { return k + ': ' + (data[k] || '—'); }).join('\n');
+        mail.href = 'mailto:hello@handoffgraph.dev?subject=' + encodeURIComponent('HandoffGraph waitlist') +
+          '&body=' + encodeURIComponent(body + '\n(also saved locally in this browser)');
+        fb.hidden = false;
+        say('Couldn’t reach the server. Your answers are saved in this browser — send them by email below.', 'err');
+      })
+      .finally(function () { btn.disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>

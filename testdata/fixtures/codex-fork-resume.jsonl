@@ -1,0 +1,8 @@
+{"timestamp":"2026-08-22T09:00:00Z","type":"session_meta","payload":{"id":"7d2c93a1-6b4e-4f20-9c8d-2a51e0f4b907","timestamp":"2026-08-22T09:00:00Z","cwd":"/Users/dev/repo","originator":"codex_cli_rs","cli_version":"0.46.0","model":"gpt-5-codex"}}
+{"timestamp":"2026-08-22T09:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"resume the codex lane: finish the fork acceptance run from the last checkpoint"}}
+{"timestamp":"2026-08-22T09:00:03Z","type":"turn_context","payload":{"cwd":"/Users/dev/repo","approval_policy":"on-request","sandbox_policy":"workspace-write","model":"gpt-5-codex","effort":"high"}}
+{"timestamp":"2026-08-22T09:00:11Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_0f3a9d21","arguments":{"command":["go","test","./internal/adapter/codex/..."]}}}
+{"timestamp":"2026-08-22T09:00:24Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_0f3a9d21","output":"--- FAIL: TestNormalizeStreamDeterministic\nexit status 1"}}
+{"timestamp":"2026-08-22T09:00:30Z","type":"response_item","payload":{"type":"exec_command","command":"go test ./internal/adapter/codex/...","exit_code":1,"duration_ms":12904}}
+{"timestamp":"2026-08-22T09:00:41Z","type":"event_msg","payload":{"type":"agent_message","message":"the resumed run reproduces the fork regression in the deterministic id assertion; patching it now"}}
+{"timestamp":"2026-08-22T09:00:47Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":51200,"cached_input_tokens":48064,"output_tokens":3140},"model_bucket":"gpt-5-codex"}}}

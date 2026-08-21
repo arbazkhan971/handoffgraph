@@ -3,7 +3,7 @@
 The Codex adapter captures OpenAI Codex CLI sessions into the local event
 spine. It reads native rollout transcripts, normalizes them into
 `hfg.event.v1` events, manages a single hook table in the Codex CLI config,
-and resumes native sessions by launching `codex exec resume`. Checkpoint-seeded
+and resumes native sessions via `codex resume`. Checkpoint-seeded
 launch (`StartFromCheckpoint`) is not supported yet (planned v0.2.x) and
 returns `ErrUnsupported`.
 
@@ -29,9 +29,13 @@ from a transcript is `OBSERVED`. Malformed lines fail with their line number.
 
 ## What gets installed
 
-`handoffgraph install --agent codex` writes exactly one managed table into
-the Codex CLI config (`~/.codex/config.toml`): `[hooks.handoffgraph]`, with
-the hook command plus six events — `session.started`, `prompt.submitted`,
+`handoffgraph install --agent codex` writes exactly six managed per-event
+tables into the Codex CLI config (`~/.codex/config.toml`), one per hook
+event (`session_start`, `session_end`, `pre_tool_use`, `post_tool_use`,
+`turn_start`, `turn_end`). Each block carries the `# hfg:managed` marker so
+uninstall removes exactly our blocks and nothing else. Nothing else in the
+file is created or changed; a timestamped backup is written before any
+modification. The managed tables replace the single-table form below — `session.started`, `prompt.submitted`,
 `assistant.completed`, `tool.completed`, `command.completed`,
 `session.ended`. Nothing else in the file is created or changed. Uninstall
 removes only that table.
@@ -95,7 +99,7 @@ idempotent on `event_id`, re-import adds no duplicate events.
 ## Resuming a session
 
 `handoffgraph resume <native-session-id> [--agent codex]` resumes a native
-Codex session by launching `codex exec resume <native-session-id>`. The
+Codex session via `codex resume <native-session-id>`. The
 non-interactive `exec` form is chosen deliberately so hook observation still
 captures the resumed run. `StartFromCheckpoint` (launching an agent from a
 HandoffGraph checkpoint) remains deferred and returns `ErrUnsupported`.

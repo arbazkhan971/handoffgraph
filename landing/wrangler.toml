@@ -1,0 +1,22 @@
+# HandoffGraph landing page — handoffgraph.dev
+# Deploy with: npx wrangler deploy
+# Validate without deploying: npx wrangler deploy --dry-run --outdir dist
+
+name = "handoffgraph-landing"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+workers_dev = true
+
+# Inline index.html into the worker bundle as text (no build step).
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false
+
+# Optional waitlist storage. Without this binding the worker still validates
+# and acknowledges (202) submissions; with it, each submission is stored as
+# one KV entry keyed "<date>:<uuid>". Uncomment and fill in the id to enable:
+#
+# [[kv_namespaces]]
+# binding = "WAITLIST"
+# id = "<kv-namespace-id>"
