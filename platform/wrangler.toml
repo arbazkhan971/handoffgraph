@@ -12,6 +12,14 @@ main = "src/index.ts"
 compatibility_date = "2026-08-01"
 workers_dev = true
 
+# Custom domain serving (Cloudflare zone required — see ../deploy/README.md).
+# Once the handoffgraph.dev zone exists in this account, uncomment to serve
+# the API directly on api.handoffgraph.dev:
+#
+# routes = [
+#   { pattern = "api.handoffgraph.dev", custom_domain = true }
+# ]
+
 # D1 database: workspace-scoped relational state (see migrations/).
 [[d1_databases]]
 binding = "DB"

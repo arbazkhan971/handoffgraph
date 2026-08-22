@@ -42,7 +42,7 @@ the v0.2.0 Codex adapter in flight (see its gate below; updated 2026-08-21).
 - [x] Hook install/uninstall fail-closed with dry-run
 - [x] Deterministic re-import idempotency
 - [x] Install/sessions/resume CLI wiring
-- [x] Native resume works (codex exec resume)
+- [x] Native resume works (adapter returns `codex resume <id>`; CLI prints it)
 - [ ] 20 real sessions with no config loss
 - [ ] App Server integration
 

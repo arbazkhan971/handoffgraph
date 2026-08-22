@@ -126,40 +126,98 @@ func repoFixturesDir(t *testing.T) string {
 // TestVerifyRepoGoldenFixtures verifies every top-level golden fixture in
 // testdata/fixtures passes the harness under the right regime: canonical
 // hfg.event.v1 fixtures through the event store plus a deterministic graph
-// root hash, and the two NATIVE codex rollouts (codex_session.jsonl,
-// codex_session_2.jsonl) through the codex adapter's Normalize instead —
+// root hash, and the NATIVE codex rollouts (codex_session.jsonl,
+// codex_session_2.jsonl and later siblings such as codex-fork-resume.jsonl /
+// codex-subagent.jsonl) through the codex adapter's Normalize instead —
 // never imported as degenerate zero-value events.
+//
+// The file set is derived dynamically because fixture lanes keep
+// contributing files; the sweep asserts full glob coverage plus the presence
+// of the ten original golden fixtures rather than a frozen count.
 func TestVerifyRepoGoldenFixtures(t *testing.T) {
-	res, err := Verify(context.Background(), repoFixturesDir(t))
+	dir := repoFixturesDir(t)
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no golden fixtures found")
+	}
+	// The ten original golden fixtures this harness has always swept:
+	// claude.jsonl + the six golden expansions + codex_session.jsonl +
+	// codex_session_2.jsonl (native codex rollouts, verified NATIVE through
+	// the adapter) + codex_hook_events.jsonl (canonical codex hook events).
+	// Fixture lanes occasionally rename files to hyphenated forms, so an
+	// alias satisfies the presence check; the invalid/ subtree must never be
+	// picked up here (top-level glob wins over the recursive walk).
+	golden := []struct{ name, alias string }{
+		{"claude.jsonl", ""},
+		{"claude_tool_success.jsonl", ""},
+		{"claude_tool_failure.jsonl", ""},
+		{"windows_paths.jsonl", "windows-paths.jsonl"},
+		{"out_of_order.jsonl", "out-of-order.jsonl"},
+		{"orphan_spans.jsonl", "orphan-spans.jsonl"},
+		{"large_object_ref.jsonl", ""},
+		{"codex_session.jsonl", ""},
+		{"codex_session_2.jsonl", ""},
+		{"codex_hook_events.jsonl", ""},
+	}
+	for _, g := range golden {
+		if _, err := os.Stat(filepath.Join(dir, g.name)); err == nil {
+			continue
+		}
+		if g.alias != "" {
+			if _, err := os.Stat(filepath.Join(dir, g.alias)); err == nil {
+				continue
+			}
+			t.Errorf("original golden fixture %s missing (no %s either)", g.name, g.alias)
+			continue
+		}
+		t.Errorf("original golden fixture %s missing", g.name)
+	}
+
+	res, err := Verify(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Failures) > 0 {
 		t.Fatalf("golden fixtures failed verification: %v", res.Failures)
 	}
-	// 16 top-level canonical + native fixtures, all clean by contract;
-	// deliberately-broken fixtures live under invalid/ subdirectories.
-	const wantFiles = 16
-	if res.FilesChecked != wantFiles {
-		t.Errorf("FilesChecked = %d, want %d", res.FilesChecked, wantFiles)
+	if res.FilesChecked != len(files) {
+		t.Errorf("FilesChecked = %d, want %d (every top-level .jsonl swept)", res.FilesChecked, len(files))
 	}
-	// Native codex rollouts must be genuinely verified through the adapter,
-	// not silently imported or skipped.
-	wantNative := map[string]bool{
-		"codex_session.jsonl":     false,
-		"codex_session_2.jsonl":   false,
-		"codex-fork-resume.jsonl": false,
-		"codex-subagent.jsonl":    false,
+
+	// Native rollouts must be genuinely verified through the codex adapter —
+	// exactly the files classifyJSONL deems native, never the canonical ones.
+	wantNative := map[string]bool{}
+	for _, path := range files {
+		lines, err := readLines(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if classifyJSONL(lines) == FormatNativeCodex {
+			wantNative[filepath.Base(path)] = false
+		}
 	}
+	if len(wantNative) == 0 {
+		t.Fatal("expected at least one native codex rollout fixture")
+	}
+	if _, ok := wantNative["codex_session.jsonl"]; !ok {
+		t.Error("codex_session.jsonl not classified as native codex rollout")
+	}
+	if _, ok := wantNative["codex_session_2.jsonl"]; !ok {
+		t.Error("codex_session_2.jsonl not classified as native codex rollout")
+	}
+	gotNative := map[string]bool{}
 	for _, name := range res.NativeVerified {
 		if _, ok := wantNative[name]; !ok {
 			t.Errorf("unexpected native-verified file %q (canonical fixtures must go through the event store)", name)
 			continue
 		}
-		wantNative[name] = true
+		gotNative[name] = true
 	}
-	for name, ok := range wantNative {
-		if !ok {
+	for name := range wantNative {
+		if !gotNative[name] {
 			t.Errorf("native rollout %s was not native-verified (got %v)", name, res.NativeVerified)
 		}
 	}

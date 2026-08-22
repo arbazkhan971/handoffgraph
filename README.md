@@ -39,15 +39,15 @@ handoffgraph install --agent codex --dry-run   # preview; writes nothing
 handoffgraph install --agent codex             # manage [hooks.handoffgraph] in ~/.codex/config.toml
 handoffgraph sessions                          # list captured native Codex sessions
 handoffgraph sessions --detect                 # list native Codex sessions found on disk, without importing them
-handoffgraph resume <native-session-id>        # continue a Codex session via codex exec resume
+handoffgraph resume <native-session-id>        # print the native continue command (codex resume <id>)
 ```
 
 Install only ever touches the managed `[hooks.handoffgraph]` table: an
 unparseable config is never modified, an existing differing hook is reported
 as a conflict instead of being overwritten, and unrelated keys are preserved.
-Re-importing the same session produces no duplicate events. `resume` performs
-the native resume by launching the non-interactive `codex exec resume` form,
-so hook observation still captures the resumed run; `sessions --detect`
+Re-importing the same session produces no duplicate events. `resume` prints
+the exact shell-quoted native invocation (`codex resume <id>`) for you to
+run — HandoffGraph never launches agent processes itself; `sessions --detect`
 reads native sessions directly from `~/.codex/sessions` without importing
 them (override the directory with `HFG_CODEX_SESSIONS_DIR`). See
 [docs/adapter-codex.md](docs/adapter-codex.md) for details.

@@ -7,6 +7,16 @@ main = "worker.js"
 compatibility_date = "2026-08-01"
 workers_dev = true
 
+# Custom domain serving (Cloudflare zone required — see deploy/README.md).
+# Once the handoffgraph.dev zone exists in this account, uncomment to serve
+# the worker directly on the domain (wrangler creates the DNS records and
+# Universal SSL cert automatically):
+#
+# routes = [
+#   { pattern = "handoffgraph.dev", custom_domain = true },
+#   { pattern = "www.handoffgraph.dev", custom_domain = true }
+# ]
+
 # Inline index.html into the worker bundle as text (no build step).
 [[rules]]
 type = "Text"

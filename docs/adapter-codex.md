@@ -2,10 +2,10 @@
 
 The Codex adapter captures OpenAI Codex CLI sessions into the local event
 spine. It reads native rollout transcripts, normalizes them into
-`hfg.event.v1` events, manages a single hook table in the Codex CLI config,
-and resumes native sessions via `codex resume`. Checkpoint-seeded
-launch (`StartFromCheckpoint`) is not supported yet (planned v0.2.x) and
-returns `ErrUnsupported`.
+`hfg.event.v1` events, manages hook blocks in the Codex CLI config, and
+produces the native `codex resume` invocation for continuing sessions.
+Checkpoint-seeded launch (`StartFromCheckpoint`) produces a launch spec;
+executing specs from the CLI is deferred to v0.6.0.
 
 ## Capture
 
@@ -98,11 +98,14 @@ idempotent on `event_id`, re-import adds no duplicate events.
 
 ## Resuming a session
 
-`handoffgraph resume <native-session-id> [--agent codex]` resumes a native
-Codex session via `codex resume <native-session-id>`. The
-non-interactive `exec` form is chosen deliberately so hook observation still
-captures the resumed run. `StartFromCheckpoint` (launching an agent from a
-HandoffGraph checkpoint) remains deferred and returns `ErrUnsupported`.
+`handoffgraph resume <native-session-id> [--agent codex]` prints the exact
+shell-quoted native invocation (`codex resume <native-session-id>`) so you
+can run it yourself — HandoffGraph never launches agent processes, and ids
+are validated (empty and dash-prefixed values are rejected) so a hostile id
+cannot smuggle flags into the printed command. `StartFromCheckpoint`
+similarly produces a launch spec seeded by a checkpoint (objective clamped,
+passed after an explicit `--` separator); executing these specs from the CLI
+is deferred to the v0.6.0 cross-agent continuation work per ROADMAP.md.
 
 ## Detecting local sessions
 

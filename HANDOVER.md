@@ -58,9 +58,9 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Synthetic event generator | `internal/fixture` | ✅ (leaf pkg) |
 | Fixture verification harness (+ golden fixture coverage) | `internal/verify` | ✅ tested |
 | Adapter interface + registry (v0.2.0 groundwork) | `internal/adapter` | ✅ tested |
-| Codex adapter (Detect + Normalize + hook Install/Uninstall + deterministic event IDs; exec-based native Resume) | `internal/adapter/codex` | ✅ tested |
+| Codex adapter (Detect + Normalize + hook Install/Uninstall + deterministic event IDs; native Resume + StartFromCheckpoint as ExecSpec) | `internal/adapter/codex` | ✅ tested |
 | CLI framework + subcommands (flag helpers, JSONL redact preview) | `internal/cli`, `internal/commands` | ✅ tested |
-| Codex CLI wiring (`install`, `sessions`, `resume`; resume performs the resume via `codex exec resume`) | `internal/commands` | ✅ tested |
+| Codex CLI wiring (`install`, `sessions`, `resume`; resume prints the shell-quoted `codex resume <id>` invocation) | `internal/commands` | ✅ tested |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -81,8 +81,8 @@ sessions      [--agent] [--json] | --detect [--json]
               list sessions derived from captured events, per provider;
               --detect lists native sessions directly from disk
               (~/.codex/sessions; override with HFG_CODEX_SESSIONS_DIR)
-resume        <id> [--agent]  resume a native codex session via `codex exec resume`
-              (non-interactive form so hook observation still captures the run)
+resume        <id> [--agent]  print the shell-quoted native resume command
+              (codex resume <id>); HandoffGraph never launches agents itself
 version
 ```
 
@@ -111,7 +111,9 @@ internal/
   fixture/                 synthetic event generator (leaf, no deps)
   verify/                  fixture verify harness (imports storage+graph)
   adapter/                 provider Adapter interface + Registry (v0.2.0)
-    codex/                 Codex adapter: Detect + Normalize + hook Install/Uninstall (resume deferred)
+    codex/                 Codex adapter: Detect + Normalize + hook Install/Uninstall
+                          + deterministic event IDs + Resume/StartFromCheckpoint (ExecSpec)
+    claude/, pi/           Claude Code and Pi adapters (v0.3.0/v0.4.0 scope, same contract)
 protocol/schema/v1/        event.schema.json, checkpoint.schema.json, trace.schema.json
 docs/                      architecture.md, privacy.md
 testdata/fixtures/         golden JSONL fixtures (claude, tool success/failure,
@@ -256,7 +258,7 @@ Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + c
 ### Remaining nice-to-haves
 - ~~Consider stable/deterministic event-ID derivation for adapter re-import idempotency~~ — **DONE (2026-08-21):** `internal/ids` deterministic helper derives a stable `evt_<ulid>` from (provider, native session ID, sequence, occurred-at, content hash), so re-importing the same Codex session is idempotent.
 - ~~Codex adapter: hook install/uninstall + `sessions`/`resume` CLI wiring~~ — **DONE (2026-08-21):** managed `[hooks.handoffgraph]` table in `~/.codex/config.toml`, fail-closed with dry-run; `install --agent codex`, `sessions`, `resume` commands wired.
-- ~~Codex native resume~~ — **DONE (2026-08-21):** adapter `Resume` launches `codex exec resume <native-session-id>` (non-interactive, so hook observation still captures the resumed run); `StartFromCheckpoint` remains deferred.
+- ~~Codex native resume~~ — **DONE (2026-08-21):** adapter `Resume` returns the native `ExecSpec` (`codex resume <id>`, empty/dash-prefixed ids rejected); the `resume` command prints it shell-quoted for copy-paste — HandoffGraph never launches agent processes itself. `StartFromCheckpoint` also returns a launch spec (objective clamped, `--` separator); executing specs is deferred to v0.6.0.
 - Acceptance run over 20 real Codex sessions (no config loss, resume path) still open — targeted for v0.2.x/v0.3.0.
 - Codex App Server integration remains deferred (see §9).
 
@@ -274,18 +276,17 @@ Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + c
 ### A. Finish the v0.2.0 Codex adapter
 The `internal/adapter` interface + registry and the Codex `Detect`/`Normalize`
 core are done and tested (see §8). As of 2026-08-21, hook `Install`/`Uninstall`
-(managed `[hooks.handoffgraph]` table in `~/.codex/config.toml`, fail-closed,
-idempotent, dry-run-safe) and the `install` / `sessions` / `resume` CLI wiring
-are also done and tested, with deterministic event IDs so re-import is
-idempotent; native `Resume` launches `codex exec resume <native-session-id>`
-(non-interactive so hook observation still captures the run). The verify
-harness now classifies fixtures too: canonical `hfg.event.v1` fixtures go
-through the event-store import path, while native codex rollout fixtures are
-verified via the adapter's `Normalize`.
+(fail-closed, idempotent, dry-run-safe), the `install` / `sessions` / `resume`
+CLI wiring, deterministic event IDs, native `Resume`, and
+`StartFromCheckpoint` are all done and tested: resume/checkpoint launch return
+`ExecSpec`s that the CLI prints shell-quoted — executing them is the v0.6.0
+cross-agent continuation work. The verify harness classifies fixtures too:
+canonical `hfg.event.v1` fixtures go through the event-store import path,
+while native codex rollout fixtures are verified via the adapter's
+`Normalize`.
 Remaining for full v0.2.0 acceptance, in priority order:
 - App Server integration — the release-hold condition for the milestone.
 - Acceptance run: 20 real sessions, no config loss.
-- Checkpoint-seeded launch (`StartFromCheckpoint`; still `ErrUnsupported`).
 
 ### B. Golden fixtures expansion — DONE (2026-08-21)
 Added: Claude tool success/failure, out-of-order delivery, truncated JSONL,

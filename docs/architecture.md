@@ -60,22 +60,24 @@ This is what makes deterministic rebuild possible.
 
 ### Provider adapters (`internal/adapter`)
 
-Each provider (Codex, later Claude and Pi) implements one narrow interface:
+Each provider (Codex, plus Claude and Pi) implements one narrow interface:
 `Detect` (enumerate native sessions, newest first), `Normalize` (decode a
-native transcript stream into canonical `hfg.event.v1` events), `Install`
-and `Uninstall` (manage the provider's hook configuration), `Resume`,
-`StartFromCheckpoint`, and `Capabilities`. For Codex, `Resume` is exec-based
-(launching `codex exec resume`) and takes an injectable runner so tests never
-spawn processes. A registry holds adapters keyed
+native transcript stream or hook payload into canonical `hfg.event.v1`
+events), `Install` and `Uninstall` (manage the provider's hook
+configuration), `Resume`, `StartFromCheckpoint`, and `Capabilities`. For
+Codex, `Resume` and `StartFromCheckpoint` return an `ExecSpec` describing the
+native invocation (e.g. `codex resume <id>`); the CLI prints it shell-quoted
+for copy-paste and never launches agent processes itself, and ids are
+validated so a hostile id cannot smuggle flags into the printed command. A
+registry holds adapters keyed
 by name; first registration wins so package init order cannot silently
 replace an adapter.
 
 Capabilities are declared honestly: an adapter lists what it supports
 (hooks, app-server integration, checkpoint launch, native session listing,
 normalizable kinds), and callers must surface missing capabilities instead of
-manufacturing equivalence. Operations an adapter version does not implement —
-for Codex today, `StartFromCheckpoint` — return `ErrUnsupported`; they are
-planned for v0.2.x.
+manufacturing equivalence. Operations an adapter version does not implement
+return `ErrUnsupported`; they are planned per the roadmap.
 
 Normalization is tolerant and lossless: recognized native event types map to
 canonical kinds (`session_meta` → `session.started`, user/agent messages →
@@ -170,11 +172,11 @@ handoff quality score (documented weights, 0–100) and a graph root hash.
 
 ## Next versions
 
-- **v0.2.x** Codex checkpoint-seeded launch (`StartFromCheckpoint`, currently `ErrUnsupported`).
-- **v0.3.0** Claude adapter + first Claude→Codex proof.
-- **v0.4.0** Pi extension + local MCP.
-- **v0.5.0** Local Session Debugger (embedded React/Vite UI).
-- **v0.6.0** Verified checkpoint + cross-agent continuation.
+- **v0.2.x** Codex App Server integration + 20-real-session acceptance run.
+- **v0.3.0** First Claude→Codex proof (Claude adapter groundwork landed).
+- **v0.4.0** Pi extension + local MCP hardening.
+- **v0.5.0** Local Session Debugger polish.
+- **v0.6.0** Verified checkpoint + cross-agent continuation (`continue --to` executes the `ExecSpec`s).
 
 See [ROADMAP.md](../ROADMAP.md) for the full release train and
 [adapter-codex.md](adapter-codex.md) for the Codex adapter reference.
