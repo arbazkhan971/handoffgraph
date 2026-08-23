@@ -118,6 +118,7 @@ func (p *Pi) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		NativeResume:        true,
 		NativeFork:          false,
+		CheckpointLaunch:    true,
 		Hooks:               false,
 		ToolEvents:          true,
 		PromptEvents:        true,
@@ -429,9 +430,24 @@ func (p *Pi) Resume(ctx context.Context, ref adapter.SessionRef) (adapter.ExecSp
 	return adapter.ExecSpec{Command: "pi", Args: []string{"--resume", id}}, nil
 }
 
-// StartFromCheckpoint is not implemented in this adapter version.
+// StartFromCheckpoint starts a new interactive Pi session seeded by a bounded
+// checkpoint prompt. The prompt is passed as one argv element with a fixed
+// non-option prefix, so checkpoint-controlled text cannot become Pi flags and
+// no shell is involved.
 func (p *Pi) StartFromCheckpoint(ctx context.Context, cp *protocol.Checkpoint) (adapter.ExecSpec, error) {
-	return adapter.ExecSpec{}, fmt.Errorf("pi start-from-checkpoint: %w (planned for a later v0.4.x cut)", ErrUnsupported)
+	if cp == nil {
+		return adapter.ExecSpec{}, errors.New("pi start-from-checkpoint: checkpoint required")
+	}
+	return adapter.ExecSpec{Command: "pi", Args: []string{checkpointPrompt(cp)}}, nil
+}
+
+func checkpointPrompt(cp *protocol.Checkpoint) string {
+	objective := []rune(cp.Objective)
+	if len(objective) > 4000 {
+		objective = objective[:4000]
+	}
+	return fmt.Sprintf("Continue workstream %s (checkpoint %s). Objective: %s. Acknowledge checkpoint %s before acting.",
+		cp.WorkstreamID, cp.CheckpointID, string(objective), cp.CheckpointID)
 }
 
 // truncate caps oversized text fields; large bodies belong in the object

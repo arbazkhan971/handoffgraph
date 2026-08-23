@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/handoffgraph/handoffgraph/internal/ids"
+	"github.com/handoffgraph/handoffgraph/internal/launch"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
+	"github.com/handoffgraph/handoffgraph/internal/redact"
 	"github.com/handoffgraph/handoffgraph/internal/storage"
 )
 
@@ -365,6 +367,30 @@ func TestCreateCheckpoint(t *testing.T) {
 	})
 }
 
+func TestCreateCheckpointUsesServerRedactionPolicy(t *testing.T) {
+	f := openSeed(t)
+	server := &Server{tools: newToolsetWithRedaction(f.db, &redact.Options{
+		UserPatterns: []string{`private-[0-9]+`},
+	})}
+	tool := server.toolByName("create_checkpoint")
+	if tool == nil {
+		t.Fatal("create_checkpoint tool not found")
+	}
+	payload, err := tool.Handler(context.Background(), json.RawMessage(fmt.Sprintf(
+		`{"workstream_id":%q,"objective":"continue private-98765"}`, f.wsA,
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, ok := payload.(checkpointResult)
+	if !ok {
+		t.Fatalf("result type = %T, want checkpointResult", payload)
+	}
+	if strings.Contains(out.Objective, "private-98765") || !strings.Contains(out.Objective, "[REDACTED]") {
+		t.Fatalf("MCP checkpoint objective was not redacted: %q", out.Objective)
+	}
+}
+
 // TestRecordDecision covers DECLARED provenance and evidence scoping.
 func TestRecordDecision(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
@@ -622,6 +648,102 @@ func TestHandoffWorkstream(t *testing.T) {
 
 // TestAcceptHandoff covers checkpoint binding and scoping.
 func TestAcceptHandoff(t *testing.T) {
+	t.Run("accepts a CLI continuation for an imported event-only workstream", func(t *testing.T) {
+		db, err := storage.Open(filepath.Join(t.TempDir(), "imported.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		ctx := context.Background()
+		wsID := ids.Workstream()
+		sessionID := ids.Session()
+		now := time.Date(2026, 8, 21, 15, 0, 0, 0, time.UTC)
+		for _, ev := range []*protocol.Event{
+			{SchemaVersion: protocol.SchemaVersionEvent, EventID: ids.Event(), OccurredAt: now, ObservedAt: now, WorkstreamID: wsID, Kind: protocol.EventWorkstreamStarted, Provenance: protocol.ProvenanceObserved},
+			{SchemaVersion: protocol.SchemaVersionEvent, EventID: ids.Event(), OccurredAt: now.Add(time.Second), ObservedAt: now.Add(time.Second), WorkstreamID: wsID, SessionID: sessionID, NativeSessionID: "codex-imported-session", Provider: protocol.ProviderCodex, Kind: protocol.EventSessionStarted, Provenance: protocol.ProvenanceObserved},
+		} {
+			if _, err := db.AppendEvent(ctx, ev); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cp := &protocol.Checkpoint{
+			SchemaVersion: protocol.SchemaVersionCheckpoint,
+			CheckpointID:  ids.Checkpoint(),
+			WorkstreamID:  wsID,
+			Objective:     "continue imported work",
+			Status:        "in_progress",
+			SourceSessions: []protocol.SourceSession{{
+				Provider: protocol.ProviderCodex, NativeSessionID: "codex-imported-session", SessionID: sessionID,
+			}},
+		}
+		if err := db.SaveCheckpoint(ctx, cp); err != nil {
+			t.Fatal(err)
+		}
+		continued, err := launch.Continue(ctx, db, launch.Options{WorkstreamID: wsID, TargetAgent: protocol.ProviderCodex, Checkpoint: cp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := &seedFixture{db: db, wsA: wsID}
+		var out acceptHandoffResult
+		args := fmt.Sprintf(`{"workstream_id":%q,"checkpoint_id":%q,"agent":"codex","accepted":["objective"]}`, wsID, cp.CheckpointID)
+		if err := call(t, f, "accept_handoff", args, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.HandoffID != continued.Handoff.ID || out.EventID == "" {
+			t.Fatalf("accept result = %+v, want structured handoff %s", out, continued.Handoff.ID)
+		}
+	})
+
+	t.Run("folds a structured continuation into handoff status", func(t *testing.T) {
+		f := openSeed(t)
+		var cpOut checkpointResult
+		if err := call(t, f, "create_checkpoint", fmt.Sprintf(`{"workstream_id":%q}`, f.wsA), &cpOut); err != nil {
+			t.Fatal(err)
+		}
+		cps, err := f.db.ListCheckpoints(context.Background(), f.wsA)
+		if err != nil || len(cps) != 1 {
+			t.Fatalf("ListCheckpoints = %v, err %v", cps, err)
+		}
+		continued, err := launch.Continue(context.Background(), f.db, launch.Options{
+			WorkstreamID: f.wsA,
+			TargetAgent:  protocol.ProviderCodex,
+			Checkpoint:   cps[0],
+		})
+		if err != nil {
+			t.Fatalf("launch.Continue: %v", err)
+		}
+
+		var out acceptHandoffResult
+		args := fmt.Sprintf(`{"workstream_id":%q,"checkpoint_id":%q,"agent":"codex","accepted":["objective","next_actions","objective"],"missing":["tests"],"unverifiable":["repository"]}`,
+			f.wsA, cpOut.CheckpointID)
+		if err := call(t, f, "accept_handoff", args, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.HandoffID != continued.Handoff.ID || out.EventID == "" {
+			t.Fatalf("accept result = %+v, want handoff %s with event evidence", out, continued.Handoff.ID)
+		}
+		if strings.Join(out.Accepted, ",") != "next_actions,objective" {
+			t.Fatalf("accepted sections = %v, want sorted and de-duplicated", out.Accepted)
+		}
+		recs, err := launch.ListHandoffs(context.Background(), f.db)
+		if err != nil || len(recs) != 1 {
+			t.Fatalf("ListHandoffs = %v, err %v", recs, err)
+		}
+		if recs[0].Status != launch.StatusAccepted || recs[0].ID != continued.Handoff.ID {
+			t.Fatalf("derived handoff = %+v, want accepted %s", recs[0], continued.Handoff.ID)
+		}
+		if got := payloadString(lastEvent(t, f), "handoff_id"); got != continued.Handoff.ID {
+			t.Fatalf("acceptance handoff_id = %q, want %q", got, continued.Handoff.ID)
+		}
+		var contextOut workstreamContextResult
+		if err := call(t, f, "get_workstream_context", fmt.Sprintf(`{"workstream_id":%q}`, f.wsA), &contextOut); err != nil {
+			t.Fatal(err)
+		}
+		if contextOut.Status.Value != "active" || contextOut.Status.Provenance != string(protocol.ProvenanceInferred) {
+			t.Fatalf("post-acceptance context status = %+v, want inferred active", contextOut.Status)
+		}
+	})
+
 	t.Run("binds to a valid checkpoint", func(t *testing.T) {
 		f := openSeed(t)
 		var ho handoffWorkstreamResult

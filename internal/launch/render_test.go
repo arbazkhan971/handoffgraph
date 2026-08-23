@@ -3,6 +3,7 @@ package launch
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
@@ -72,6 +73,8 @@ func TestRenderForAgentAlwaysIncludesRequiredSections(t *testing.T) {
 				"## Next actions",
 				"add the regression test for concurrent checkout",
 				"Acknowledge checkpoint cp_00000000000000000000000000",
+				"hfg://workstreams/ws_test/checkpoints/cp_00000000000000000000000000",
+				"call `accept_handoff`",
 			} {
 				if !strings.Contains(got, want) {
 					t.Errorf("render for %s missing %q\nrender:\n%s", agent, want, got)
@@ -192,6 +195,32 @@ func TestRenderForAgentTruncatesHugeObjectiveAndItems(t *testing.T) {
 	}
 }
 
+func TestRenderForAgentPathologicalRepositoryKeepsAcceptanceTail(t *testing.T) {
+	cp := richCheckpoint()
+	cp.Repository.Remote = strings.Repeat("https://example.invalid/very-long-path/", 1000)
+	cp.Repository.Branch = strings.Repeat("分支", 5000)
+	cp.Repository.Head = strings.Repeat("abcdef0123456789", 1000)
+
+	got := RenderForAgent(cp, protocol.ProviderCodex)
+	if len(got) > maxPromptChars {
+		t.Fatalf("prompt length %d exceeds cap %d", len(got), maxPromptChars)
+	}
+	for _, want := range []string{
+		"## Objective",
+		"## Repository state (at checkpoint)",
+		"## Failed approaches (do not repeat)",
+		"## Next actions",
+		"## Instruction",
+		"Acknowledge checkpoint " + cp.CheckpointID,
+		"hfg://workstreams/" + cp.WorkstreamID + "/checkpoints/" + cp.CheckpointID,
+		"---\nCheckpoint " + cp.CheckpointID,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("pathological repository render lost %q\nrender:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderForAgentPreservesProvenance(t *testing.T) {
 	cp := richCheckpoint()
 	cp.FailedApproaches = []protocol.EvidenceItem{
@@ -246,6 +275,24 @@ func TestHardTruncateRuneSafe(t *testing.T) {
 			if r == 0xFFFD {
 				t.Errorf("hardTruncate(%d) produced an invalid rune sequence", limit)
 			}
+		}
+	}
+}
+
+func TestHardTruncatePreservesInstructionTail(t *testing.T) {
+	tail := "\n## Instruction\n\nAcknowledge checkpoint cp_tail before acting.\n\n---\nCheckpoint cp_tail\n"
+	got := hardTruncate(strings.Repeat("é", maxPromptChars)+tail, maxPromptChars)
+	if len(got) > maxPromptChars {
+		t.Fatalf("hard-truncated prompt length = %d, want <= %d", len(got), maxPromptChars)
+	}
+	for _, want := range []string{"## Instruction", "Acknowledge checkpoint cp_tail", "---\nCheckpoint cp_tail"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hard truncate lost required tail %q", want)
+		}
+	}
+	for _, r := range got {
+		if r == utf8.RuneError {
+			t.Fatal("hard truncate produced invalid UTF-8")
 		}
 	}
 }

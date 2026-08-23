@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
@@ -26,15 +27,19 @@ VALUES (?, ?, ?, ?, 'active')`,
 	return err
 }
 
-// ListWorkstreams returns all workstreams ordered by creation time.
+// ListWorkstreams returns the deterministic workstream read model ordered by
+// creation time. Explicit table rows are merged with workstreams observed in
+// the append-only event log, so a plain fixture/native-session import is
+// immediately addressable by the CLI, UI, and MCP tools without fabricating a
+// separate create operation.
 func (d *DB) ListWorkstreams(ctx context.Context) ([]*Workstream, error) {
 	rows, err := d.sql.QueryContext(ctx,
-		"SELECT id, title, repository_id, created_at, status FROM workstreams ORDER BY created_at")
+		"SELECT id, title, repository_id, created_at, status FROM workstreams ORDER BY created_at, id")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []*Workstream
+	byID := map[string]*Workstream{}
 	for rows.Next() {
 		var w Workstream
 		var repoID *string
@@ -46,9 +51,70 @@ func (d *DB) ListWorkstreams(ctx context.Context) ([]*Workstream, error) {
 			w.RepositoryID = *repoID
 		}
 		w.CreatedAt = time.Unix(0, created)
-		out = append(out, &w)
+		row := w
+		out = append(out, &row)
+		byID[row.ID] = &row
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	events, err := d.ListEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, ev := range events {
+		if ev.WorkstreamID == "" {
+			continue
+		}
+		w, ok := byID[ev.WorkstreamID]
+		if !ok {
+			at := ev.OccurredAt
+			if at.IsZero() {
+				at = ev.ObservedAt
+			}
+			if at.IsZero() {
+				at = time.Unix(0, 0).UTC()
+			}
+			w = &Workstream{ID: ev.WorkstreamID, Title: ev.WorkstreamID, CreatedAt: at, Status: "active"}
+			byID[w.ID] = w
+			out = append(out, w)
+		} else if !ev.OccurredAt.IsZero() && ev.OccurredAt.Before(w.CreatedAt) {
+			w.CreatedAt = ev.OccurredAt
+		}
+		if w.RepositoryID == "" && ev.RepositoryID != "" {
+			w.RepositoryID = ev.RepositoryID
+		}
+		if ev.Kind == protocol.EventWorkstreamStarted && (w.Title == "" || w.Title == w.ID) {
+			var payload struct {
+				Title string `json:"title"`
+			}
+			if json.Unmarshal(ev.Payload, &payload) == nil && payload.Title != "" {
+				w.Title = payload.Title
+			}
+		}
+		if w.Status != "completed" {
+			switch ev.Kind {
+			case protocol.EventHandoffCreated:
+				w.Status = "handed_off"
+			case protocol.EventHandoffAccepted:
+				w.Status = "active"
+			case protocol.EventWorkstreamCompleted:
+				w.Status = "completed"
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 
 // SaveCheckpoint persists a checkpoint as raw JSON plus indexed columns.

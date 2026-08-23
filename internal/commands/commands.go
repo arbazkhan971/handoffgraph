@@ -18,6 +18,7 @@ import (
 	"github.com/handoffgraph/handoffgraph/internal/adapter/claude"
 	"github.com/handoffgraph/handoffgraph/internal/adapter/codex"
 	"github.com/handoffgraph/handoffgraph/internal/adapter/pi"
+	"github.com/handoffgraph/handoffgraph/internal/buildinfo"
 	"github.com/handoffgraph/handoffgraph/internal/checkpoint"
 	"github.com/handoffgraph/handoffgraph/internal/cli"
 	"github.com/handoffgraph/handoffgraph/internal/config"
@@ -52,11 +53,13 @@ func Register(app *cli.App) {
 	})
 	app.Register(&cli.Command{
 		Name: "checkpoint", Summary: "Build a checkpoint from captured events",
-		Usage: "--workstream <id> [--objective text] [--status status]",
+		Usage: "--workstream <id> ... | --from-trace <id> ... | show <id> [--json]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("workstream", "", "workstream id")
+			fs.String("from-trace", "", "build from one materialized trace")
 			fs.String("objective", "", "checkpoint objective")
 			fs.String("status", "in_progress", "checkpoint status")
+			fs.Bool("json", false, "emit JSON for checkpoint show")
 		},
 		Run: checkpointCmd,
 	})
@@ -96,6 +99,16 @@ func Register(app *cli.App) {
 		Run: resumeCmd,
 	})
 
+	// Register every shipped product surface in the application used by the
+	// real binary. The focused Register*Cmd helpers also make each lane easy
+	// to test in isolation without leaving it unreachable from the CLI.
+	RegisterCodexCmd(app)
+	RegisterClaudeCmd(app)
+	RegisterPiCmd(app)
+	RegisterMCPCmd(app)
+	RegisterDetectionCmd(app)
+	RegisterWebUICmd(app)
+	RegisterLaunchCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.
@@ -134,7 +147,7 @@ func loadConfigAndDB() (*config.Config, *storage.DB, error) {
 }
 
 func versionCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
-	fmt.Fprintf(c.Stdout, "handoffgraph %s\n", buildVersion)
+	fmt.Fprintf(c.Stdout, "handoffgraph %s\n", buildinfo.Version())
 	return nil
 }
 
@@ -346,6 +359,9 @@ func tracesCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 }
 
 func checkpointCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
+	if handled, err := checkpointV06Cmd(ctx, c, fs); handled {
+		return err
+	}
 	wsID := stringFlag(fs, "workstream")
 	objective := stringFlag(fs, "objective")
 	status := stringFlag(fs, "status")
@@ -353,7 +369,7 @@ func checkpointCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error 
 		return fmt.Errorf("--workstream is required")
 	}
 
-	_, db, err := loadConfigAndDB()
+	cfg, db, err := loadConfigAndDB()
 	if err != nil {
 		return err
 	}
@@ -371,6 +387,10 @@ func checkpointCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error 
 		Status:       status,
 		Repo:         repoState,
 		Events:       events,
+		Redaction: &redact.Options{
+			DenyPaths:    cfg.RedactDenyPaths,
+			UserPatterns: cfg.RedactPatterns,
+		},
 	})
 	if err != nil {
 		return err
@@ -709,6 +729,3 @@ func resumeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	fmt.Fprintln(c.Stdout, FormatExecSpec(spec.Command, spec.Args))
 	return nil
 }
-
-// buildVersion is overridden at build time via -ldflags "-X ...".
-var buildVersion = "v0.1.0-dev"

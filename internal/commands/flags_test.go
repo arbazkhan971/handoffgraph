@@ -83,3 +83,20 @@ func TestStringFlagNonGetter(t *testing.T) {
 		t.Errorf(`stringFlag on non-Getter flag = %q, want ""`, got)
 	}
 }
+
+func TestShellQuoteSingleQuoteCannotBreakOut(t *testing.T) {
+	input := "objective'; touch /tmp/handoffgraph-should-not-exist; #"
+	want := "'objective'\\''; touch /tmp/handoffgraph-should-not-exist; #'"
+	if got := shellQuote(input); got != want {
+		t.Fatalf("shellQuote = %q, want %q", got, want)
+	}
+}
+
+func TestFormatExecSpecQuotesCheckpointControlledPrompt(t *testing.T) {
+	prompt := "Continue checkpoint cp_x. Objective: $(touch /tmp/nope) and 'quoted'"
+	got := FormatExecSpec("claude", []string{prompt})
+	want := "claude 'Continue checkpoint cp_x. Objective: $(touch /tmp/nope) and '\\''quoted'\\'''"
+	if got != want {
+		t.Fatalf("FormatExecSpec = %q, want %q", got, want)
+	}
+}

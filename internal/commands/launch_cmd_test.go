@@ -156,13 +156,21 @@ func TestContinueCmdPreviewRecordsNothing(t *testing.T) {
 	}
 }
 
-func TestContinueCmdCrossProviderUnsupportedIsHonest(t *testing.T) {
-	seedLaunchCheckpoint(t, "ws_cross")
+func TestContinueCmdCrossProviderLaunchesClaude(t *testing.T) {
+	dbPath := seedLaunchCheckpoint(t, "ws_cross")
 	app := newLaunchApp(t)
 
 	out, err := runLaunchApp(t, app, "continue", "--to", "claude", "--workstream", "ws_cross")
-	if err == nil || !strings.Contains(err.Error(), "does not support") {
-		t.Fatalf("continue --to claude error = %v, want unsupported-capability error\noutput:\n%s", err, out)
+	if err != nil {
+		t.Fatalf("continue --to claude: %v\noutput:\n%s", err, out)
+	}
+	for _, want := range []string{"codex -> claude", "mode checkpoint_seed", "claude '# Continuation handoff for claude", "checkpoint cp_launch_test"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("continue output missing %q\noutput:\n%s", want, out)
+		}
+	}
+	if n := launchEventCount(t, dbPath); n != 1 {
+		t.Errorf("event count = %d, want 1", n)
 	}
 }
 

@@ -10,7 +10,9 @@ import (
 	"github.com/handoffgraph/handoffgraph/internal/checkpoint"
 	"github.com/handoffgraph/handoffgraph/internal/graph"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
+	"github.com/handoffgraph/handoffgraph/internal/launch"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
+	"github.com/handoffgraph/handoffgraph/internal/redact"
 	"github.com/handoffgraph/handoffgraph/internal/repository"
 	"github.com/handoffgraph/handoffgraph/internal/storage"
 	"github.com/handoffgraph/handoffgraph/internal/trace"
@@ -28,6 +30,10 @@ var allowedVerificationResults = []string{"passed", "failed", "skipped", "error"
 
 // newToolset builds the nine v0.4.0 tools in roadmap order.
 func newToolset(db *storage.DB) []Tool {
+	return newToolsetWithRedaction(db, nil)
+}
+
+func newToolsetWithRedaction(db *storage.DB, redactionOptions *redact.Options) []Tool {
 	return []Tool{
 		{
 			Name:        "get_workstream_context",
@@ -54,7 +60,7 @@ func newToolset(db *storage.DB) []Tool {
 				"objective":     strProp("optional objective text recorded on the checkpoint"),
 				"status":        strProp("optional checkpoint status (default in_progress)"),
 			}, "workstream_id"),
-			Handler: toolCreateCheckpoint(db),
+			Handler: toolCreateCheckpoint(db, redactionOptions),
 		},
 		{
 			Name:        "record_decision",
@@ -97,15 +103,19 @@ func newToolset(db *storage.DB) []Tool {
 				"reason":        strProp("optional reason for the handoff"),
 				"to_agent":      strProp("optional name of the receiving agent"),
 			}, "workstream_id"),
-			Handler: toolHandoffWorkstream(db),
+			Handler: toolHandoffWorkstream(db, redactionOptions),
 		},
 		{
 			Name:        "accept_handoff",
-			Description: "Record acceptance of a handoff for a workstream, optionally binding the acceptance to a specific checkpoint of that workstream.",
+			Description: "Acknowledge a handoff and classify checkpoint sections as accepted, missing, or unverifiable. A checkpoint reference binds to the newest matching structured continuation.",
 			InputSchema: schema(map[string]any{
 				"workstream_id": strProp("workstream id whose handoff is accepted"),
+				"handoff_id":    strProp("optional exact handoff id (ho_...); checkpoint_id can resolve it when omitted"),
 				"checkpoint_id": strProp("optional checkpoint id (cp_...) from the same workstream"),
 				"agent":         strProp("optional name of the accepting agent"),
+				"accepted":      arrProp("checkpoint sections received and understood"),
+				"missing":       arrProp("checkpoint sections that were absent or empty"),
+				"unverifiable":  arrProp("checkpoint sections whose evidence could not be verified"),
 			}, "workstream_id"),
 			Handler: toolAcceptHandoff(db),
 		},
@@ -255,7 +265,7 @@ type recordedEventResult struct {
 
 // buildAndSaveCheckpoint builds a checkpoint from the workstream's own
 // events (same builder as `handoffgraph checkpoint`) and persists it.
-func buildAndSaveCheckpoint(ctx context.Context, db *storage.DB, wsID string, events []*protocol.Event, objective, status string) (*protocol.Checkpoint, *rpcError) {
+func buildAndSaveCheckpoint(ctx context.Context, db *storage.DB, wsID string, events []*protocol.Event, objective, status string, redactionOptions *redact.Options) (*protocol.Checkpoint, *rpcError) {
 	repoState, _ := repository.State(ctx, ".")
 	cp, err := checkpoint.Build(ctx, checkpoint.BuildOptions{
 		WorkstreamID: wsID,
@@ -263,6 +273,7 @@ func buildAndSaveCheckpoint(ctx context.Context, db *storage.DB, wsID string, ev
 		Status:       status,
 		Repo:         repoState,
 		Events:       events,
+		Redaction:    redactionOptions,
 	})
 	if err != nil {
 		return nil, errInternal(err)
@@ -354,23 +365,24 @@ func nsRFC3339(ns int64) string {
 // deriveWorkstreamStatus derives a lifecycle status from the workstream's
 // own events. It is a derived value, so callers must label it INFERRED.
 func deriveWorkstreamStatus(events []*protocol.Event) string {
-	completed, handedOff := false, false
+	status := "active"
 	for _, ev := range events {
+		// Completion is terminal. All other lifecycle state is folded in event
+		// order so a handoff acknowledgement returns the workstream to active
+		// instead of leaving MCP context stale at handed_off.
+		if status == "completed" {
+			continue
+		}
 		switch ev.Kind {
 		case protocol.EventWorkstreamCompleted:
-			completed = true
+			status = "completed"
 		case protocol.EventHandoffCreated:
-			handedOff = true
+			status = "handed_off"
+		case protocol.EventHandoffAccepted:
+			status = "active"
 		}
 	}
-	switch {
-	case completed:
-		return "completed"
-	case handedOff:
-		return "handed_off"
-	default:
-		return "active"
-	}
+	return status
 }
 
 // ---- tool 1: get_workstream_context ---------------------------------------
@@ -622,7 +634,7 @@ type createCheckpointArgs struct {
 	Status       string `json:"status,omitempty"`
 }
 
-func toolCreateCheckpoint(db *storage.DB) func(context.Context, json.RawMessage) (any, error) {
+func toolCreateCheckpoint(db *storage.DB, redactionOptions *redact.Options) func(context.Context, json.RawMessage) (any, error) {
 	return func(ctx context.Context, args json.RawMessage) (any, error) {
 		var in createCheckpointArgs
 		if e := decodeStrict(args, "arguments", &in); e != nil {
@@ -632,7 +644,7 @@ func toolCreateCheckpoint(db *storage.DB) func(context.Context, json.RawMessage)
 		if e != nil {
 			return nil, e
 		}
-		cp, e := buildAndSaveCheckpoint(ctx, db, in.WorkstreamID, events, in.Objective, in.Status)
+		cp, e := buildAndSaveCheckpoint(ctx, db, in.WorkstreamID, events, in.Objective, in.Status, redactionOptions)
 		if e != nil {
 			return nil, e
 		}
@@ -893,7 +905,7 @@ type handoffWorkstreamResult struct {
 	ToAgent    string           `json:"to_agent,omitempty"`
 }
 
-func toolHandoffWorkstream(db *storage.DB) func(context.Context, json.RawMessage) (any, error) {
+func toolHandoffWorkstream(db *storage.DB, redactionOptions *redact.Options) func(context.Context, json.RawMessage) (any, error) {
 	return func(ctx context.Context, args json.RawMessage) (any, error) {
 		var in handoffWorkstreamArgs
 		if e := decodeStrict(args, "arguments", &in); e != nil {
@@ -906,7 +918,7 @@ func toolHandoffWorkstream(db *storage.DB) func(context.Context, json.RawMessage
 
 		// The handoff package is a checkpoint: build and store it so the
 		// receiving agent has an evidence-backed starting point.
-		cp, e := buildAndSaveCheckpoint(ctx, db, ws.ID, events, "", "handed_off")
+		cp, e := buildAndSaveCheckpoint(ctx, db, ws.ID, events, "", "handed_off", redactionOptions)
 		if e != nil {
 			return nil, e
 		}
@@ -939,15 +951,23 @@ func toolHandoffWorkstream(db *storage.DB) func(context.Context, json.RawMessage
 // ---- tool 8: accept_handoff ---------------------------------------------------------
 
 type acceptHandoffArgs struct {
-	WorkstreamID string `json:"workstream_id"`
-	CheckpointID string `json:"checkpoint_id,omitempty"`
-	Agent        string `json:"agent,omitempty"`
+	WorkstreamID string   `json:"workstream_id"`
+	HandoffID    string   `json:"handoff_id,omitempty"`
+	CheckpointID string   `json:"checkpoint_id,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
+	Accepted     []string `json:"accepted,omitempty"`
+	Missing      []string `json:"missing,omitempty"`
+	Unverifiable []string `json:"unverifiable,omitempty"`
 }
 
 type acceptHandoffResult struct {
 	recordedEventResult
-	CheckpointID string `json:"checkpoint_id,omitempty"`
-	Agent        string `json:"agent,omitempty"`
+	HandoffID    string   `json:"handoff_id,omitempty"`
+	CheckpointID string   `json:"checkpoint_id,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
+	Accepted     []string `json:"accepted,omitempty"`
+	Missing      []string `json:"missing,omitempty"`
+	Unverifiable []string `json:"unverifiable,omitempty"`
 }
 
 func toolAcceptHandoff(db *storage.DB) func(context.Context, json.RawMessage) (any, error) {
@@ -977,12 +997,73 @@ func toolAcceptHandoff(db *storage.DB) func(context.Context, json.RawMessage) (a
 			}
 		}
 
+		// A v0.6 continuation records a structured handoff.created payload.
+		// Resolve it by exact handoff id or by the machine-readable checkpoint
+		// reference printed in the continuation prompt, then append acceptance
+		// through the shared launch layer so `handoff status` observes it.
+		handoffs, err := launch.ListHandoffs(ctx, db)
+		if err != nil {
+			return nil, errInternal(err)
+		}
+		var matched *launch.HandoffRecord
+		for i := len(handoffs) - 1; i >= 0; i-- {
+			r := handoffs[i]
+			if r.WorkstreamID != ws.ID {
+				continue
+			}
+			if in.HandoffID != "" && r.ID != in.HandoffID {
+				continue
+			}
+			if in.CheckpointID != "" && r.SourceCheckpoint != in.CheckpointID {
+				continue
+			}
+			matched = r
+			break
+		}
+		if in.HandoffID != "" && matched == nil {
+			return nil, errInvalidParams(fmt.Sprintf("handoff %q not found in workstream %s", in.HandoffID, ws.ID))
+		}
+		if matched != nil {
+			if in.Agent != "" && in.Agent != matched.TargetAgent {
+				return nil, errInvalidParams(fmt.Sprintf("handoff %s targets agent %q, not %q", matched.ID, matched.TargetAgent, in.Agent))
+			}
+			rec, eventID, acceptErr := launch.AcceptHandoffWithEvent(ctx, db, matched.ID, in.Accepted, in.Missing, in.Unverifiable)
+			if acceptErr != nil {
+				return nil, errInternal(acceptErr)
+			}
+			return acceptHandoffResult{
+				recordedEventResult: recordedEventResult{
+					EventID:      eventID,
+					WorkstreamID: ws.ID,
+					Kind:         string(protocol.EventHandoffAccepted),
+					Provenance:   string(protocol.ProvenanceDeclared),
+				},
+				HandoffID:    rec.ID,
+				CheckpointID: rec.SourceCheckpoint,
+				Agent:        rec.TargetAgent,
+				Accepted:     rec.Accepted,
+				Missing:      rec.Missing,
+				Unverifiable: rec.Unverifiable,
+			}, nil
+		}
+
+		// Backward-compatible v0.4 acknowledgement: a workstream handoff made
+		// without a structured continuation still records its scoped event.
 		payload := map[string]any{}
 		if in.CheckpointID != "" {
 			payload["checkpoint_id"] = in.CheckpointID
 		}
 		if in.Agent != "" {
 			payload["agent"] = in.Agent
+		}
+		if len(in.Accepted) > 0 {
+			payload["accepted"] = sortedUnique(in.Accepted)
+		}
+		if len(in.Missing) > 0 {
+			payload["missing"] = sortedUnique(in.Missing)
+		}
+		if len(in.Unverifiable) > 0 {
+			payload["unverifiable"] = sortedUnique(in.Unverifiable)
 		}
 		eventID, e := appendEvent(ctx, db, ws.ID, protocol.EventHandoffAccepted, protocol.ProvenanceDeclared, payload)
 		if e != nil {
@@ -997,6 +1078,9 @@ func toolAcceptHandoff(db *storage.DB) func(context.Context, json.RawMessage) (a
 			},
 			CheckpointID: in.CheckpointID,
 			Agent:        in.Agent,
+			Accepted:     sortedUnique(in.Accepted),
+			Missing:      sortedUnique(in.Missing),
+			Unverifiable: sortedUnique(in.Unverifiable),
 		}, nil
 	}
 }

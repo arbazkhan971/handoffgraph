@@ -80,7 +80,10 @@ Conventions:
 - Performance budgets live in `internal/storage/bench_test.go` (p95 append
   < 5 ms, overridable on slow machines via `HG_APPEND_P95_MAX_MS`) and in
   [docs/architecture.md](docs/architecture.md#performance-budgets-v0100).
-- CI runs build/vet/fmt/test/race on ubuntu-latest and macos-latest.
+- CI runs build/vet/fmt/test/race on ubuntu-latest and macos-latest, tests and
+  rebuilds the embedded web UI, tests/typechecks/dry-runs both Cloudflare
+  Workers, and builds the complete CLI release matrix as a non-publishing
+  snapshot.
 - When iterating on one package, test just that package
   (`go test ./internal/storage/...`) rather than the whole module.
 
@@ -166,3 +169,6 @@ Every adapter must:
 - By contributing, you agree your contributions are licensed under the
   Apache-2.0 license terms in [LICENSE](LICENSE); see
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for standards of conduct.
+
+Maintainers preparing a tag must also follow the preflight and immutable-tag
+process in [docs/releasing.md](docs/releasing.md).

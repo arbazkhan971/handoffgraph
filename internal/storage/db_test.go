@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -137,19 +139,35 @@ func TestTenThousandEventIngestionNoLoss(t *testing.T) {
 }
 
 func TestCrashReopen(t *testing.T) {
+	const crashDBEnv = "HFG_TEST_CRASH_REOPEN_DB"
+	if path := os.Getenv(crashDBEnv); path != "" {
+		// This branch runs in the child process. Commit one append and exit
+		// immediately without calling DB.Close, so the parent exercises SQLite
+		// WAL recovery rather than an orderly close/reopen cycle.
+		db, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev := newEvent("ws_1", "ses_1", string(protocol.EventSessionStarted), time.Now())
+		inserted, err := db.AppendEvent(context.Background(), ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !inserted {
+			t.Fatal("expected crash-writer append to insert")
+		}
+		os.Exit(0) // deliberately bypass deferred cleanup and testing teardown
+	}
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
 	ctx := context.Background()
 
-	db1, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCrashReopen$", "-test.count=1")
+	cmd.Env = append(os.Environ(), crashDBEnv+"="+path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("crash-writer subprocess: %v\n%s", err, out)
 	}
-	ev := newEvent("ws_1", "ses_1", string(protocol.EventSessionStarted), time.Now())
-	if _, err := db1.AppendEvent(ctx, ev); err != nil {
-		t.Fatal(err)
-	}
-	db1.Close() // simulate crash: no graceful shutdown needed
 
 	db2, err := Open(path)
 	if err != nil {

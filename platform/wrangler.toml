@@ -9,8 +9,32 @@
 
 name = "handoffgraph-api"
 main = "src/index.ts"
-compatibility_date = "2026-08-01"
+compatibility_date = "2026-08-23"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+
+# Public, fixed auth routing values. WorkOS credentials are intentionally not
+# checked in: set WORKOS_CLIENT_ID and WORKOS_API_KEY with `wrangler secret
+# put` (or in an ignored .dev.vars for local development). Auth fails closed
+# with 503 while either credential is absent.
+[vars]
+APP_ORIGIN = "https://api.handoffgraph.dev"
+LANDING_ORIGIN = "https://handoffgraph.dev"
+WORKOS_REDIRECT_URI = "https://api.handoffgraph.dev/v1/auth/callback"
+
+# Persist content-free invocation logs and a sampled trace stream. Worker code
+# never logs request headers, tokens, bodies, SQL binds, or captured events.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.01
 
 # Custom domain serving (Cloudflare zone required — see ../deploy/README.md).
 # Once the handoffgraph.dev zone exists in this account, uncomment to serve

@@ -94,6 +94,7 @@ func (c *Claude) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		NativeResume:        true,
 		NativeFork:          true,
+		CheckpointLaunch:    true,
 		Hooks:               true,
 		ToolEvents:          true,
 		PromptEvents:        true,
@@ -253,9 +254,28 @@ func (c *Claude) Fork(ctx context.Context, ref adapter.SessionRef) (adapter.Exec
 	return adapter.ExecSpec{Command: name, Args: args}, nil
 }
 
-// StartFromCheckpoint is not implemented in this adapter version.
+// StartFromCheckpoint starts a new interactive Claude Code session seeded by
+// a bounded checkpoint prompt. The prompt is a single argv element with a
+// fixed non-option prefix, so checkpoint-controlled text cannot be interpreted
+// as Claude CLI flags and no shell is involved.
 func (c *Claude) StartFromCheckpoint(ctx context.Context, cp *protocol.Checkpoint) (adapter.ExecSpec, error) {
-	return adapter.ExecSpec{}, fmt.Errorf("claude start-from-checkpoint: %w (planned for a later release)", ErrUnsupported)
+	if cp == nil {
+		return adapter.ExecSpec{}, fmt.Errorf("claude start-from-checkpoint: checkpoint required")
+	}
+	return adapter.ExecSpec{Command: "claude", Args: []string{checkpointPrompt(cp)}}, nil
+}
+
+// checkpointPrompt is deliberately small enough for a CLI argument. The
+// continuation layer prints the complete evidence payload alongside this
+// native invocation; this seed identifies the exact checkpoint and requires
+// acknowledgement before the receiving agent acts.
+func checkpointPrompt(cp *protocol.Checkpoint) string {
+	objective := []rune(cp.Objective)
+	if len(objective) > 4000 {
+		objective = objective[:4000]
+	}
+	return fmt.Sprintf("Continue workstream %s (checkpoint %s). Objective: %s. Acknowledge checkpoint %s before acting.",
+		cp.WorkstreamID, cp.CheckpointID, string(objective), cp.CheckpointID)
 }
 
 // Compile-time interface compliance check.

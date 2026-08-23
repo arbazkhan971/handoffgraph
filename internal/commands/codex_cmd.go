@@ -19,11 +19,6 @@ import (
 
 // RegisterCodexCmd registers the Codex adapter management command.
 //
-// TODO(orchestrator): wire RegisterCodexCmd(app) into Register() in
-// internal/commands/commands.go (next to the other Register*Cmd calls);
-// commands.go is orchestrator-owned this wave, so the call is left here
-// as a marker instead of editing that file.
-//
 // Usage:
 //
 //	handoffgraph codex install    [--config-dir <dir>] [--hook-command <cmd>] [--dry-run]

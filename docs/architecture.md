@@ -1,9 +1,9 @@
 # Architecture
 
 This document describes the local HandoffGraph architecture implemented in
-this repository. It corresponds to v0.2.0 of the version roadmap (the local
-event spine plus the Codex adapter) and lays the foundation for v0.3–v0.6
-(Claude/Pi adapters, debugger, checkpoint continuation).
+this repository. It corresponds to the v0.6.0-level local product: the event
+spine, Codex/Claude/Pi adapters, debugger, deterministic detections, local MCP,
+and verified checkpoint continuation.
 
 ## Guiding principles
 
@@ -49,8 +49,12 @@ Unknown fields are preserved on decode so future readers never drop data.
 ### Identifiers
 
 All durable IDs are ULIDs (`evt_`, `ws_`, `ses_`, `trc_`, `spn_`, `cp_`,
-`repo_`). ULIDs are lexicographically sortable by time and safe to generate
-concurrently.
+`repo_`, and hosted `usr_`, `wsp_`, `dev_`, `acs_`). ULIDs are
+lexicographically sortable by time and safe to generate concurrently. Go IDs
+are centralized in `internal/ids`; the Worker uses a single vetted
+`platform/src/ids.ts` boundary backed by the ULID package. Opaque session and
+device credentials are random secrets, not durable IDs, and only their hashes
+are stored.
 
 ### Canonical JSON and content hashing
 
@@ -60,16 +64,17 @@ This is what makes deterministic rebuild possible.
 
 ### Provider adapters (`internal/adapter`)
 
-Each provider (Codex, plus Claude and Pi) implements one narrow interface:
+Each provider (Codex, Claude, and Pi) implements one narrow interface:
 `Detect` (enumerate native sessions, newest first), `Normalize` (decode a
 native transcript stream or hook payload into canonical `hfg.event.v1`
 events), `Install` and `Uninstall` (manage the provider's hook
-configuration), `Resume`, `StartFromCheckpoint`, and `Capabilities`. For
-Codex, `Resume` and `StartFromCheckpoint` return an `ExecSpec` describing the
-native invocation (e.g. `codex resume <id>`); the CLI prints it shell-quoted
-for copy-paste and never launches agent processes itself, and ids are
-validated so a hostile id cannot smuggle flags into the printed command. A
-registry holds adapters keyed
+configuration), `Resume`, `StartFromCheckpoint`, and `Capabilities`. Codex,
+Claude, and Pi return `ExecSpec`s for native resume and checkpoint-seeded
+starts; the CLI selects the appropriate form, injects the exact bounded
+checkpoint payload, prints the invocation shell-quoted for copy-paste, and
+never launches agent processes itself. Native ids are validated and every
+argument is quoted so hostile input cannot smuggle flags or shell syntax into
+the printed command. A registry holds adapters keyed
 by name; first registration wins so package init order cannot silently
 replace an adapter.
 
@@ -161,6 +166,24 @@ commands, tests, failed approaches, constraints, open questions, and ordered
 next actions — each with evidence references. Computes the transparent
 handoff quality score (documented weights, 0–100) and a graph root hash.
 
+### Cross-agent continuation
+
+The launch layer turns the newest stored checkpoint into a deterministic,
+provider-specific payload capped at 12,000 characters. It chooses
+`native_resume` when the target provider matches a resumable source session;
+otherwise it requests a checkpoint-seeded start from the Codex, Claude, or Pi
+adapter. Repository state is compared with the checkpoint before handoff, and
+unknown state remains explicitly unverifiable.
+
+`handoffgraph continue --preview` performs resolution without writing.
+Without preview, it appends `handoff.created`, including the selected launch
+spec, drift result, and payload hash. The CLI prints the shell-quoted native
+invocation and never executes the agent process. The bounded payload carries a
+machine-readable `hfg://` checkpoint reference. A receiving MCP client can
+call `accept_handoff` to append `handoff.accepted` with accepted, missing, and
+unverifiable sections; `handoffgraph handoff status` deterministically folds
+both event kinds into its read model.
+
 ## Performance budgets (v0.1.0)
 
 | Budget | Target |
@@ -170,13 +193,39 @@ handoff quality score (documented weights, 0–100) and a graph root hash.
 | Graph rebuild hash | deterministic (tested) |
 | Checkpoint without model | supported |
 
+## Private hosted Basic foundation
+
+`platform/` is a separate Cloudflare Worker surface; it is optional and never
+sits on the local capture/checkpoint path. WorkOS AuthKit verifies a human
+identity via authorization code + PKCE. HandoffGraph then creates a personal
+workspace, an opaque hashed browser session, and scoped device credentials.
+Cookie-authenticated account routes and bearer-authenticated ingest routes are
+deliberately disjoint.
+
+Hosted Basic limits are stored server-side. A quota-reservation INSERT trigger
+serializes period rollover and batch/monthly/lifetime checks, charges usage,
+then permits the idempotency receipt, append-only events, and projection to
+commit in the same D1 batch. Any limit or storage failure rolls the transaction
+back. Basic also permits at most 2 active devices and 10 device-token issuances
+over the account lifetime; revocation releases the active slot but not the
+issuance. A 50-account global beta ceiling bounds aggregate allocation before
+public edge abuse controls exist. A hosted workspace without an entitlement
+fails ingest closed; every account created through AuthKit receives a metered
+Basic entitlement atomically.
+
+The hosted foundation is present but not publicly deployed. Automated CLI
+sync policy, Turnstile/WAF, remote migration, production domains, deletion and
+retention operations, private shares, and billing remain gates.
+
 ## Next versions
 
-- **v0.2.x** Codex App Server integration + 20-real-session acceptance run.
-- **v0.3.0** First Claude→Codex proof (Claude adapter groundwork landed).
-- **v0.4.0** Pi extension + local MCP hardening.
-- **v0.5.0** Local Session Debugger polish.
-- **v0.6.0** Verified checkpoint + cross-agent continuation (`continue --to` executes the `ExecSpec`s).
+- **v0.6.x** Real-session acceptance across supported agent pairs and Codex
+  App Server investigation.
+- **v0.7.0** Canonical public repository, tagged archives, install and upgrade
+  documentation, and open-source launch. Release builds are configured, but no
+  native agent invocation is auto-executed.
+- **v0.8.0** Finish explicit/redacted client sync, productionize the existing
+  hosted Basic account/quota foundation, and add private shares.
 
 See [ROADMAP.md](../ROADMAP.md) for the full release train and
 [adapter-codex.md](adapter-codex.md) for the Codex adapter reference.

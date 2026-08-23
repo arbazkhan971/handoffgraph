@@ -48,6 +48,15 @@ export function timingSafeEqual(a: string, b: string): boolean {
   const left = new TextEncoder().encode(a);
   const right = new TextEncoder().encode(b);
   if (left.length === 0 || left.length !== right.length) return false;
+
+  // Workers exposes a native constant-time primitive on SubtleCrypto. Node's
+  // Web Crypto implementation used by the pure unit tests does not yet expose
+  // it, so retain the fixed-length XOR loop as a test-runtime fallback.
+  const platformCompare = crypto.subtle.timingSafeEqual;
+  if (typeof platformCompare === "function") {
+    return platformCompare.call(crypto.subtle, left, right);
+  }
+
   let diff = 0;
   for (let i = 0; i < left.length; i++) diff |= left[i] ^ right[i];
   return diff === 0;

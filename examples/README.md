@@ -1,7 +1,7 @@
 # Examples
 
 Realistic, machine-generated examples of the two artifacts HandoffGraph
-emits for a workstream. Both files were produced by the actual v0.2.0
+emits for a workstream. Both files were produced by the actual local-core
 code paths — they are not hand-drawn — using the golden fixture
 [`testdata/fixtures/mixed-providers.jsonl`](../testdata/fixtures/mixed-providers.jsonl)
 (a Claude session that hits its context limit, hands off to Codex via a

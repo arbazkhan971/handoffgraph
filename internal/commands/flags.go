@@ -15,7 +15,12 @@ func shellQuote(arg string) string {
 		return "''"
 	}
 	if strings.ContainsAny(arg, " \t\n'\"`$;&|<>\\*?[](){}#!~") {
-		return "'" + strings.ReplaceAll(arg, "'", `\'`) + "'"
+		// A single quote cannot be backslash-escaped while a POSIX shell is
+		// inside single quotes. Close the quote, emit an escaped quote, then
+		// reopen it: a'b becomes 'a'\''b'. This keeps copy-pasted launch
+		// commands inert even when checkpoint-controlled text contains a
+		// quote followed by shell metacharacters.
+		return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 	}
 	return arg
 }

@@ -13,11 +13,6 @@ import (
 
 // RegisterLaunchCmd registers the v0.6.0 cross-agent continuation commands.
 //
-// TODO(orchestrator): wire into Register() in commands.go alongside the
-// other lane registrations (commands.go is orchestrator-owned this wave):
-//
-//	RegisterLaunchCmd(app)
-//
 // Usage:
 //
 //	handoffgraph continue --to codex|claude|pi --workstream <id> [--preview]

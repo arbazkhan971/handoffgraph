@@ -6,7 +6,7 @@
 *.exe
 *.test
 *.out
-handoffgraph
+/handoffgraph
 
 # Local data (never commit captured sessions)
 .handoffgraph/
@@ -24,3 +24,6 @@ vendor/
 # Node (future web UI)
 node_modules/
 web/dist/
+
+# Cloudflare local emulator/cache state
+.wrangler/

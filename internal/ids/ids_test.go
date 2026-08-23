@@ -1,6 +1,7 @@
 package ids
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,17 @@ func TestUniqueness(t *testing.T) {
 	}
 }
 
+func TestSequentialIDsAreLexicographicallyIncreasing(t *testing.T) {
+	previous := New()
+	for i := 0; i < 10000; i++ {
+		current := New()
+		if strings.Compare(current, previous) <= 0 {
+			t.Fatalf("id %d = %s sorts before previous %s", i, current, previous)
+		}
+		previous = current
+	}
+}
+
 func TestIsValid(t *testing.T) {
 	cases := []struct {
 		id    string
@@ -40,6 +52,7 @@ func TestIsValid(t *testing.T) {
 		{Span(), true},
 		{Checkpoint(), true},
 		{Repository(), true},
+		{Handoff(), true},
 		{"", false},
 		{"evt_zzz", false},
 		{"evt_00000000000000000000000000", true}, // 26 zeros is a valid ULID
@@ -48,5 +61,15 @@ func TestIsValid(t *testing.T) {
 		if got := IsValid(c.id); got != c.valid {
 			t.Errorf("IsValid(%q) = %v, want %v", c.id, got, c.valid)
 		}
+	}
+}
+
+func TestHandoff(t *testing.T) {
+	id := Handoff()
+	if !strings.HasPrefix(id, PrefixHandoff) {
+		t.Fatalf("Handoff() = %q, want %q prefix", id, PrefixHandoff)
+	}
+	if err := Validate(id); err != nil {
+		t.Fatalf("Validate(Handoff()) = %v", err)
 	}
 }

@@ -11,17 +11,37 @@ export const RECEIPT_SCHEMA_VERSION = "hfg.event-batch.receipt.v1";
 export const MAX_EVENTS_PER_BATCH = 500;
 export const MAX_BODY_BYTES = 1_048_576; // 1 MiB
 
+// These fields are copied out of raw_json into indexed/read-model columns.
+// Bound their encoded size so one otherwise-valid event cannot multiply its
+// storage footprint across D1 indexes and projections.
+export const MAX_KIND_BYTES = 64;
+export const MAX_PROVIDER_BYTES = 64;
+export const MAX_NATIVE_SESSION_ID_BYTES = 256;
+export const MAX_PROVENANCE_BYTES = 8;
+export const MAX_CONTENT_HASH_BYTES = 71; // "sha256:" + 64 lowercase hex digits
+export const MAX_WORKSTREAM_TITLE_BYTES = 200;
+export const MAX_TIMESTAMP_BYTES = 35; // RFC3339Nano with a numeric offset
+
 export const DEFAULT_PAGE_LIMIT = 50;
 export const MAX_PAGE_LIMIT = 100;
 
 export const EVENT_ID_PATTERN = /^evt_[0-9A-HJKMNP-TV-Z]{26}$/;
-const OCCURRED_AT_PATTERN = /^\d{4}-\d{2}-\d{2}[Tt]/;
+export const WORKSTREAM_ID_PATTERN = /^ws_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+export const SESSION_ID_PATTERN = /^ses_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+export const REPOSITORY_ID_PATTERN = /^repo_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+export const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const RFC3339_PATTERN =
+  /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:[Zz]|[+-]\d{2}:\d{2})$/;
+const PROVENANCE_VALUES = new Set(["OBSERVED", "DECLARED", "INFERRED"]);
+const UTF8_ENCODER = new TextEncoder();
+const DEFAULT_WORKSTREAM_TITLE = "Untitled workstream";
 
 export interface IngestEvent {
   schema_version: string;
   event_id: string;
   kind: string;
   occurred_at: string;
+  observed_at: string;
   sequence?: number;
   workstream_id?: string;
   session_id?: string;
@@ -29,7 +49,9 @@ export interface IngestEvent {
   provider?: string;
   provenance?: string;
   content_hash?: string;
+  repository_id?: string;
   payload?: unknown;
+  redaction?: unknown;
   [field: string]: unknown;
 }
 
@@ -63,6 +85,22 @@ export interface EventRow {
   raw_json: string;
 }
 
+/** Deterministic workstream read-model update derived from one raw event. */
+export interface WorkstreamProjectionRow {
+  id: string;
+  workspace_id: string;
+  repository_id: string | null;
+  title: string;
+  status: "active" | "completed";
+  created_at: number;
+  updated_at: number;
+  title_event_at_ms: number | null;
+  title_event_id: string | null;
+  status_event_at_ms: number | null;
+  status_event_id: string | null;
+  source_event_id: string;
+}
+
 export interface Cursor {
   createdAt: number;
   id: string;
@@ -94,8 +132,56 @@ export interface WorkstreamSummary {
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; status: number; error: string };
 
+const MAX_JSON_DEPTH = 64;
+const MAX_JSON_NODES = 100_000;
+
 function invalid(status: number, error: string): { ok: false; status: number; error: string } {
   return { ok: false, status, error };
+}
+
+function exceedsUtf8Bytes(value: string, maxBytes: number): boolean {
+  // UTF-8 always needs at least one byte per UTF-16 code unit. This cheap
+  // check avoids allocating an attacker-sized Uint8Array when an ASCII-ish
+  // value is already obviously over its cap; encoding handles multibyte
+  // values that are short in JavaScript characters.
+  return value.length > maxBytes || UTF8_ENCODER.encode(value).byteLength > maxBytes;
+}
+
+/**
+ * Ensure canonicalization cannot silently rewrite evidence. JSON.parse turns
+ * exponent overflow into Infinity and JSON.stringify turns Infinity into
+ * null; unsafe integers have already lost precision. Both must fail before
+ * hashing or storage. A depth/node bound also prevents recursive canonical
+ * encoding from becoming an attacker-controlled stack/CPU sink.
+ */
+function validateJsonValue(root: unknown): string | null {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  while (stack.length > 0) {
+    const item = stack.pop();
+    if (item === undefined) break;
+    nodes += 1;
+    if (nodes > MAX_JSON_NODES) return `JSON exceeds ${MAX_JSON_NODES} values`;
+    const value = item.value;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return "JSON numbers must be finite";
+      if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+        return "JSON integers must be within the safe integer range";
+      }
+      continue;
+    }
+    if (value === null || typeof value === "string" || typeof value === "boolean") continue;
+    if (typeof value !== "object") return "envelope contains a non-JSON value";
+    if (seen.has(value)) return "envelope must not contain cyclic values";
+    seen.add(value);
+    if (item.depth >= MAX_JSON_DEPTH) return `JSON nesting exceeds ${MAX_JSON_DEPTH} levels`;
+    const children = Array.isArray(value)
+      ? value
+      : Object.values(value as Record<string, unknown>);
+    for (const child of children) stack.push({ value: child, depth: item.depth + 1 });
+  }
+  return null;
 }
 
 /**
@@ -133,10 +219,21 @@ export function validateEventBatch(
   if (events.length > MAX_EVENTS_PER_BATCH) {
     return invalid(413, `batch exceeds ${MAX_EVENTS_PER_BATCH} events`);
   }
+  const eventIDs = new Set<string>();
   for (let i = 0; i < events.length; i++) {
     const error = validateEvent(events[i], i);
     if (error !== null) return invalid(400, error);
+    const eventID = (events[i] as Record<string, unknown>).event_id as string;
+    if (eventIDs.has(eventID)) {
+      return invalid(400, `events[${i}].event_id duplicates an earlier event`);
+    }
+    eventIDs.add(eventID);
   }
+  // Run whole-document numeric/depth validation after field-specific checks
+  // so malformed required fields retain precise protocol errors. Requests
+  // have already passed JSON.parse, so any other non-JSON value is rejected.
+  const jsonError = validateJsonValue(value);
+  if (jsonError !== null) return invalid(400, jsonError);
   return { ok: true, value: envelope as unknown as EventBatchEnvelope };
 }
 
@@ -156,12 +253,137 @@ function validateEvent(value: unknown, index: number): string | null {
   if (typeof event.kind !== "string" || event.kind.length === 0) {
     return `${at}.kind must be a non-empty string`;
   }
+  if (exceedsUtf8Bytes(event.kind, MAX_KIND_BYTES)) {
+    return `${at}.kind must be at most ${MAX_KIND_BYTES} UTF-8 bytes`;
+  }
   if (
     typeof event.occurred_at !== "string" ||
-    !OCCURRED_AT_PATTERN.test(event.occurred_at) ||
+    exceedsUtf8Bytes(event.occurred_at, MAX_TIMESTAMP_BYTES) ||
+    !RFC3339_PATTERN.test(event.occurred_at) ||
     !Number.isFinite(Date.parse(event.occurred_at))
   ) {
     return `${at}.occurred_at must be an RFC 3339 timestamp`;
+  }
+  if (
+    typeof event.observed_at !== "string" ||
+    exceedsUtf8Bytes(event.observed_at, MAX_TIMESTAMP_BYTES) ||
+    !RFC3339_PATTERN.test(event.observed_at) ||
+    !Number.isFinite(Date.parse(event.observed_at))
+  ) {
+    return `${at}.observed_at must be an RFC 3339 timestamp`;
+  }
+
+  const workstreamIDError = optionalPatternError(
+    event,
+    "workstream_id",
+    WORKSTREAM_ID_PATTERN,
+    at,
+  );
+  if (workstreamIDError !== null) return workstreamIDError;
+  const sessionIDError = optionalPatternError(event, "session_id", SESSION_ID_PATTERN, at);
+  if (sessionIDError !== null) return sessionIDError;
+  const repositoryIDError = optionalPatternError(
+    event,
+    "repository_id",
+    REPOSITORY_ID_PATTERN,
+    at,
+  );
+  if (repositoryIDError !== null) return repositoryIDError;
+
+  const nativeSessionIDError = optionalBoundedStringError(
+    event,
+    "native_session_id",
+    MAX_NATIVE_SESSION_ID_BYTES,
+    at,
+  );
+  if (nativeSessionIDError !== null) return nativeSessionIDError;
+  const providerError = optionalBoundedStringError(
+    event,
+    "provider",
+    MAX_PROVIDER_BYTES,
+    at,
+  );
+  if (providerError !== null) return providerError;
+
+  if (event.provenance !== undefined) {
+    if (
+      typeof event.provenance !== "string" ||
+      exceedsUtf8Bytes(event.provenance, MAX_PROVENANCE_BYTES) ||
+      !PROVENANCE_VALUES.has(event.provenance)
+    ) {
+      return `${at}.provenance must be one of OBSERVED, DECLARED, INFERRED`;
+    }
+  }
+  if (event.content_hash !== undefined) {
+    if (
+      typeof event.content_hash !== "string" ||
+      exceedsUtf8Bytes(event.content_hash, MAX_CONTENT_HASH_BYTES) ||
+      !CONTENT_HASH_PATTERN.test(event.content_hash)
+    ) {
+      return `${at}.content_hash must match ${CONTENT_HASH_PATTERN.source}`;
+    }
+  }
+
+  const titleError = workstreamTitleError(event, at);
+  if (titleError !== null) return titleError;
+
+  if (typeof event.sequence !== "undefined") {
+    if (!Number.isSafeInteger(event.sequence) || (event.sequence as number) < 0) {
+      return `${at}.sequence must be a non-negative safe integer`;
+    }
+  }
+  if (event.redaction !== undefined) {
+    if (event.redaction === null || typeof event.redaction !== "object" || Array.isArray(event.redaction)) {
+      return `${at}.redaction must be an object`;
+    }
+    const status = (event.redaction as Record<string, unknown>).status;
+    if (status === "failed" || status === "REDACTION_FAILED") {
+      return `${at}.redaction status forbids sync`;
+    }
+  }
+  return null;
+}
+
+function optionalPatternError(
+  event: Record<string, unknown>,
+  field: string,
+  pattern: RegExp,
+  at: string,
+): string | null {
+  const value = event[field];
+  if (value === undefined) return null;
+  if (typeof value !== "string" || !pattern.test(value)) {
+    return `${at}.${field} must match ${pattern.source}`;
+  }
+  return null;
+}
+
+function optionalBoundedStringError(
+  event: Record<string, unknown>,
+  field: string,
+  maxBytes: number,
+  at: string,
+): string | null {
+  const value = event[field];
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.length === 0) {
+    return `${at}.${field} must be a non-empty string`;
+  }
+  if (exceedsUtf8Bytes(value, maxBytes)) {
+    return `${at}.${field} must be at most ${maxBytes} UTF-8 bytes`;
+  }
+  return null;
+}
+
+function workstreamTitleError(event: Record<string, unknown>, at: string): string | null {
+  if (event.kind !== "workstream.started") return null;
+  const payload = event.payload;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const title = (payload as Record<string, unknown>).title;
+  if (title === undefined) return null;
+  if (typeof title !== "string") return `${at}.payload.title must be a string`;
+  if (exceedsUtf8Bytes(title, MAX_WORKSTREAM_TITLE_BYTES)) {
+    return `${at}.payload.title must be at most ${MAX_WORKSTREAM_TITLE_BYTES} UTF-8 bytes`;
   }
   return null;
 }
@@ -169,6 +391,48 @@ function validateEvent(value: unknown, index: number): string | null {
 /** Request bodies larger than 1 MiB are rejected before parsing. */
 export function exceedsMaxBodyBytes(byteLength: number): boolean {
   return byteLength > MAX_BODY_BYTES;
+}
+
+export type BodyReadResult =
+  | { ok: true; text: string }
+  | { ok: false; status: 400 | 413; error: "unreadable request body" | "request body too large" };
+
+/** Read a UTF-8 request body without ever buffering beyond the stated cap. */
+export async function readRequestBody(
+  request: Request,
+  maxBytes: number,
+): Promise<BodyReadResult> {
+  const lengthHeader = request.headers.get("content-length");
+  if (lengthHeader !== null) {
+    const declaredLength = Number(lengthHeader);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      return { ok: false, status: 413, error: "request body too large" };
+    }
+  }
+
+  if (request.body === null) return { ok: true, text: "" };
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
+  let byteLength = 0;
+  let text = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      byteLength += chunk.value.byteLength;
+      if (byteLength > maxBytes) {
+        await reader.cancel("request body too large");
+        return { ok: false, status: 413, error: "request body too large" };
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    return { ok: true, text };
+  } catch {
+    return { ok: false, status: 400, error: "unreadable request body" };
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /**
@@ -242,8 +506,65 @@ export function buildEventRows(
   }));
 }
 
+/**
+ * Derive bounded workstream projection updates from accepted events.
+ *
+ * One row is emitted for every event carrying a workstream id. The D1 upsert
+ * compares source timestamps and event ids, so replay and out-of-order batch
+ * arrival converge on the same title/status/created-at values.
+ */
+export function buildWorkstreamProjectionRows(
+  envelope: EventBatchEnvelope,
+  workspaceId: string,
+): WorkstreamProjectionRow[] {
+  return envelope.events.flatMap((event) => {
+    const id = optionalString(event.workstream_id);
+    if (id === null) return [];
+
+    const occurredAtMS = Date.parse(event.occurred_at);
+    const occurredAtSeconds = Math.floor(occurredAtMS / 1000);
+    const title = event.kind === "workstream.started"
+      ? boundedPayloadString(event.payload, "title", MAX_WORKSTREAM_TITLE_BYTES)
+      : null;
+    // Valid workstream IDs are 29 ASCII bytes. The constant fallback also
+    // keeps this pure builder bounded if a caller violates its validated-input
+    // precondition, so a malformed ID is never duplicated into the title.
+    const fallbackTitle = !exceedsUtf8Bytes(id, MAX_WORKSTREAM_TITLE_BYTES)
+      ? id
+      : DEFAULT_WORKSTREAM_TITLE;
+    const status = event.kind === "workstream.completed" ? "completed" : "active";
+    const isStatusEvent =
+      event.kind === "workstream.started" || event.kind === "workstream.completed";
+
+    return [{
+      id,
+      workspace_id: workspaceId,
+      repository_id: optionalString(event.repository_id),
+      title: title ?? fallbackTitle,
+      status,
+      created_at: occurredAtSeconds,
+      updated_at: occurredAtSeconds,
+      title_event_at_ms: title === null ? null : occurredAtMS,
+      title_event_id: title === null ? null : event.event_id,
+      status_event_at_ms: isStatusEvent ? occurredAtMS : null,
+      status_event_id: isStatusEvent ? event.event_id : null,
+      source_event_id: event.event_id,
+    }];
+  });
+}
+
 function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function payloadString(payload: unknown, field: string): string | null {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  return optionalString((payload as Record<string, unknown>)[field]);
+}
+
+function boundedPayloadString(payload: unknown, field: string, maxBytes: number): string | null {
+  const value = payloadString(payload, field);
+  return value !== null && !exceedsUtf8Bytes(value, maxBytes) ? value : null;
 }
 
 /** Encode a pagination cursor as an opaque, stable base64url token. */

@@ -34,7 +34,7 @@ func TestNameAndRegistry(t *testing.T) {
 func TestCapabilitiesHonest(t *testing.T) {
 	caps := New().Capabilities()
 	wantTrue := []bool{
-		caps.NativeResume, caps.NativeFork, caps.Hooks, caps.ToolEvents,
+		caps.NativeResume, caps.NativeFork, caps.CheckpointLaunch, caps.Hooks, caps.ToolEvents,
 		caps.PromptEvents, caps.CompactionEvents, caps.StructuredStreaming,
 		caps.SessionEnumeration,
 	}
@@ -222,9 +222,41 @@ func TestResumeRejectsUnsafeSessionIDs(t *testing.T) {
 	}
 }
 
-func TestStartFromCheckpointUnsupported(t *testing.T) {
-	if _, err := New().StartFromCheckpoint(context.Background(), &protocol.Checkpoint{}); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("StartFromCheckpoint error = %v, want ErrUnsupported", err)
+func TestStartFromCheckpoint(t *testing.T) {
+	cp := &protocol.Checkpoint{
+		CheckpointID: "cp_cross_agent",
+		WorkstreamID: "ws_checkout",
+		Objective:    "--dangerous-looking objective",
+	}
+	spec, err := New().StartFromCheckpoint(context.Background(), cp)
+	if err != nil {
+		t.Fatalf("StartFromCheckpoint: %v", err)
+	}
+	if spec.Command != "claude" || len(spec.Args) != 1 {
+		t.Fatalf("spec = %+v, want one-argument claude invocation", spec)
+	}
+	for _, want := range []string{cp.CheckpointID, cp.WorkstreamID, cp.Objective, "Acknowledge checkpoint"} {
+		if !strings.Contains(spec.Args[0], want) {
+			t.Errorf("prompt missing %q: %q", want, spec.Args[0])
+		}
+	}
+	if strings.HasPrefix(spec.Args[0], "-") {
+		t.Errorf("prompt %q can be interpreted as a CLI flag", spec.Args[0])
+	}
+
+	if _, err := New().StartFromCheckpoint(context.Background(), nil); err == nil {
+		t.Fatal("nil checkpoint accepted, want error")
+	}
+}
+
+func TestStartFromCheckpointBoundsObjectiveRuneSafely(t *testing.T) {
+	cp := &protocol.Checkpoint{CheckpointID: "cp_bound", WorkstreamID: "ws_bound", Objective: strings.Repeat("é", 5000)}
+	spec, err := New().StartFromCheckpoint(context.Background(), cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(spec.Args[0], "é"); got != 4000 {
+		t.Errorf("objective rune count = %d, want 4000", got)
 	}
 }
 

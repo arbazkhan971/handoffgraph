@@ -44,9 +44,6 @@ const (
 	StatusAccepted = "accepted"
 )
 
-// PrefixHandoff is the self-describing ULID prefix for handoff ids.
-const PrefixHandoff = "ho_"
-
 // HandoffRecord is the durable handoff record. It is written once inside
 // the handoff.created event payload and re-derived (with acknowledgement
 // state folded in from handoff.accepted events) by ListHandoffs.
@@ -193,13 +190,26 @@ func Prepare(ctx context.Context, db *storage.DB, opts Options) (*Result, error)
 		return nil, fmt.Errorf("continue: %s launch: %w", opts.TargetAgent, err)
 	}
 
+	prompt := RenderForAgent(cp, opts.TargetAgent)
+	if mode == ModeCheckpointSeed {
+		// Adapter StartFromCheckpoint specs reserve their final argv element
+		// for the seed prompt. Replace the adapter's compact standalone seed
+		// with the exact bounded evidence payload this handoff records. This
+		// keeps the invocation, displayed payload, and prompt hash identical;
+		// the next agent receives the evidence instead of only an objective.
+		if len(spec.Args) == 0 {
+			return nil, fmt.Errorf("continue: %s checkpoint launch returned no prompt argument", opts.TargetAgent)
+		}
+		spec.Args[len(spec.Args)-1] = prompt
+	}
+
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	return &Result{
 		Handoff: &HandoffRecord{
-			ID:               ids.NewPrefixed(PrefixHandoff),
+			ID:               ids.Handoff(),
 			WorkstreamID:     wsID,
 			SourceCheckpoint: cp.CheckpointID,
 			SourceProvider:   srcProvider,
@@ -210,7 +220,7 @@ func Prepare(ctx context.Context, db *storage.DB, opts Options) (*Result, error)
 		},
 		Checkpoint: cp,
 		Spec:       spec,
-		Prompt:     RenderForAgent(cp, opts.TargetAgent),
+		Prompt:     prompt,
 		Drift:      drift,
 	}, nil
 }

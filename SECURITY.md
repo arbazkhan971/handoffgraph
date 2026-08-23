@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-HandoffGraph is pre-1.0 (currently v0.2.x). Security fixes are applied to
+HandoffGraph is pre-1.0 (currently a v0.6.0-level pre-release). Security fixes are applied to
 the latest `main` branch only; there are no backported release lines yet.
 Once tagged releases exist, the supported window will be listed here.
 

@@ -129,6 +129,22 @@ func Materialize(events []*protocol.Event) *MaterializeResult {
 			} else {
 				sp.Status = "ok"
 			}
+		case protocol.EventFileRead, protocol.EventFileCreated, protocol.EventFileEdited, protocol.EventFileDeleted:
+			id := payloadString(ev, "span_id", ev.EventID)
+			sp := spans[id]
+			if sp == nil {
+				sp = spanFromEvent(ev)
+				sp.Status = "unknown"
+				spans[id] = sp
+			}
+			if ev.Kind == protocol.EventFileRead {
+				sp.Kind = protocol.SpanKindFileRead
+			} else {
+				sp.Kind = protocol.SpanKindFileWrite
+			}
+			sp.EndedAtNS = ev.OccurredAt.UnixNano()
+			sp.Status = "ok"
+			sp.Name = payloadString(ev, "path", payloadString(ev, "file_path", sp.Name))
 		}
 	}
 
@@ -166,7 +182,7 @@ func Materialize(events []*protocol.Event) *MaterializeResult {
 		}
 		tr.SpanCount++
 		switch sp.Kind {
-		case protocol.SpanKindFileWrite, protocol.SpanKindFileRead:
+		case protocol.SpanKindFileWrite:
 			tr.ChangedFileCount++
 		case protocol.SpanKindTest:
 			if sp.Status == "error" {
@@ -187,7 +203,12 @@ func Materialize(events []*protocol.Event) *MaterializeResult {
 	for _, sp := range spans {
 		res.Spans = append(res.Spans, sp)
 	}
-	sort.Slice(res.Traces, func(i, j int) bool { return res.Traces[i].StartedAtNS < res.Traces[j].StartedAtNS })
+	sort.Slice(res.Traces, func(i, j int) bool {
+		if res.Traces[i].StartedAtNS != res.Traces[j].StartedAtNS {
+			return res.Traces[i].StartedAtNS < res.Traces[j].StartedAtNS
+		}
+		return res.Traces[i].TraceID < res.Traces[j].TraceID
+	})
 	// Span order is a total order on (Sequence, StartedAtNS, SpanID): a pure
 	// function of the spans themselves, so zero-valued Sequence/StartedAtNS
 	// (common in fixtures) still sort deterministically by SpanID.
@@ -204,7 +225,10 @@ func Materialize(events []*protocol.Event) *MaterializeResult {
 }
 
 func spanFromEvent(ev *protocol.Event) *protocol.Span {
-	kind := protocol.SpanKind(payloadString(ev, "kind", string(protocol.SpanKindOther)))
+	// Canonical fixtures and provider adapters historically used both
+	// `kind` and `span_kind`; accept both without discarding the original
+	// source kind. `kind` wins when both are present.
+	kind := protocol.SpanKind(payloadString(ev, "kind", payloadString(ev, "span_kind", string(protocol.SpanKindOther))))
 	return &protocol.Span{
 		SpanID:              payloadString(ev, "span_id", ev.EventID),
 		TraceID:             payloadString(ev, "trace_id", ev.SessionID),
@@ -273,7 +297,8 @@ func resolveTraceForSpan(sp *protocol.Span, traces map[string]*protocol.Trace) *
 		if tr.Provider != "" && sp.Provider != "" && tr.Provider != sp.Provider {
 			continue
 		}
-		if best == nil || tr.StartedAtNS > best.StartedAtNS {
+		if best == nil || tr.StartedAtNS > best.StartedAtNS ||
+			(tr.StartedAtNS == best.StartedAtNS && tr.TraceID > best.TraceID) {
 			best = tr
 		}
 	}

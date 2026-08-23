@@ -39,6 +39,7 @@ const (
 type Capabilities struct {
 	NativeResume        bool `json:"native_resume"`
 	NativeFork          bool `json:"native_fork"`
+	CheckpointLaunch    bool `json:"checkpoint_launch"`
 	Hooks               bool `json:"hooks"`
 	ToolEvents          bool `json:"tool_events"`
 	PromptEvents        bool `json:"prompt_events"`
@@ -88,7 +89,10 @@ type Adapter interface {
 	Normalize(ctx context.Context, raw json.RawMessage) ([]protocol.Event, error)
 	// Resume returns the native resume invocation for a session.
 	Resume(ctx context.Context, ref SessionRef) (ExecSpec, error)
-	// StartFromCheckpoint returns a launch spec seeded by a checkpoint.
+	// StartFromCheckpoint returns a launch spec seeded by a checkpoint. The
+	// checkpoint prompt must be the final argv element: the continuation layer
+	// replaces that seed with its exact bounded, provenance-preserving payload
+	// before recording or displaying the spec.
 	StartFromCheckpoint(ctx context.Context, cp *protocol.Checkpoint) (ExecSpec, error)
 	// Capabilities declares supported provider features.
 	Capabilities() Capabilities

@@ -28,12 +28,21 @@ var acceptNow = func() time.Time { return time.Now().UTC() }
 // deterministic. Accepting an unknown handoff fails closed: no event is
 // written. The updated derived record (status accepted) is returned.
 func AcceptHandoff(ctx context.Context, db *storage.DB, handoffID string, accepted, missing, unverifiable []string) (*HandoffRecord, error) {
+	rec, _, err := AcceptHandoffWithEvent(ctx, db, handoffID, accepted, missing, unverifiable)
+	return rec, err
+}
+
+// AcceptHandoffWithEvent is AcceptHandoff plus the identifier of the
+// append-only handoff.accepted event it records. Agent-facing surfaces such
+// as MCP return that event id as acceptance evidence; callers that only need
+// the derived record should use AcceptHandoff.
+func AcceptHandoffWithEvent(ctx context.Context, db *storage.DB, handoffID string, accepted, missing, unverifiable []string) (*HandoffRecord, string, error) {
 	if handoffID == "" {
-		return nil, fmt.Errorf("accept handoff: handoff id is required")
+		return nil, "", fmt.Errorf("accept handoff: handoff id is required")
 	}
 	recs, err := ListHandoffs(ctx, db)
 	if err != nil {
-		return nil, fmt.Errorf("accept handoff: %w", err)
+		return nil, "", fmt.Errorf("accept handoff: %w", err)
 	}
 	var rec *HandoffRecord
 	for _, r := range recs {
@@ -43,7 +52,7 @@ func AcceptHandoff(ctx context.Context, db *storage.DB, handoffID string, accept
 		}
 	}
 	if rec == nil {
-		return nil, fmt.Errorf("accept handoff: no handoff %s (create one with `continue --to <agent> --workstream <id>`)", handoffID)
+		return nil, "", fmt.Errorf("accept handoff: no handoff %s (create one with `continue --to <agent> --workstream <id>`)", handoffID)
 	}
 
 	now := acceptNow()
@@ -57,7 +66,7 @@ func AcceptHandoff(ctx context.Context, db *storage.DB, handoffID string, accept
 	}
 	payload, err := json.Marshal(p)
 	if err != nil {
-		return nil, fmt.Errorf("accept handoff: encode payload: %w", err)
+		return nil, "", fmt.Errorf("accept handoff: encode payload: %w", err)
 	}
 
 	ev := &protocol.Event{
@@ -72,7 +81,7 @@ func AcceptHandoff(ctx context.Context, db *storage.DB, handoffID string, accept
 		Payload:       payload,
 	}
 	if _, err := db.AppendEvent(ctx, ev); err != nil {
-		return nil, fmt.Errorf("accept handoff: %w", err)
+		return nil, "", fmt.Errorf("accept handoff: %w", err)
 	}
 
 	out := *rec
@@ -81,5 +90,5 @@ func AcceptHandoff(ctx context.Context, db *storage.DB, handoffID string, accept
 	out.Accepted = p.Accepted
 	out.Missing = p.Missing
 	out.Unverifiable = p.Unverifiable
-	return &out, nil
+	return &out, ev.EventID, nil
 }

@@ -8,22 +8,27 @@ not a checkbox. This document describes the implemented and planned posture.
 
 - **Local-first.** No account is required for local use.
 - **No source upload by default.** The local core never uploads anything.
-- **Cloud sync is opt-in, per-repository, and explicit** (not yet shipped).
+- **Hosted transfer is explicit.** The local CLI does not auto-sync. The
+  private-beta API accepts a batch only when a user-created, workspace-scoped
+  device token sends it.
 - **Redaction preview before first upload** (planned; `redact --preview`
   already runs the local pipeline).
-- **Command output and prompts are local-only by default.**
+- **No metadata-only claim.** Hosted Basic currently preserves validated event
+  envelopes within hard byte/count limits. An envelope marked with a redaction
+  failure is rejected, but callers must still review what they send.
 
 ## Capture vs. sync policy
 
-Capturing a value locally never silently authorizes upload. Two separate
-policies exist:
+Capturing a value locally never silently authorizes upload. The following
+client-side sync modes are the intended policy model; they are not all wired
+to the hosted API yet:
 
 | Mode | Local body | Cloud body |
 |---|---|---|
-| `metadata_only` | metadata | metadata |
-| `full_local` (default) | full local body | metadata |
-| `sanitized` | full local body | redacted body |
-| `private_encrypted` | full local body | client-encrypted body |
+| `metadata_only` (planned) | metadata | metadata |
+| `full_local` (current local default) | full local body | no automatic upload |
+| `sanitized` (planned) | full local body | redacted body |
+| `private_encrypted` (planned) | full local body | client-encrypted body |
 
 ## Hook installation
 
@@ -62,14 +67,35 @@ output, Git remotes, or source code.
   untrusted input. The UI must escape HTML, sanitize Markdown, enforce a
   strict Content Security Policy, validate attachment MIME types, and
   neutralize terminal escape sequences (UI ships in v0.5.0).
-- **Cross-tenant isolation**: the hosted service (not in this repo) enforces
-  tenant IDs on every access and passes cross-tenant authorization tests
-  before public beta.
+- **Cross-tenant isolation**: the hosted Worker in `platform/` derives the
+  workspace from a hashed device-token binding and scopes every read/write.
+  Browser membership never substitutes for device authentication.
 - **Secrets in logs**: Worker logs and analytics must never contain sensitive
   payloads.
 
+## Hosted account data
+
+The private-beta account foundation stores the verified WorkOS subject,
+verified email address, optional display name/avatar URL, personal workspace
+membership, plan/usage counters, and hashes of HandoffGraph session/device
+secrets. WorkOS access and refresh tokens are discarded after callback.
+Browser sessions expire after 30 days and can be revoked. A raw device token
+is returned once and cannot be recovered from the database.
+
+Hosted Basic is capped at 2 active devices and 10 device-token issuances over
+the account lifetime, plus 5,000 events/10 MiB per 30-day period and 25,000
+events/64 MiB for the account lifetime. Revoking a device releases an active
+slot but does not refund an issuance. Limits stop new hosted writes without
+stopping local capture. These caps bound storage; they are not a
+retention/deletion policy.
+
 ## Limits of this implementation
 
-The current repository is local-only. Encryption, hosted sync, OAuth, and
-server-side processing are future work and belong to the (private) hosted
-platform repository, not the open-source core.
+The open-source repository now contains a private-beta hosted account/API
+foundation, but it is not publicly deployed by this change. Automated CLI
+sync policy, redaction preview enforcement before first sync, encrypted body
+storage, shares, billing, self-service account deletion, production retention,
+and edge bot controls remain unfinished. WorkOS credentials, Turnstile/WAF,
+remote D1 migration, domains, and a reviewed deletion procedure are mandatory
+before public signup. Local Core remains fully usable offline without an
+account or cloud service.

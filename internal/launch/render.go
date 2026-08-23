@@ -3,6 +3,7 @@ package launch
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
@@ -80,9 +81,9 @@ func renderPrompt(cp *protocol.Checkpoint, agent string, listCap int) string {
 
 	// Repository state — always present.
 	b.WriteString("## Repository state (at checkpoint)\n\n")
-	fmt.Fprintf(&b, "- Remote: %s\n", orBacktick(cp.Repository.Remote))
-	fmt.Fprintf(&b, "- Branch: %s\n", orBacktick(cp.Repository.Branch))
-	fmt.Fprintf(&b, "- HEAD: %s\n", orBacktick(cp.Repository.Head))
+	fmt.Fprintf(&b, "- Remote: %s\n", orBacktick(clampRunes(cp.Repository.Remote, maxItemChars)))
+	fmt.Fprintf(&b, "- Branch: %s\n", orBacktick(clampRunes(cp.Repository.Branch, maxItemChars)))
+	fmt.Fprintf(&b, "- HEAD: %s\n", orBacktick(clampRunes(cp.Repository.Head, maxItemChars)))
 	fmt.Fprintf(&b, "- Dirty: %t\n\n", cp.Repository.Dirty)
 
 	// Failed approaches — always present; the next agent must not repeat
@@ -128,6 +129,10 @@ func renderPrompt(cp *protocol.Checkpoint, agent string, listCap int) string {
 	b.WriteString("## Instruction\n\n")
 	fmt.Fprintf(&b, "Acknowledge checkpoint %s in your first reply (e.g. \"ACK %s\") before taking any action. Then continue from the next actions above.\n\n",
 		cp.CheckpointID, cp.CheckpointID)
+	if cp.WorkstreamID != "" {
+		fmt.Fprintf(&b, "Machine reference: `hfg://workstreams/%s/checkpoints/%s`. If the HandoffGraph MCP server is available, call `accept_handoff` with `workstream_id` `%s`, `checkpoint_id` `%s`, and the sections you accepted, found missing, or could not verify.\n\n",
+			cp.WorkstreamID, cp.CheckpointID, cp.WorkstreamID, cp.CheckpointID)
+	}
 
 	fmt.Fprintf(&b, "---\nCheckpoint %s", cp.CheckpointID)
 	if cp.Integrity.GraphRootHash != "" {
@@ -277,42 +282,58 @@ func provSuffix(p protocol.Provenance) string {
 	return " _[" + strings.ToLower(string(p)) + "]_"
 }
 
-// clampRunes truncates s to at most maxChars runes, appending "..." when
-// truncated. Truncation is rune-safe (never splits a UTF-8 sequence).
+// clampRunes truncates s to a conservative UTF-8-safe field budget,
+// appending "..." when truncated. ASCII keeps the historical maxChars-rune
+// behavior; multi-byte text is also byte-bounded so a handful of required
+// fields cannot exhaust the whole continuation prompt before its instruction.
 func clampRunes(s string, maxChars int) string {
 	if maxChars <= 0 {
 		return ""
 	}
 	r := []rune(s)
-	if len(r) <= maxChars {
+	if len(r) <= maxChars && len(s) <= maxChars {
 		return s
 	}
-	return string(r[:maxChars]) + "..."
+	if len(r) > maxChars {
+		s = string(r[:maxChars])
+	}
+	return utf8Prefix(s, maxChars) + "..."
 }
 
-// hardTruncate cuts s to at most maxChars bytes on a rune boundary and
-// appends an explicit truncation marker, so the bounded-prompt guarantee
-// holds even for pathological inputs.
+// hardTruncate cuts s to at most maxChars bytes on a rune boundary. When the
+// prompt contains its required instruction tail, that tail is reserved first:
+// pathological optional metadata can never remove the ACK, MCP reference, or
+// checkpoint footer that makes the continuation verifiable.
 func hardTruncate(s string, maxChars int) string {
 	if len(s) <= maxChars {
 		return s
 	}
-	marker := "\n(prompt truncated to fit the size limit)"
+	marker := "\n(prompt body truncated to fit the size limit)\n"
 	if maxChars < len(marker) {
-		// No room for the marker: fall back to a plain rune-safe cut.
-		r := []rune(s)
-		cut := len(r)
-		for cut > 0 && len(string(r[:cut])) > maxChars {
-			cut--
+		return utf8Prefix(s, maxChars)
+	}
+	const instructionHeading = "\n## Instruction\n\n"
+	if tailAt := strings.LastIndex(s, instructionHeading); tailAt >= 0 {
+		tail := s[tailAt:]
+		if len(tail)+len(marker) <= maxChars {
+			prefix := utf8Prefix(s[:tailAt], maxChars-len(marker)-len(tail))
+			return prefix + marker + tail
 		}
-		return string(r[:cut])
 	}
-	r := []rune(s)
-	cut := len(r)
-	for cut > 0 && len(string(r[:cut]))+len(marker) > maxChars {
-		cut--
+	return utf8Prefix(s, maxChars-len(marker)) + marker
+}
+
+func utf8Prefix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
 	}
-	return string(r[:cut]) + marker
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }
 
 // orText substitutes "(none recorded)" for empty text so an absent value is

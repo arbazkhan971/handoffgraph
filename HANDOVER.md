@@ -26,14 +26,14 @@ Source documents that drive everything (full product + 300-day plan):
 
 ## 2. Current state (what exists, what works)
 
-**Version: v0.5.0-level local core, merged and green (as of 2026-08-22): event spine + Codex/Claude/Pi adapters + MCP server + detection pack + Session Debugger UI. Wave 2 in flight: cross-agent continuation (launch), Cloudflare platform, landing page.**
+**Version: v0.6.0-level local product (as of 2026-08-23): event spine + Codex/Claude/Pi adapters + MCP server + detection pack + Session Debugger UI + verified cross-agent continuation. Release packaging is wired; real-session acceptance and the canonical public repository remain release gates.**
 
 ### Verified green
 
 ```bash
 go build ./...        # Success
 go vet ./...          # No issues
-go test ./...         # 596 passed in 26 packages
+go test ./...         # full repository suite
 go test -race ./...   # All pass
 gofmt -l .            # clean (no output)
 ```
@@ -59,8 +59,11 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Fixture verification harness (+ golden fixture coverage) | `internal/verify` | ✅ tested |
 | Adapter interface + registry (v0.2.0 groundwork) | `internal/adapter` | ✅ tested |
 | Codex adapter (Detect + Normalize + hook Install/Uninstall + deterministic event IDs; native Resume + StartFromCheckpoint as ExecSpec) | `internal/adapter/codex` | ✅ tested |
+| Claude adapter (Detect + Normalize + merge-safe hooks + native Resume + checkpoint-seeded ExecSpec) | `internal/adapter/claude` | ✅ tested |
+| Pi adapter (Detect + Normalize + merge-safe hooks + native Resume + checkpoint-seeded ExecSpec) | `internal/adapter/pi` | ✅ tested |
 | CLI framework + subcommands (flag helpers, JSONL redact preview) | `internal/cli`, `internal/commands` | ✅ tested |
 | Codex CLI wiring (`install`, `sessions`, `resume`; resume prints the shell-quoted `codex resume <id>` invocation) | `internal/commands` | ✅ tested |
+| Cross-agent continuation (bounded payload, drift, append-only status + MCP acknowledgement) | `internal/launch`, `internal/commands`, `internal/mcp` | ✅ tested |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -74,15 +77,25 @@ event         import <file>
 graph         [--json]   export derived workstream graph
 traces        [--json]   list materialized turn traces
 checkpoint    --workstream <id> [--objective] [--status]
+              | --from-trace <id> [--objective] [--status]
+              | show <checkpoint-id> [--json]
 redact        --preview <file>
 fixture       verify <dir>
-install       --agent codex [--dry-run --hook-command --config-dir]  install managed hooks
+install       --agent codex|claude|pi [--dry-run --hook-command --config-dir]
+              install managed hooks
 sessions      [--agent] [--json] | --detect [--json]
               list sessions derived from captured events, per provider;
               --detect lists native sessions directly from disk
               (~/.codex/sessions; override with HFG_CODEX_SESSIONS_DIR)
-resume        <id> [--agent]  print the shell-quoted native resume command
-              (codex resume <id>); HandoffGraph never launches agents itself
+resume        <id> [--agent codex|claude|pi]
+              print the shell-quoted native resume command; HandoffGraph
+              never launches agents itself
+continue      --to codex|claude|pi --workstream <id> [--preview]
+              resolve the handoff and print (never execute) the native invocation
+handoff       status [--json]  derive created/accepted acknowledgement state
+detect        run deterministic detections over materialized traces
+mcp           serve  run the local nine-tool MCP stdio server
+open          serve the embedded debugger UI on localhost
 version
 ```
 
@@ -108,6 +121,7 @@ internal/
   trace/                   trace.go (materializer)
   redact/                  redact.go + patterns.go
   checkpoint/              checkpoint.go (builder) + render.go (Markdown)
+  launch/                  bounded continuation + drift + handoff read model
   fixture/                 synthetic event generator (leaf, no deps)
   verify/                  fixture verify harness (imports storage+graph)
   adapter/                 provider Adapter interface + Registry (v0.2.0)
@@ -258,35 +272,40 @@ Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + c
 ### Remaining nice-to-haves
 - ~~Consider stable/deterministic event-ID derivation for adapter re-import idempotency~~ — **DONE (2026-08-21):** `internal/ids` deterministic helper derives a stable `evt_<ulid>` from (provider, native session ID, sequence, occurred-at, content hash), so re-importing the same Codex session is idempotent.
 - ~~Codex adapter: hook install/uninstall + `sessions`/`resume` CLI wiring~~ — **DONE (2026-08-21):** managed `[hooks.handoffgraph]` table in `~/.codex/config.toml`, fail-closed with dry-run; `install --agent codex`, `sessions`, `resume` commands wired.
-- ~~Codex native resume~~ — **DONE (2026-08-21):** adapter `Resume` returns the native `ExecSpec` (`codex resume <id>`, empty/dash-prefixed ids rejected); the `resume` command prints it shell-quoted for copy-paste — HandoffGraph never launches agent processes itself. `StartFromCheckpoint` also returns a launch spec (objective clamped, `--` separator); executing specs is deferred to v0.6.0.
+- ~~Codex native resume and checkpoint continuation~~ — **DONE:** adapter `Resume` returns the native `ExecSpec` (`codex resume <id>`, empty/dash-prefixed ids rejected); `StartFromCheckpoint` returns an injection-safe checkpoint-seeded spec. The v0.6 `continue` command selects a spec, checks drift, records `handoff.created`, and prints the invocation and bounded payload. It deliberately never launches agent processes itself.
 - Acceptance run over 20 real Codex sessions (no config loss, resume path) still open — targeted for v0.2.x/v0.3.0.
 - Codex App Server integration remains deferred (see §9).
 
 ### Deliberately deferred (per roadmap)
-- Provider adapters full integration (Codex hooks/App Server v0.2.x, Claude v0.3.0, Pi v0.4.0)
-- Session Debugger UI (React/Vite, v0.5.0)
-- MCP server (local v0.4.0, remote v0.11.0)
+- Codex App Server integration and 20-real-session acceptance
+- Remote MCP (v0.11.0); the local nine-tool MCP server is implemented
 - Cloudflare hosted platform (private repo, v0.8.0+)
-- Cross-agent `continue` launcher (v0.6.0)
 
 ---
 
 ## 9. Next recommended work (in priority order)
 
-### A. Finish the v0.2.0 Codex adapter
-The `internal/adapter` interface + registry and the Codex `Detect`/`Normalize`
-core are done and tested (see §8). As of 2026-08-21, hook `Install`/`Uninstall`
-(fail-closed, idempotent, dry-run-safe), the `install` / `sessions` / `resume`
-CLI wiring, deterministic event IDs, native `Resume`, and
-`StartFromCheckpoint` are all done and tested: resume/checkpoint launch return
-`ExecSpec`s that the CLI prints shell-quoted — executing them is the v0.6.0
-cross-agent continuation work. The verify harness classifies fixtures too:
+### A. Finish release acceptance
+The `internal/adapter` interface + registry and all three providers' capture
+cores are done and tested (see §8). Hook `Install`/`Uninstall` (fail-closed,
+idempotent, dry-run-safe), the `install` / `sessions` / `resume` CLI wiring,
+deterministic event IDs, native `Resume`, and `StartFromCheckpoint` are all
+done and tested for Codex, Claude, and Pi: resume/checkpoint launch return
+`ExecSpec`s that the v0.6 `continue` command selects and prints shell-quoted.
+The command never executes the target process. It appends a structured
+handoff, prints the bounded provenance-labelled payload and machine checkpoint
+reference, and exposes receiving-agent acknowledgement through MCP
+`accept_handoff` and `handoff status`. The verify harness classifies fixtures too:
 canonical `hfg.event.v1` fixtures go through the event-store import path,
 while native codex rollout fixtures are verified via the adapter's
 `Normalize`.
-Remaining for full v0.2.0 acceptance, in priority order:
+Remaining acceptance work, in priority order:
 - App Server integration — the release-hold condition for the milestone.
 - Acceptance run: 20 real sessions, no config loss.
+- Exercise real cross-agent continuations and acknowledgements across the
+  supported provider pairs.
+- Transfer or mirror the repository to the canonical module location before
+  publishing the first tag; see `docs/releasing.md`.
 
 ### B. Golden fixtures expansion — DONE (2026-08-21)
 Added: Claude tool success/failure, out-of-order delivery, truncated JSONL,
@@ -313,8 +332,13 @@ fixtures live under `testdata/fixtures/invalid/`.
 
 ## 11. Git / repo status
 
-- **Not yet a git repository** — no `git init` has been run, no commits, no pushes (per the plan's "no commits without explicit authorization").
-- The `handoffgraph` GitHub org name was **not verified as available** — confirm before first public push.
+- The repository is on `main`; the current remote is
+  `github.com/arbazkhan971/handoffgraph`.
+- The canonical module path is `github.com/handoffgraph/handoffgraph`, but that
+  GitHub repository must exist before public `go install ...@version` works.
+- Tag-triggered, checksummed cross-platform releases are defined in
+  `.github/workflows/release.yml`; follow `docs/releasing.md` and never reuse a
+  published tag.
 - Local path: `/Users/arbaz/Projects/tools/handoffgraph`
 - The sibling project dirs `/Users/arbaz/Projects/tools/ccrank` and `grok-usage` are unrelated (different owners/licenses).
 

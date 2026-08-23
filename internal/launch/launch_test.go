@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/handoffgraph/handoffgraph/internal/ids"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 	"github.com/handoffgraph/handoffgraph/internal/repository"
 	"github.com/handoffgraph/handoffgraph/internal/storage"
@@ -75,8 +76,11 @@ func TestContinueSameProviderUsesNativeResume(t *testing.T) {
 	if !res.Drift.Clean {
 		t.Errorf("drift = %+v, want clean", res.Drift)
 	}
-	if !strings.HasPrefix(res.Handoff.ID, PrefixHandoff) {
-		t.Errorf("handoff id %q missing %s prefix", res.Handoff.ID, PrefixHandoff)
+	if !strings.HasPrefix(res.Handoff.ID, ids.PrefixHandoff) {
+		t.Errorf("handoff id %q missing %s prefix", res.Handoff.ID, ids.PrefixHandoff)
+	}
+	if err := ids.Validate(res.Handoff.ID); err != nil {
+		t.Errorf("handoff id %q is not a valid durable id: %v", res.Handoff.ID, err)
 	}
 	if !strings.Contains(res.Prompt, "Acknowledge checkpoint "+cp.CheckpointID) {
 		t.Error("prompt missing acknowledgement instruction")
@@ -114,34 +118,48 @@ func TestContinueCrossProviderSeedsFromCheckpoint(t *testing.T) {
 	if !strings.Contains(joined, cp.CheckpointID) {
 		t.Errorf("checkpoint-seeded spec args %q missing checkpoint id", joined)
 	}
+	if got := res.Spec.Args[len(res.Spec.Args)-1]; got != res.Prompt {
+		t.Error("checkpoint-seeded invocation does not carry the exact recorded payload")
+	}
+	if !strings.Contains(joined, "Failed approaches (do not repeat)") {
+		t.Error("checkpoint-seeded invocation is missing bounded evidence sections")
+	}
 }
 
-func TestContinueCrossProviderUnsupportedIsHonestAndUnrecorded(t *testing.T) {
-	db := testDB(t)
-	ctx := context.Background()
-	cp := codexCheckpoint()
-	if err := db.SaveCheckpoint(ctx, cp); err != nil {
-		t.Fatalf("SaveCheckpoint: %v", err)
-	}
-
+func TestContinueCrossProviderSupportsClaudeAndPi(t *testing.T) {
 	for _, agent := range []string{protocol.ProviderClaude, protocol.ProviderPi} {
 		t.Run(agent, func(t *testing.T) {
-			_, err := Continue(ctx, db, Options{
+			db := testDB(t)
+			ctx := context.Background()
+			cp := codexCheckpoint()
+			if err := db.SaveCheckpoint(ctx, cp); err != nil {
+				t.Fatalf("SaveCheckpoint: %v", err)
+			}
+
+			res, err := Continue(ctx, db, Options{
 				WorkstreamID: cp.WorkstreamID,
 				TargetAgent:  agent,
 				Repo:         matchingRepo(),
+				Now:          fixedTime(),
 			})
-			if err == nil || !strings.Contains(err.Error(), "does not support") {
-				t.Fatalf("Continue to %s error = %v, want unsupported-capability error", agent, err)
+			if err != nil {
+				t.Fatalf("Continue to %s: %v", agent, err)
 			}
-			// Fail-closed: a handoff that could not launch must not be
-			// recorded.
+			if res.Handoff.Mode != ModeCheckpointSeed {
+				t.Errorf("mode = %q, want %q", res.Handoff.Mode, ModeCheckpointSeed)
+			}
+			if res.Spec.Command != agent || len(res.Spec.Args) != 1 || !strings.Contains(res.Spec.Args[0], cp.CheckpointID) {
+				t.Errorf("spec = %+v, want checkpoint-seeded %s invocation", res.Spec, agent)
+			}
+			if res.Spec.Args[0] != res.Prompt {
+				t.Error("checkpoint-seeded invocation does not carry the exact recorded payload")
+			}
 			n, err := db.EventCount(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if n != 0 {
-				t.Errorf("event count = %d, want 0 (nothing recorded on failure)", n)
+			if n != 1 {
+				t.Errorf("event count = %d, want 1 handoff.created event", n)
 			}
 		})
 	}

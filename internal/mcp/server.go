@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/handoffgraph/handoffgraph/internal/redact"
 	"github.com/handoffgraph/handoffgraph/internal/storage"
 )
 
@@ -94,6 +95,8 @@ type Options struct {
 	Version string
 	// Stderr receives diagnostics logs (defaults to io.Discard).
 	Stderr io.Writer
+	// Redaction supplies the user's fail-closed checkpoint export policy.
+	Redaction *redact.Options
 }
 
 // Server is the local MCP stdio server.
@@ -117,7 +120,7 @@ func NewServer(db *storage.DB, opts Options) *Server {
 	return &Server{
 		name:    "handoffgraph",
 		version: version,
-		tools:   newToolset(db),
+		tools:   newToolsetWithRedaction(db, opts.Redaction),
 		log:     log.New(stderr, "handoffgraph-mcp: ", log.LstdFlags|log.Lmsgprefix),
 	}
 }

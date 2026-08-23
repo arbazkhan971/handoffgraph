@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            platform/package-lock.json
+
+      - name: Validate semantic version tag
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REPOSITORY}" != "handoffgraph/handoffgraph" ]]; then
+            echo "release repository must match the canonical Go module: handoffgraph/handoffgraph" >&2
+            exit 1
+          fi
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must be SemVer with a leading v: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+      - name: Verify tag is reachable from main
+        shell: bash
+        run: |
+          git fetch origin main --no-tags
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "release tag must point to a commit reachable from main" >&2
+            exit 1
+          fi
+
+      - name: Validate and test tagged Go source
+        shell: bash
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          go test -race ./...
+
+      - name: Test and build the embedded web UI
+        working-directory: web
+        run: |
+          npm ci
+          npm test
+          npm run lint
+          npm run build
+
+      - name: Verify embedded UI bundle is current
+        run: git diff --exit-code -- internal/webui/dist
+
+      - name: Test and dry-run the platform Worker
+        working-directory: platform
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          ./node_modules/.bin/wrangler d1 migrations apply handoffgraph --local \
+            --persist-to "${RUNNER_TEMP}/handoffgraph-d1"
+          npm run deploy:dry
+
+      - name: Test the landing Worker
+        run: node --test landing/*.test.mjs
+
+      - name: Dry-run the landing Worker
+        working-directory: platform
+        run: >-
+          ./node_modules/.bin/wrangler deploy --dry-run
+          --config ../landing/wrangler.toml
+          --outdir "${RUNNER_TEMP}/handoffgraph-landing-dist"
+
+      - name: Publish checksummed release archives
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.17.1"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

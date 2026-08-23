@@ -67,7 +67,7 @@ func (c *Codex) Name() string { return protocol.ProviderCodex }
 // Capabilities reports what this adapter version supports honestly.
 // Rollout normalization observes prompts, tool calls, command exits and
 // compaction; hooks observe the same lifecycle live. Native resume exists
-// via `codex exec resume`. Fork (a new session id seeded from an old
+// via `codex resume`. Fork (a new session id seeded from an old
 // transcript, à la claude --fork-session), diff-level events, native
 // test-exit reporting and structured live streaming are not supported by
 // this version and are never fabricated.
@@ -75,6 +75,7 @@ func (c *Codex) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		NativeResume:        true,
 		NativeFork:          false,
+		CheckpointLaunch:    true,
 		Hooks:               true,
 		ToolEvents:          true,
 		PromptEvents:        true,
@@ -384,7 +385,8 @@ func (c *Codex) Resume(ctx context.Context, ref adapter.SessionRef) (adapter.Exe
 	return adapter.ExecSpec{Command: "codex", Args: []string{"resume", ref.NativeID}}, nil
 }
 
-// StartFromCheckpoint launches a new Codex session seeded by a checkpoint.
+// StartFromCheckpoint starts a new interactive Codex session seeded by a
+// checkpoint.
 func (c *Codex) StartFromCheckpoint(ctx context.Context, cp *protocol.Checkpoint) (adapter.ExecSpec, error) {
 	if cp == nil {
 		return adapter.ExecSpec{}, fmt.Errorf("checkpoint required")
@@ -398,7 +400,7 @@ func (c *Codex) StartFromCheckpoint(ctx context.Context, cp *protocol.Checkpoint
 	}
 	prompt := fmt.Sprintf("Continue workstream %s (checkpoint %s). Objective: %s. Acknowledge checkpoint %s before acting.",
 		cp.WorkstreamID, cp.CheckpointID, string(objective), cp.CheckpointID)
-	return adapter.ExecSpec{Command: "codex", Args: []string{"exec", "--", prompt}}, nil
+	return adapter.ExecSpec{Command: "codex", Args: []string{"--", prompt}}, nil
 }
 
 // Compile-time interface compliance check.

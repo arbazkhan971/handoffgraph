@@ -4,8 +4,21 @@
 
 name = "handoffgraph-landing"
 main = "worker.js"
-compatibility_date = "2026-08-01"
+compatibility_date = "2026-08-23"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.01
 
 # Custom domain serving (Cloudflare zone required — see deploy/README.md).
 # Once the handoffgraph.dev zone exists in this account, uncomment to serve
@@ -21,11 +34,18 @@ workers_dev = true
 [[rules]]
 type = "Text"
 globs = ["**/*.html"]
+fallthrough = true
+
+[[rules]]
+type = "Data"
+globs = ["**/*.png"]
 fallthrough = false
 
-# Optional waitlist storage. Without this binding the worker still validates
-# and acknowledges (202) submissions; with it, each submission is stored as
-# one KV entry keyed "<date>:<uuid>". Uncomment and fill in the id to enable:
+# Required before enabling the waitlist in production. Without this binding
+# POST /api/waitlist fails closed with 503 so the page uses its
+# localStorage/mail fallback; it never acknowledges a discarded submission.
+# Each normalized email maps to one pseudonymous `email:<sha256>` key; the
+# Worker applies a 90-day TTL to every accepted record.
 #
 # [[kv_namespaces]]
 # binding = "WAITLIST"

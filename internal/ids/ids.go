@@ -1,8 +1,8 @@
 // Package ids provides the identifier primitives used across HandoffGraph.
 //
 // Every durable identifier (event, workstream, session, trace, span,
-// checkpoint, repository) is a ULID: lexicographically sortable by creation
-// time, safe to generate concurrently, and string-friendly in JSON.
+// checkpoint, repository, handoff) is a ULID: lexicographically sortable by
+// creation time, safe to generate concurrently, and string-friendly in JSON.
 package ids
 
 import (
@@ -25,6 +25,7 @@ const (
 	PrefixSpan       = "spn_"
 	PrefixCheckpoint = "cp_"
 	PrefixRepo       = "repo_"
+	PrefixHandoff    = "ho_"
 )
 
 var (
@@ -41,10 +42,26 @@ type lockedEntropy struct {
 func (e *lockedEntropy) Read(p []byte) (int, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.ensureSource()
+	return e.src.Read(p)
+}
+
+// MonotonicRead preserves the oklog/ulid MonotonicReader contract through
+// our locking wrapper. Without this method ulid.New only sees io.Reader and
+// bypasses same-millisecond monotonic entropy, so sequential IDs can sort in
+// reverse order even though ULIDs are required to be lexicographically
+// creation-ordered.
+func (e *lockedEntropy) MonotonicRead(ms uint64, p []byte) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ensureSource()
+	return e.src.MonotonicRead(ms, p)
+}
+
+func (e *lockedEntropy) ensureSource() {
 	if e.src == nil {
 		e.src = ulid.Monotonic(rand.Reader, 0)
 	}
-	return e.src.Read(p)
 }
 
 // New returns a fresh ULID string with no prefix.
@@ -78,6 +95,9 @@ func Checkpoint() string { return NewPrefixed(PrefixCheckpoint) }
 // Repository returns a fresh repository identifier.
 func Repository() string { return NewPrefixed(PrefixRepo) }
 
+// Handoff returns a fresh handoff identifier.
+func Handoff() string { return NewPrefixed(PrefixHandoff) }
+
 // IsValid reports whether id is a well-formed HandoffGraph identifier:
 // an optional known prefix followed by a valid ULID.
 func IsValid(id string) bool {
@@ -97,6 +117,8 @@ func IsValid(id string) bool {
 		core = id[len(PrefixCheckpoint):]
 	case strings.HasPrefix(id, PrefixRepo):
 		core = id[len(PrefixRepo):]
+	case strings.HasPrefix(id, PrefixHandoff):
+		core = id[len(PrefixHandoff):]
 	}
 	_, err := ulid.ParseStrict(core)
 	return err == nil

@@ -18,6 +18,14 @@ jobs:
           go-version: "1.25"
       - name: Build
         run: go build ./...
+      - name: Build and smoke-test the CLI entrypoint
+        shell: bash
+        run: |
+          go build -trimpath \
+            -ldflags "-X github.com/handoffgraph/handoffgraph/internal/buildinfo.version=0.0.0-ci" \
+            -o "${RUNNER_TEMP}/handoffgraph" ./cmd/handoffgraph
+          test "$("${RUNNER_TEMP}/handoffgraph" version)" = "handoffgraph v0.0.0-ci"
+          test "$("${RUNNER_TEMP}/handoffgraph" --help | head -n 1)" = "handoffgraph v0.0.0-ci"
       - name: Vet
         run: go vet ./...
       - name: Format check
@@ -26,3 +34,97 @@ jobs:
         run: go test ./...
       - name: Race test
         run: go test -race ./...
+
+  web:
+    name: Web UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Test
+        working-directory: web
+        run: npm test
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+      - name: Build embedded UI bundle
+        working-directory: web
+        run: npm run build
+      - name: Verify embedded UI bundle is current
+        run: git diff --exit-code -- internal/webui/dist
+
+  platform:
+    name: Platform and deployment bundles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - name: Install dependencies
+        working-directory: platform
+        run: npm ci
+      - name: Test
+        working-directory: platform
+        run: npm test
+      - name: Typecheck Worker bindings and source
+        working-directory: platform
+        run: npm run typecheck
+      - name: Apply platform D1 migrations locally
+        working-directory: platform
+        run: >-
+          ./node_modules/.bin/wrangler d1 migrations apply handoffgraph --local
+          --persist-to "${RUNNER_TEMP}/handoffgraph-d1"
+      - name: Dry-run platform Worker bundle
+        working-directory: platform
+        run: npm run deploy:dry
+      - name: Test landing Worker
+        run: node --test landing/*.test.mjs
+      - name: Dry-run landing Worker bundle
+        working-directory: platform
+        run: >-
+          ./node_modules/.bin/wrangler deploy --dry-run
+          --config ../landing/wrangler.toml
+          --outdir "${RUNNER_TEMP}/handoffgraph-landing-dist"
+
+  release-snapshot:
+    name: Release snapshot
+    needs:
+      - test
+      - web
+      - platform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: Build release matrix without publishing
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "v2.17.1"
+          args: release --snapshot --clean
+      - name: Verify packaged Linux binary and checksums
+        shell: bash
+        run: |
+          (cd dist && sha256sum --check checksums.txt)
+          archive="$(find dist -maxdepth 1 -type f -name 'handoffgraph_*_linux_amd64.tar.gz' -print -quit)"
+          test -n "${archive}"
+          mkdir "${RUNNER_TEMP}/handoffgraph-release-smoke"
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}/handoffgraph-release-smoke"
+          "${RUNNER_TEMP}/handoffgraph-release-smoke/handoffgraph" version | grep -Eq '^handoffgraph v[^[:space:]]+$'

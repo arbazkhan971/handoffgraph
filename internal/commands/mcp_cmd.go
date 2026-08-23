@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 
+	"github.com/handoffgraph/handoffgraph/internal/buildinfo"
 	"github.com/handoffgraph/handoffgraph/internal/cli"
 	"github.com/handoffgraph/handoffgraph/internal/mcp"
+	"github.com/handoffgraph/handoffgraph/internal/redact"
 )
 
 // RegisterMCPCmd registers the local MCP stdio server (roadmap v0.4.0,
@@ -29,12 +31,19 @@ func mcpCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	if len(args) != 1 || args[0] != "serve" {
 		return fmt.Errorf("usage: mcp serve")
 	}
-	_, db, err := loadConfigAndDB()
+	cfg, db, err := loadConfigAndDB()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	srv := mcp.NewServer(db, mcp.Options{Version: buildVersion, Stderr: c.Stderr})
+	srv := mcp.NewServer(db, mcp.Options{
+		Version: buildinfo.Version(),
+		Stderr:  c.Stderr,
+		Redaction: &redact.Options{
+			DenyPaths:    cfg.RedactDenyPaths,
+			UserPatterns: cfg.RedactPatterns,
+		},
+	})
 	return srv.Serve(ctx, c.Stdin, c.Stdout)
 }

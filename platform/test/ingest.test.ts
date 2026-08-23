@@ -6,18 +6,25 @@ import worker, {
   type D1BoundStatement,
   type D1DatabaseLike,
   type D1Statement,
-  type Env,
 } from "../src/index";
 import {
   BATCH_SCHEMA_VERSION,
   DEFAULT_PAGE_LIMIT,
   EVENT_SCHEMA_VERSION,
   MAX_BODY_BYTES,
+  MAX_CONTENT_HASH_BYTES,
   MAX_EVENTS_PER_BATCH,
+  MAX_KIND_BYTES,
+  MAX_NATIVE_SESSION_ID_BYTES,
   MAX_PAGE_LIMIT,
+  MAX_PROVIDER_BYTES,
+  MAX_PROVENANCE_BYTES,
+  MAX_TIMESTAMP_BYTES,
+  MAX_WORKSTREAM_TITLE_BYTES,
   buildEventRows,
   buildReceipt,
   buildWorkstreamListResponse,
+  buildWorkstreamProjectionRows,
   canonicalJsonStringify,
   decodeCursor,
   encodeCursor,
@@ -58,14 +65,23 @@ function workstreamId(i: number): string {
   return `ws_${head}${tail}`;
 }
 
+function sessionId(i: number): string {
+  return `ses_${workstreamId(i).slice(3)}`;
+}
+
+function repositoryId(i: number): string {
+  return `repo_${workstreamId(i).slice(3)}`;
+}
+
 function event(overrides: Record<string, unknown> = {}, i = 0): Record<string, unknown> {
   return {
     schema_version: EVENT_SCHEMA_VERSION,
     event_id: eventId(i),
     kind: "command.completed",
     occurred_at: "2026-08-21T10:00:00Z",
+    observed_at: "2026-08-21T10:00:01Z",
     workstream_id: workstreamId(0),
-    session_id: `ses_01HTSTSESS${"0".repeat(15)}Z`,
+    session_id: sessionId(0),
     provider: "codex",
     provenance: "OBSERVED",
     payload: { exit_code: 1 },
@@ -99,6 +115,13 @@ describe("limits", () => {
   it("pins the documented limits", () => {
     expect(MAX_EVENTS_PER_BATCH).toBe(500);
     expect(MAX_BODY_BYTES).toBe(1_048_576);
+    expect(MAX_KIND_BYTES).toBe(64);
+    expect(MAX_PROVIDER_BYTES).toBe(64);
+    expect(MAX_NATIVE_SESSION_ID_BYTES).toBe(256);
+    expect(MAX_PROVENANCE_BYTES).toBe(8);
+    expect(MAX_CONTENT_HASH_BYTES).toBe(71);
+    expect(MAX_WORKSTREAM_TITLE_BYTES).toBe(200);
+    expect(MAX_TIMESTAMP_BYTES).toBe(35);
     expect(DEFAULT_PAGE_LIMIT).toBe(50);
     expect(MAX_PAGE_LIMIT).toBe(100);
   });
@@ -181,6 +204,14 @@ describe("validateEventBatch", () => {
       [{ ...event({}, 1), kind: "" }, "events[1].kind must be a non-empty string"],
       [{ ...event({}, 1), occurred_at: "yesterday" }, "events[1].occurred_at must be an RFC 3339 timestamp"],
       [{ ...event({}, 1), occurred_at: "2026-08-21" }, "events[1].occurred_at must be an RFC 3339 timestamp"],
+      [{ ...event({}, 1), occurred_at: "2026-08-21T10:00:00" }, "events[1].occurred_at must be an RFC 3339 timestamp"],
+      [{ ...event({}, 1), observed_at: "yesterday" }, "events[1].observed_at must be an RFC 3339 timestamp"],
+      [{ ...event({}, 1), observed_at: undefined }, "events[1].observed_at must be an RFC 3339 timestamp"],
+      [{ ...event({}, 1), sequence: -1 }, "events[1].sequence must be a non-negative safe integer"],
+      [{ ...event({}, 1), sequence: 1.5 }, "events[1].sequence must be a non-negative safe integer"],
+      [{ ...event({}, 1), redaction: "failed" }, "events[1].redaction must be an object"],
+      [{ ...event({}, 1), redaction: { status: "failed" } }, "events[1].redaction status forbids sync"],
+      [{ ...event({}, 1), redaction: { status: "REDACTION_FAILED" } }, "events[1].redaction status forbids sync"],
     ];
     for (const [badEvent, error] of cases) {
       expect(validateEventBatch(envelope({}, [event(), badEvent]), TOKEN_WORKSPACE)).toEqual({
@@ -191,9 +222,173 @@ describe("validateEventBatch", () => {
     }
   });
 
+  it("requires exact prefixed ULIDs for every optional durable id", () => {
+    expect(validateEventBatch(envelope({}, [event({
+      workstream_id: workstreamId(1),
+      session_id: sessionId(1),
+      repository_id: repositoryId(1),
+    })]), TOKEN_WORKSPACE).ok).toBe(true);
+
+    const malformed: Array<[string, unknown]> = [
+      ["workstream_id", sessionId(1)],
+      ["workstream_id", `ws_${"A".repeat(26)}`], // ULID timestamp overflow
+      ["session_id", `ses_${"0".repeat(25)}i`], // lowercase + forbidden Crockford character
+      ["repository_id", "repo_alpha"],
+      ["repository_id", null],
+    ];
+    for (const [field, value] of malformed) {
+      const result = validateEventBatch(envelope({}, [event({ [field]: value })]), TOKEN_WORKSPACE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain(`events[0].${field} must match`);
+    }
+  });
+
+  it("rejects 250 KiB durable ids before they can reach indexed columns", () => {
+    const huge = "0".repeat(250 * 1024);
+    for (const field of ["workstream_id", "session_id", "repository_id"] as const) {
+      const result = validateEventBatch(envelope({}, [event({ [field]: huge })]), TOKEN_WORKSPACE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain(`events[0].${field} must match`);
+    }
+  });
+
+  it("measures indexed string caps in UTF-8 bytes, not JavaScript characters", () => {
+    const boundary = event({
+      kind: "é".repeat(MAX_KIND_BYTES / 2),
+      provider: "é".repeat(MAX_PROVIDER_BYTES / 2),
+      native_session_id: "🙂".repeat(MAX_NATIVE_SESSION_ID_BYTES / 4),
+    });
+    expect(validateEventBatch(envelope({}, [boundary]), TOKEN_WORKSPACE).ok).toBe(true);
+
+    const over: Array<[string, string]> = [
+      ["kind", `${"é".repeat(MAX_KIND_BYTES / 2)}a`],
+      ["provider", `${"é".repeat(MAX_PROVIDER_BYTES / 2)}a`],
+      ["native_session_id", `${"🙂".repeat(MAX_NATIVE_SESSION_ID_BYTES / 4)}a`],
+    ];
+    for (const [field, value] of over) {
+      const result = validateEventBatch(envelope({}, [event({ [field]: value })]), TOKEN_WORKSPACE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain(`events[0].${field} must be at most`);
+    }
+  });
+
+  it("accepts only the three honest provenance labels", () => {
+    for (const provenance of ["OBSERVED", "DECLARED", "INFERRED"]) {
+      expect(validateEventBatch(envelope({}, [event({ provenance })]), TOKEN_WORKSPACE).ok).toBe(true);
+    }
+    for (const provenance of ["observed", "ESTIMATED", "", null, "X".repeat(250 * 1024)]) {
+      const result = validateEventBatch(envelope({}, [event({ provenance })]), TOKEN_WORKSPACE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe(
+          "events[0].provenance must be one of OBSERVED, DECLARED, INFERRED",
+        );
+      }
+    }
+  });
+
+  it("accepts only canonical lowercase SHA-256 content hashes", () => {
+    const valid = `sha256:${"a".repeat(64)}`;
+    expect(validateEventBatch(envelope({}, [event({ content_hash: valid })]), TOKEN_WORKSPACE).ok).toBe(true);
+    for (const content_hash of [
+      `sha256:${"a".repeat(63)}`,
+      `sha256:${"A".repeat(64)}`,
+      `sha512:${"a".repeat(64)}`,
+      "a".repeat(250 * 1024),
+      null,
+    ]) {
+      const result = validateEventBatch(envelope({}, [event({ content_hash })]), TOKEN_WORKSPACE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("events[0].content_hash must match");
+    }
+  });
+
+  it("caps projected workstream titles at 200 UTF-8 bytes", () => {
+    const boundaryTitle = "🙂".repeat(MAX_WORKSTREAM_TITLE_BYTES / 4);
+    expect(validateEventBatch(envelope({}, [event({
+      kind: "workstream.started",
+      payload: { title: boundaryTitle },
+    })]), TOKEN_WORKSPACE).ok).toBe(true);
+
+    for (const title of [
+      `${boundaryTitle}a`,
+      "x".repeat(250 * 1024),
+    ]) {
+      const result = validateEventBatch(envelope({}, [event({
+        kind: "workstream.started",
+        payload: { title },
+      })]), TOKEN_WORKSPACE);
+      expect(result).toEqual({
+        ok: false,
+        status: 400,
+        error: `events[0].payload.title must be at most ${MAX_WORKSTREAM_TITLE_BYTES} UTF-8 bytes`,
+      });
+    }
+    expect(validateEventBatch(envelope({}, [event({
+      kind: "workstream.started",
+      payload: { title: 17 },
+    })]), TOKEN_WORKSPACE)).toEqual({
+      ok: false,
+      status: 400,
+      error: "events[0].payload.title must be a string",
+    });
+  });
+
+  it("keeps timestamps compatible with Go RFC3339Nano output", () => {
+    expect(validateEventBatch(envelope({}, [event({
+      occurred_at: "2026-08-21T10:00:00.123456789+05:30",
+      observed_at: "2026-08-21T10:00:00.123456789-04:00",
+    })]), TOKEN_WORKSPACE).ok).toBe(true);
+    const result = validateEventBatch(envelope({}, [event({
+      occurred_at: "2026-08-21T10:00:00.1234567890Z",
+    })]), TOKEN_WORKSPACE);
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      error: "events[0].occurred_at must be an RFC 3339 timestamp",
+    });
+  });
+
   it("rejects non-object events", () => {
     const result = validateEventBatch(envelope({}, ["nope" as unknown as Record<string, unknown>]), TOKEN_WORKSPACE);
     expect(result).toEqual({ ok: false, status: 400, error: "events[0] must be an object" });
+  });
+
+  it("rejects duplicate event ids within one batch", () => {
+    const result = validateEventBatch(envelope({}, [event({}, 0), event({}, 0)]), TOKEN_WORKSPACE);
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      error: "events[1].event_id duplicates an earlier event",
+    });
+  });
+
+  it("rejects non-finite and precision-losing numbers before canonical hashing", () => {
+    for (const numeric of ["1e400", "-1e400", "9007199254740993"]) {
+      const parsed = JSON.parse(
+        JSON.stringify(envelope()).replace(
+          '"payload":{"exit_code":1}',
+          `"payload":{"nested":{"numeric":${numeric}}}`,
+        ),
+      );
+      const result = validateEventBatch(parsed, TOKEN_WORKSPACE);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.status).toBe(400);
+        expect(result.error).toMatch(/numbers must be finite|safe integer range/);
+      }
+    }
+  });
+
+  it("bounds JSON nesting before recursive canonical encoding", () => {
+    let nested: Record<string, unknown> = {};
+    for (let depth = 0; depth < 70; depth++) nested = { child: nested };
+    const result = validateEventBatch(envelope({ nested }), TOKEN_WORKSPACE);
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      error: "JSON nesting exceeds 64 levels",
+    });
   });
 });
 
@@ -280,6 +475,7 @@ describe("buildEventRows", () => {
         event_id: eventId(0),
         kind: "log.observed",
         occurred_at: "2026-08-21T11:00:00Z",
+        observed_at: "2026-08-21T11:00:01Z",
         "x-extra": true,
       },
     ]) as EventBatchEnvelope;
@@ -294,6 +490,65 @@ describe("buildEventRows", () => {
     const raw = JSON.parse(row.raw_json);
     expect(raw["x-extra"]).toBe(true);
     expect(row.raw_json.indexOf('"kind"')).toBeLessThan(row.raw_json.indexOf('"occurred_at"'));
+  });
+});
+
+// -- pure logic: workstream projection ----------------------------------------------
+
+describe("buildWorkstreamProjectionRows", () => {
+  it("derives bounded rows only for events carrying a workstream id", () => {
+    const value = envelope({}, [
+      event({
+        kind: "workstream.started",
+        occurred_at: "2026-08-21T10:00:00.250Z",
+        repository_id: repositoryId(0),
+        payload: { title: "Fix checkout race" },
+      }, 0),
+      event({ workstream_id: undefined }, 1),
+    ]) as EventBatchEnvelope;
+
+    expect(buildWorkstreamProjectionRows(value, TOKEN_WORKSPACE)).toEqual([{
+      id: workstreamId(0),
+      workspace_id: TOKEN_WORKSPACE,
+      repository_id: repositoryId(0),
+      title: "Fix checkout race",
+      status: "active",
+      created_at: 1_787_306_400,
+      updated_at: 1_787_306_400,
+      title_event_at_ms: 1_787_306_400_250,
+      title_event_id: eventId(0),
+      status_event_at_ms: 1_787_306_400_250,
+      status_event_id: eventId(0),
+      source_event_id: eventId(0),
+    }]);
+  });
+
+  it("uses lifecycle coordinates that converge under out-of-order delivery", () => {
+    const completed = envelope({}, [event({
+      kind: "workstream.completed",
+      occurred_at: "2026-08-21T12:00:00Z",
+    })]) as EventBatchEnvelope;
+    const [row] = buildWorkstreamProjectionRows(completed, TOKEN_WORKSPACE);
+    expect(row.title).toBe(workstreamId(0));
+    expect(row.title_event_at_ms).toBeNull();
+    expect(row.status).toBe("completed");
+    expect(row.status_event_at_ms).toBe(Date.parse("2026-08-21T12:00:00Z"));
+  });
+
+  it("never emits an oversized fallback title even if called with unvalidated input", () => {
+    const huge = "x".repeat(250 * 1024);
+    const [row] = buildWorkstreamProjectionRows(
+      envelope({}, [event({
+        kind: "workstream.started",
+        workstream_id: huge,
+        payload: { title: huge },
+      })]) as EventBatchEnvelope,
+      TOKEN_WORKSPACE,
+    );
+    expect(new TextEncoder().encode(row.title).byteLength).toBeLessThanOrEqual(
+      MAX_WORKSTREAM_TITLE_BYTES,
+    );
+    expect(row.title).toBe("Untitled workstream");
   });
 });
 
@@ -481,11 +736,11 @@ function mockDb(handlers: {
       statements.push(record);
       return record;
     },
-    async batch<T = unknown>(batchStatements: D1BoundStatement[]) {
+    async batch(batchStatements: D1BoundStatement[]) {
       const recorded = batchStatements.map((statement) => statement as unknown as RecordedStatement);
       batches.push(recorded);
       handlers.batch?.(recorded);
-      return [] as T[];
+      return [];
     },
   };
   return { db, statements, batches };
@@ -493,7 +748,7 @@ function mockDb(handlers: {
 
 const CTX = {} as never; // ExecutionContext stub (unused by handlers)
 
-function makeEnv(db: D1DatabaseLike): Env {
+function makeEnv(db: D1DatabaseLike): { DB: D1DatabaseLike } {
   return { DB: db };
 }
 
@@ -508,10 +763,37 @@ function deviceRow(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
+function entitlementRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    workspace_id: TOKEN_WORKSPACE,
+    plan_id: "basic",
+    status: "active",
+    max_batch_events: 100,
+    max_batch_bytes: 262_144,
+    max_monthly_events: 5_000,
+    max_monthly_bytes: 10_485_760,
+    max_lifetime_events: 25_000,
+    max_lifetime_bytes: 67_108_864,
+    used_monthly_events: 0,
+    used_monthly_bytes: 0,
+    used_lifetime_events: 0,
+    used_lifetime_bytes: 0,
+    period_start: 1_700_000_000,
+    period_end: 1_900_000_000,
+    ...overrides,
+  };
+}
+
 /** Registry mock: devices resolve for the test token; everything else misses. */
-function deviceRegistry(overrides: Record<string, unknown> = {}) {
-  return async (sql: string): Promise<unknown> =>
-    sql.includes("FROM devices") ? deviceRow(overrides) : null;
+function deviceRegistry(
+  overrides: Record<string, unknown> = {},
+  entitlementOverrides: Record<string, unknown> = {},
+) {
+  return async (sql: string): Promise<unknown> => {
+    if (sql.includes("FROM devices")) return deviceRow(overrides);
+    if (sql.includes("quota:read-policy")) return entitlementRow(entitlementOverrides);
+    return null;
+  };
 }
 
 function request(path: string, init: RequestInit = {}): Request {
@@ -541,6 +823,39 @@ describe("worker: routing", () => {
       (await worker.fetch(request("/v1/workstreams", { method: "POST" }), makeEnv(db), CTX)).status,
     ).toBe(404);
   });
+
+  it("serves a no-store signed-out account page and fails closed when auth is unconfigured", async () => {
+    const { db } = mockDb();
+    const page = await worker.fetch(request("/account"), makeEnv(db), CTX);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toContain("text/html");
+    expect(page.headers.get("cache-control")).toBe("no-store");
+    expect(page.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(await page.text()).toContain("Create hosted account");
+
+    const auth = await worker.fetch(request("/v1/auth/start?intent=signup"), makeEnv(db), CTX);
+    expect(auth.status).toBe(503);
+    expect(await auth.json()).toMatchObject({ error: "hosted_auth_unavailable" });
+  });
+
+  it("publishes an honest plan catalog without enabling preview tiers", async () => {
+    const { db } = mockDb();
+    const response = await worker.fetch(request("/v1/plans"), makeEnv(db), CTX);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { plans: Array<Record<string, unknown>> };
+    const basic = body.plans.find((plan) => plan.id === "basic");
+    const pro = body.plans.find((plan) => plan.id === "pro");
+    expect(basic).toMatchObject({
+      available: true,
+      hostedEntitlement: true,
+      limits: { maxDevices: 2, maxMonthlyEvents: 5_000, maxLifetimeBytes: 67_108_864 },
+    });
+    expect(pro).toMatchObject({
+      available: false,
+      hostedEntitlement: false,
+      limits: null,
+    });
+  });
 });
 
 describe("worker: POST /v1/event-batches", () => {
@@ -564,29 +879,179 @@ describe("worker: POST /v1/event-batches", () => {
       workspace_id: TOKEN_WORKSPACE,
     });
 
-    // One atomic batch: the idempotency insert plus one event insert.
+    // One atomic batch: quota, idempotency, raw event, and read model.
     expect(batches).toHaveLength(1);
-    const [idempotencyInsert, eventInsert] = batches[0];
+    const [reservation, idempotencyInsert, eventInsert, workstreamUpsert] = batches[0];
+    expect(reservation.sql).toContain("INSERT OR IGNORE INTO quota_reservations");
     expect(idempotencyInsert.sql).toContain("INSERT INTO idempotency_keys");
     expect(idempotencyInsert.binds[0]).toBe("key-1");
     expect(idempotencyInsert.binds[1]).toBe(TOKEN_WORKSPACE);
     expect(idempotencyInsert.binds[2]).toBe(DEVICE_ID);
+    expect(idempotencyInsert.binds[3]).toMatch(/^[0-9a-f]{64}$/);
     expect(eventInsert.sql).toContain("INSERT OR IGNORE INTO events");
     expect(eventInsert.binds[0]).toBe(TOKEN_WORKSPACE); // workspace from the token, never the body
-    expect(eventInsert.binds[1]).toBe(eventId(0));
-    expect(eventInsert.binds[2]).toBe("key-1");
-    expect(String(eventInsert.binds[12])).toContain('"schema_version":"hfg.event.v1"');
+    expect(eventInsert.binds[1]).toBe("key-1");
+    const storedEvents = JSON.parse(String(eventInsert.binds[3])) as Record<string, unknown>[];
+    expect(storedEvents).toHaveLength(1);
+    expect(storedEvents[0].event_id).toBe(eventId(0));
+    expect(storedEvents[0].schema_version).toBe("hfg.event.v1");
+    expect(workstreamUpsert.sql).toContain("INSERT INTO workstreams");
+    expect(workstreamUpsert.sql).toContain("ON CONFLICT(workspace_id, id)");
+    expect(workstreamUpsert.sql).toContain("WHERE workstreams.workspace_id = excluded.workspace_id");
+    expect(workstreamUpsert.sql).toContain("events.raw_json = source.value");
+    expect(workstreamUpsert.sql).toContain("WHEN workstreams.status = 'completed' THEN workstreams.status");
+    expect(workstreamUpsert.sql).toContain("WHEN excluded.status = 'completed' THEN excluded.status");
+    const projections = JSON.parse(String(workstreamUpsert.binds[0])) as Record<string, unknown>[];
+    expect(projections).toHaveLength(1);
+    expect(projections[0].id).toBe(workstreamId(0));
+    expect(projections[0].workspace_id).toBe(TOKEN_WORKSPACE);
+    expect(projections[0].source_event_id).toBe(eventId(0));
+    expect(workstreamUpsert.binds[1]).toBe(eventInsert.binds[3]);
+  });
+
+  it("keeps a 500-event request to three D1 batch statements", async () => {
+    const events = Array.from({ length: MAX_EVENTS_PER_BATCH }, (_, i) => event({}, i));
+    const { db, batches } = mockDb({
+      first: deviceRegistry({}, {
+        max_batch_events: MAX_EVENTS_PER_BATCH,
+        max_batch_bytes: MAX_BODY_BYTES,
+      }),
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "full-batch" }),
+        body: JSON.stringify(envelope({}, events)),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+
+    expect(response.status).toBe(200);
+    expect(batches[0]).toHaveLength(4);
+    expect(JSON.parse(String(batches[0][2].binds[3]))).toHaveLength(MAX_EVENTS_PER_BATCH);
+    expect(JSON.parse(String(batches[0][3].binds[0]))).toHaveLength(MAX_EVENTS_PER_BATCH);
+  });
+
+  it("puts a Basic quota reservation in the same transaction as every hosted write", async () => {
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("FROM workspace_entitlements")) return entitlementRow();
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "metered-1" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(200);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(4);
+    const [reservation, idempotency, events, projection] = batches[0];
+    expect(reservation.sql).toContain("INSERT OR IGNORE INTO quota_reservations");
+    expect(reservation.binds[0]).toBe(TOKEN_WORKSPACE);
+    expect(reservation.binds[1]).toBe("metered-1");
+    expect(reservation.binds[2]).toMatch(/^[0-9a-f]{64}$/);
+    expect(reservation.binds[3]).toBe(1);
+    expect(reservation.binds[4]).toBeGreaterThan(0);
+    expect(idempotency.sql).toContain("INSERT INTO idempotency_keys");
+    expect(events.sql).toContain("INSERT OR IGNORE INTO events");
+    expect(projection.sql).toContain("INSERT INTO workstreams");
+  });
+
+  it("rejects Basic one event over its per-batch limit before any write", async () => {
+    const events = Array.from({ length: 101 }, (_, i) => event({}, i));
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("FROM workspace_entitlements")) return entitlementRow();
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "metered-over" }),
+        body: JSON.stringify(envelope({}, events)),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({
+      error: "hosted quota exceeded",
+      code: "batch_events_exceeded",
+      local_capture_unaffected: true,
+      detail: { scope: "batch", resource: "events", limit: 100, requested: 101 },
+    });
+    expect(batches).toHaveLength(0);
+  });
+
+  it("fails closed when the hosted entitlement is inactive", async () => {
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("FROM workspace_entitlements")) {
+          return entitlementRow({ status: "suspended" });
+        }
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "inactive" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      code: "entitlement_inactive",
+      local_capture_unaffected: true,
+    });
+    expect(batches).toHaveLength(0);
+  });
+
+  it("fails closed when a device workspace has no hosted entitlement", async () => {
+    const { db, batches } = mockDb({
+      first: async (sql) => sql.includes("FROM devices") ? deviceRow() : null,
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "missing-entitlement" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      code: "quota_configuration_error",
+      local_capture_unaffected: true,
+    });
+    expect(batches).toHaveLength(0);
   });
 
   it("returns the original receipt bytes for a duplicate key without re-storing", async () => {
     const receipt = await buildReceipt("key-1", TOKEN_WORKSPACE, envelope() as EventBatchEnvelope);
     const receiptJson = canonicalJsonStringify(receipt);
+    const requestHash = await sha256Hex(canonicalJsonStringify(envelope()));
     const { db, batches } = mockDb({
       first: async (sql, binds) => {
         if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("quota:read-policy")) return entitlementRow();
         if (sql.includes("FROM idempotency_keys")) {
-          expect(binds[0]).toBe("key-1");
-          return { workspace_id: TOKEN_WORKSPACE, receipt_json: receiptJson };
+          expect(binds).toEqual([TOKEN_WORKSPACE, "key-1"]);
+          return { workspace_id: TOKEN_WORKSPACE, request_hash: requestHash, receipt_json: receiptJson };
         }
         return null;
       },
@@ -602,6 +1067,108 @@ describe("worker: POST /v1/event-batches", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(receiptJson);
+    expect(batches).toHaveLength(0);
+  });
+
+  it("rejects a migrated receipt whose original request hash is unverifiable", async () => {
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("FROM idempotency_keys")) {
+          return {
+            workspace_id: TOKEN_WORKSPACE,
+            request_hash: null,
+            receipt_json: '{"accepted":1}',
+          };
+        }
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "legacy-key" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "legacy Idempotency-Key cannot be verified; use a new key",
+    });
+    expect(batches).toHaveLength(0);
+  });
+
+  it("re-reads the receipt when an identical quota reservation wins after the first lookup", async () => {
+    const receipt = await buildReceipt("quota-race", TOKEN_WORKSPACE, envelope() as EventBatchEnvelope);
+    const receiptJson = canonicalJsonStringify(receipt);
+    const requestHash = await sha256Hex(canonicalJsonStringify(envelope()));
+    let receiptReads = 0;
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("quota:read-policy")) return entitlementRow();
+        if (sql.includes("FROM idempotency_keys")) {
+          receiptReads += 1;
+          return receiptReads === 1
+            ? null
+            : { workspace_id: TOKEN_WORKSPACE, request_hash: requestHash, receipt_json: receiptJson };
+        }
+        if (sql.includes("FROM quota_reservations")) {
+          return {
+            request_hash: requestHash,
+            event_count: 1,
+            body_bytes: new TextEncoder().encode(JSON.stringify(envelope())).byteLength,
+            status: "allowed",
+          };
+        }
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "quota-race" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(receiptJson);
+    expect(receiptReads).toBe(2);
+    expect(batches).toHaveLength(0);
+  });
+
+  it("rejects reuse of a tenant idempotency key for a different canonical request", async () => {
+    const firstHash = await sha256Hex(canonicalJsonStringify(envelope()));
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("FROM idempotency_keys")) {
+          return {
+            workspace_id: TOKEN_WORKSPACE,
+            request_hash: firstHash,
+            receipt_json: "{}",
+          };
+        }
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "key-1" }),
+        body: JSON.stringify(envelope({}, [event({}, 1)])),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Idempotency-Key was already used for a different request",
+    });
     expect(batches).toHaveLength(0);
   });
 
@@ -676,6 +1243,24 @@ describe("worker: POST /v1/event-batches", () => {
     expect(response.status).toBe(401);
   });
 
+  it("answers 403 for a device without the ingest capability", async () => {
+    const { db, batches } = mockDb({
+      first: deviceRegistry({ capabilities: "read" }),
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "key-1" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden" });
+    expect(batches).toHaveLength(0);
+  });
+
   it("rejects a body over 1 MiB with 413", async () => {
     const { db } = mockDb({ first: deviceRegistry() });
     const response = await worker.fetch(
@@ -704,6 +1289,21 @@ describe("worker: POST /v1/event-batches", () => {
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "request body is not valid JSON" });
+  });
+
+  it("rejects invalid UTF-8 without buffering or replacement", async () => {
+    const { db } = mockDb({ first: deviceRegistry() });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "key-invalid-utf8" }),
+        body: new Uint8Array([0xff]),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "request body is not readable UTF-8" });
   });
 
   it("rejects an invalid envelope (fail-closed) without storing anything", async () => {
@@ -736,19 +1336,44 @@ describe("worker: POST /v1/event-batches", () => {
     expect(await response.json()).toEqual({ error: "not found" });
   });
 
+  it("maps contradictory reuse of an event ID to a fail-closed 409", async () => {
+    const { db, batches } = mockDb({
+      first: deviceRegistry(),
+      batch: () => {
+        throw new Error("D1_ERROR: event payload conflict: SQLITE_CONSTRAINT");
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "different-batch" }),
+        body: JSON.stringify(envelope({}, [event({ payload: { exit_code: 2 } })])),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "event_id was already used for different evidence",
+    });
+    expect(batches).toHaveLength(1);
+  });
+
   it("recovers the winner's receipt when a concurrent duplicate loses the insert race", async () => {
     const receipt = await buildReceipt("race-key", TOKEN_WORKSPACE, envelope() as EventBatchEnvelope);
     const receiptJson = canonicalJsonStringify(receipt);
+    const requestHash = await sha256Hex(canonicalJsonStringify(envelope()));
     let firstRead = true;
     const { db } = mockDb({
       first: async (sql) => {
         if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("quota:read-policy")) return entitlementRow();
         if (sql.includes("FROM idempotency_keys")) {
           if (firstRead) {
             firstRead = false;
             return null;
           }
-          return { workspace_id: TOKEN_WORKSPACE, receipt_json: receiptJson };
+          return { workspace_id: TOKEN_WORKSPACE, request_hash: requestHash, receipt_json: receiptJson };
         }
         return null;
       },

@@ -130,9 +130,29 @@ func (e *Engine) RedactEvent(ev *protocol.Event) (*Result, error) {
 // RedactValue redacts a single string value; used for preview and direct
 // field redaction. Returns the redacted value and whether anything changed.
 func (e *Engine) RedactValue(s string) (string, bool) {
+	out, changed := e.RedactKnownPatterns(s)
+
+	// High-entropy token detection over whitespace-delimited tokens.
+	tokens := strings.FieldsFunc(out, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '=' || r == ':' || r == ',' || r == ';' || r == '"' || r == '\''
+	})
+	for _, tok := range tokens {
+		if len(tok) >= 16 && shannonEntropy(tok) >= e.entropy && looksLikeSecret(tok) {
+			out = strings.ReplaceAll(out, tok, Mask)
+			changed = true
+		}
+	}
+	return out, changed
+}
+
+// RedactKnownPatterns applies known-token and user-configured regex rules
+// without the high-entropy heuristic. It is intended for structured metadata
+// such as Git remotes and branch names, where an ordinary URL can otherwise
+// resemble one long high-entropy token. Free-form captured content should use
+// RedactValue so it receives the complete pipeline.
+func (e *Engine) RedactKnownPatterns(s string) (string, bool) {
 	out := s
 	changed := false
-
 	for _, re := range builtinTokenPatterns {
 		if re.MatchString(out) {
 			out = re.ReplaceAllString(out, Mask)
@@ -142,16 +162,6 @@ func (e *Engine) RedactValue(s string) (string, bool) {
 	for _, re := range e.patterns {
 		if re.MatchString(out) {
 			out = re.ReplaceAllString(out, Mask)
-			changed = true
-		}
-	}
-	// High-entropy token detection over whitespace-delimited tokens.
-	tokens := strings.FieldsFunc(out, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '=' || r == ':' || r == ',' || r == ';' || r == '"' || r == '\''
-	})
-	for _, tok := range tokens {
-		if len(tok) >= 16 && shannonEntropy(tok) >= e.entropy && looksLikeSecret(tok) {
-			out = strings.ReplaceAll(out, tok, Mask)
 			changed = true
 		}
 	}
