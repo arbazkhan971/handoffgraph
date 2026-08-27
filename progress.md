@@ -245,3 +245,16 @@ collaboration, and other later features remain explicitly gated.
 - [ ] Production publication remains blocked on the external `WAITLIST` KV
       binding, edge abuse control, and custom-domain deployment described
       above. No public deploy was performed.
+
+## Direct account access — 2026-08-28
+
+- [x] Removed every public waitlist and request-access option from the landing
+      page, including the form, fallback storage script, navigation links, and
+      Team beta-list action.
+- [x] Added direct Hosted Basic sign-up and sign-in actions while keeping Solo
+      and Team visibly unavailable.
+- [x] Updated the hashed script CSP, passed all 15 landing tests, and published
+      the production build at `https://handoffgraph-landing.vercel.app`.
+- [ ] The Cloudflare authentication backend still requires WorkOS secrets,
+      remote D1 migrations, signup abuse controls, and a Worker deployment
+      before the direct account actions can complete successfully.

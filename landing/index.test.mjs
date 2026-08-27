@@ -28,21 +28,9 @@ test("landing page ships the product-led handoff story and honest links", () => 
   assert.match(html, /<link rel="icon" href="\/favicon\.png" type="image\/png" sizes="64x64">/);
 });
 
-test("waitlist markup preserves the API contract and a safe no-JS floor", () => {
-  for (const name of [
-    "name",
-    "email",
-    "agents_used",
-    "weekly_sessions",
-    "team_size",
-    "context_loss_incident",
-  ]) {
-    assert.match(html, new RegExp(`name="${name}"`));
-  }
-  assert.match(html, /fetch\('\/api\/waitlist'/);
-  assert.match(html, /response\.status===202&&body\.ok===true/);
-  assert.match(html, /\.no-js \.waitlist-form>:not\(noscript\)/);
-  assert.match(html, /mailto:hello@handoffgraph\.dev/);
+test("landing removes request-access flows", () => {
+  assert.doesNotMatch(html, /waitlist|request hosted|request early access|join the team beta list/i);
+  assert.doesNotMatch(html, /fetch\('\/api\/waitlist'/);
 });
 
 test("pricing keeps Local Core free and Hosted Basic explicitly bounded", () => {
@@ -67,13 +55,12 @@ test("pricing keeps Local Core free and Hosted Basic explicitly bounded", () => 
   assert.doesNotMatch(html, /metadata-only/i);
 });
 
-test("public signup stays on the beta list while existing-account sign-in is reachable", () => {
+test("public signup and sign-in are directly reachable", () => {
   assert.match(html, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signin">Sign in<\/a>/);
-  assert.match(html, /href="#waitlist">Request hosted access<\/a>/);
+  assert.match(html, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signup">Sign up free<\/a>/);
   const basic = planMarkup("hosted-basic");
-  assert.match(basic, /href="#waitlist">Request Hosted Basic access<\/a>/);
+  assert.match(basic, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signup">Sign up for Hosted Basic<\/a>/);
   assert.match(basic, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signin"/);
-  assert.doesNotMatch(basic, /intent=signup/);
 });
 
 test("Solo and Team are visibly non-purchasable previews", () => {
@@ -86,7 +73,7 @@ test("Solo and Team are visibly non-purchasable previews", () => {
   const team = planMarkup("team");
   assert.match(team, /Planned · not purchasable/);
   assert.match(team, /Roadmap preview only/);
-  assert.match(team, /href="#waitlist"/);
+  assert.match(team, /Not available yet/);
   assert.doesNotMatch(team, /\/v1\/auth\/start|checkout|subscribe|buy now/i);
 });
 
@@ -109,14 +96,11 @@ test("inline scripts are syntactically valid", () => {
   assert.doesNotMatch(html, /script-src[^;]*'unsafe-inline'/);
 });
 
-test("primary landmarks and form controls have accessible names", () => {
+test("primary landmarks have accessible names", () => {
   assert.equal((html.match(/<h1\b/g) || []).length, 1);
   assert.match(html, /class="skip" href="#main"/);
   assert.match(html, /<main id="main">/);
   assert.match(html, /aria-label="Primary navigation"/);
-  for (const id of ["f-name", "f-email", "f-agents", "f-weekly", "f-team", "f-incident"]) {
-    assert.match(html, new RegExp(`<label for="${id}">`));
-  }
   assert.match(html, /@media\(prefers-reduced-motion:reduce\)/);
 });
 

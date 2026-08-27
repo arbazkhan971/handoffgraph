@@ -27,7 +27,7 @@ import ogImage from "./og.png";
 import { CORS_HEADERS, handleWaitlist } from "./waitlist.mjs";
 
 const SECURITY_HEADERS = {
-  "content-security-policy": "default-src 'none'; script-src 'sha256-5r0ceAi77ofyhKluuUBJUzdOIMc4aEZR9Xlgif5W6zg=' 'sha256-KfAy3zedglbDaBnq1qCe56MS+2P7Z1hXGOryhgo7R6o='; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+  "content-security-policy": "default-src 'none'; script-src 'sha256-5r0ceAi77ofyhKluuUBJUzdOIMc4aEZR9Xlgif5W6zg=' 'sha256-KeVIeV/k9Jk0Yq+Cu12nXqK2pUwCy3DTPBRhjXhOTxA='; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
   "cross-origin-opener-policy": "same-origin",
   "permissions-policy": "camera=(), geolocation=(), microphone=()",
   "x-content-type-options": "nosniff",

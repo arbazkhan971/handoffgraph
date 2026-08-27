@@ -20,7 +20,7 @@
 <meta name="twitter:description" content="Hand off the work. Keep the proof. Local-first continuity for Claude Code, Codex, and Pi.">
 <meta name="twitter:image" content="https://handoffgraph.dev/og.png">
 <link rel="icon" href="/favicon.png" type="image/png" sizes="64x64">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-5r0ceAi77ofyhKluuUBJUzdOIMc4aEZR9Xlgif5W6zg=' 'sha256-KfAy3zedglbDaBnq1qCe56MS+2P7Z1hXGOryhgo7R6o='; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-5r0ceAi77ofyhKluuUBJUzdOIMc4aEZR9Xlgif5W6zg=' 'sha256-KeVIeV/k9Jk0Yq+Cu12nXqK2pUwCy3DTPBRhjXhOTxA='; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'">
 <script>document.documentElement.className='js';</script>
 <style>
 :root{
@@ -217,24 +217,21 @@ img{max-width:100%}
 .plan-actions{display:grid;gap:.55rem;margin-top:1rem}.plan-actions .button{width:100%;margin:0}.plan-card.basic .button.light{color:var(--ink)}.plan-signin{text-align:center;text-decoration:underline;text-underline-offset:.2em;font:700 .66rem/1.4 var(--mono)}
 .button.disabled{border-color:rgba(10,12,15,.28);background:rgba(10,12,15,.05);color:#73746e;cursor:not-allowed;box-shadow:none;transform:none}
 
-/* FAQ + Waitlist */
+/* FAQ */
 .faq-grid{display:grid;grid-template-columns:.62fr 1.38fr;gap:clamp(3rem,8vw,8rem)}
 .faq-list{border-top:1px solid var(--line)}
 .faq-list details{border-bottom:1px solid var(--line);padding:1.1rem 0}.faq-list summary{cursor:pointer;list-style:none;font-weight:750;padding-right:2rem;position:relative}.faq-list summary::-webkit-details-marker{display:none}.faq-list summary::after{content:"+";position:absolute;right:.2rem;top:-.2rem;font:400 1.4rem/1 var(--mono)}.faq-list details[open] summary::after{content:"−"}.faq-list p{color:#62635d;max-width:680px;margin:.8rem 2rem .2rem 0}
-.waitlist-wrap{padding-top:0}.waitlist-panel{position:relative;overflow:hidden;background:var(--violet);border:1px solid var(--ink);box-shadow:10px 10px 0 var(--ink);padding:clamp(1.5rem,5vw,4rem)}.waitlist-panel::after{content:"HFG";position:absolute;right:-.03em;bottom:-.22em;color:rgba(255,255,255,.12);font:800 clamp(8rem,22vw,18rem)/1 var(--sans);letter-spacing:-.1em;pointer-events:none}.waitlist-grid{position:relative;z-index:1;display:grid;grid-template-columns:.75fr 1.25fr;gap:clamp(2rem,6vw,6rem)}.waitlist-copy h2{font-size:clamp(2.7rem,5.5vw,5.5rem);line-height:.9;letter-spacing:-.06em;margin:0}.waitlist-copy p{max-width:420px}.waitlist-form{display:grid;gap:.8rem;align-content:start}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:.8rem}.field label{display:block;margin:0 0 .35rem;font:750 .62rem/1 var(--mono);text-transform:uppercase;letter-spacing:.04em}.field input,.field select,.field textarea{width:100%;border:1px solid var(--ink);border-radius:7px;background:rgba(250,249,243,.88);color:var(--ink);padding:.75rem .8rem;min-height:46px}.field textarea{min-height:92px;resize:vertical}.optional{border:1px solid rgba(10,12,15,.28);border-radius:8px;padding:.7rem}.optional summary{cursor:pointer;font:700 .65rem/1.2 var(--mono);text-transform:uppercase}.optional-fields{display:grid;gap:.8rem;padding-top:.85rem}.submit-row{display:flex;align-items:center;gap:1rem;flex-wrap:wrap}.submit-row button:disabled{opacity:.55;cursor:wait}.privacy-note{font:600 .56rem/1.5 var(--mono);max-width:360px}.form-status{min-height:1.4em;margin:0;font:700 .65rem/1.5 var(--mono)}.form-status.ok{color:#173900}.form-status.err{color:#50110d}.mailto-fallback{border:1px dashed var(--ink);padding:.75rem;background:rgba(255,255,255,.2)}
-
-.no-js .waitlist-form>:not(noscript){display:none!important}
 
 /* Footer / reveal */
 .site-footer{padding:2rem 0 3rem}.footer-grid{display:grid;grid-template-columns:1fr auto;gap:2rem;align-items:end;border-top:1px solid var(--line);padding-top:2rem}.footer-brand{font-size:1.4rem}.footer-brand p{font-size:.82rem;color:#6a6b65;margin:.4rem 0 0}.footer-links{display:flex;flex-wrap:wrap;gap:1.2rem;justify-content:flex-end;font-size:.82rem}.footer-meta{grid-column:1/-1;display:flex;justify-content:space-between;gap:1rem;padding-top:1.2rem;color:#62635d;font:600 .58rem/1.4 var(--mono);text-transform:uppercase}
 .js .reveal{opacity:0;transform:translateY(24px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}.js .reveal.visible{opacity:1;transform:none}
 
 @media(max-width:1000px){
-  .hero-grid{grid-template-columns:1fr}.hero-copy{max-width:800px}.hero-copy .display{max-width:11ch}.hero-product{max-width:820px;margin:2rem auto 0;width:100%}.story-step{grid-template-columns:65px 1fr}.story-step .surface{grid-column:2}.evidence-grid,.debug-grid{grid-template-columns:1fr}.evidence-copy .section-title,.debug-copy .section-title{max-width:12ch}.pricing-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.waitlist-grid{grid-template-columns:1fr}.faq-grid{grid-template-columns:1fr}.drift-grid{grid-template-columns:1fr}.story-head,.pricing-head{grid-template-columns:1fr}.story-head .lede{margin:0}.pricing-head .lede{margin:0}.metrics{grid-template-columns:1fr 1fr}.metric:nth-child(2){border-right:0}.metric:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+  .hero-grid{grid-template-columns:1fr}.hero-copy{max-width:800px}.hero-copy .display{max-width:11ch}.hero-product{max-width:820px;margin:2rem auto 0;width:100%}.story-step{grid-template-columns:65px 1fr}.story-step .surface{grid-column:2}.evidence-grid,.debug-grid{grid-template-columns:1fr}.evidence-copy .section-title,.debug-copy .section-title{max-width:12ch}.pricing-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.faq-grid{grid-template-columns:1fr}.drift-grid{grid-template-columns:1fr}.story-head,.pricing-head{grid-template-columns:1fr}.story-head .lede{margin:0}.pricing-head .lede{margin:0}.metrics{grid-template-columns:1fr 1fr}.metric:nth-child(2){border-right:0}.metric:nth-child(-n+2){border-bottom:1px solid var(--line)}}
 @media(max-width:720px){
   .shell{width:min(calc(100% - 24px),1220px)}.section{padding:4.5rem 0}.site-header{padding:10px 0}.nav-shell{width:100%;border-radius:11px}.menu-toggle{display:block}.nav-links{display:none;position:absolute;left:12px;right:12px;top:76px;flex-direction:column;align-items:stretch;gap:.25rem;padding:.8rem;background:var(--paper);border:1px solid var(--ink);box-shadow:6px 6px 0 var(--ink)}.nav-links.open{display:flex}.nav-links>a{padding:.7rem}.nav-links .button{margin-top:.3rem}.hero{padding-top:2.2rem}.hero-copy{min-width:0;max-width:100%}.hero-copy .display{font-size:clamp(3.05rem,13vw,4.8rem);max-width:100%;overflow-wrap:normal}.hero-actions{display:grid;grid-template-columns:1fr}.hero-actions .button{width:100%}.trust-line{font-size:.61rem;max-width:100%}.tilt-note{right:8px}.product-window{transform:none;box-shadow:6px 7px 0 var(--ink)}.demo-grid{grid-template-columns:86px 1fr}.demo-inspector{display:none}.stage-button{font-size:.56rem}.story-step{grid-template-columns:1fr;gap:1.2rem;padding:3rem 0}.story-step .surface{grid-column:auto}.story-no{font-size:2.4rem}.proof-button{grid-template-columns:85px 1fr auto;gap:.6rem}.proof-detail{padding-left:0}.debug-body{grid-template-columns:80px 1fr}.wf-head,.wf-row{grid-template-columns:78px 1fr}.form-row{grid-template-columns:1fr}.footer-grid{grid-template-columns:1fr}.footer-links{justify-content:flex-start}.footer-meta{flex-direction:column}.packet-grid{grid-template-columns:1fr}.packet-cell.wide{grid-column:auto}}
 @media(max-width:600px){.pricing-grid{grid-template-columns:1fr}.pricing-assurance{align-items:flex-start;flex-direction:column}.pricing-assurance span{text-align:left}.plan-desc{min-height:0}}
-@media(max-width:480px){.metrics{grid-template-columns:1fr}.metric{border-right:0;border-bottom:1px solid var(--line)}.metric:last-child{border:0}.eyebrow-pill{max-width:100%;font-size:.52rem;line-height:1.35;letter-spacing:.05em}.demo-side{display:none}.demo-grid{grid-template-columns:1fr}.window-title{display:none}.stage-caption span:last-child{display:none}.stage-nav{gap:.2rem}.stage-button{padding:.5rem .25rem}.stage-button span{display:none}.ack-strip{align-items:flex-start;flex-direction:column;gap:.4rem}.ack-strip span{min-width:0;overflow-wrap:anywhere}.plan-card{padding:1.2rem}.waitlist-panel{box-shadow:6px 6px 0 var(--ink)}}
+@media(max-width:480px){.metrics{grid-template-columns:1fr}.metric{border-right:0;border-bottom:1px solid var(--line)}.metric:last-child{border:0}.eyebrow-pill{max-width:100%;font-size:.52rem;line-height:1.35;letter-spacing:.05em}.demo-side{display:none}.demo-grid{grid-template-columns:1fr}.window-title{display:none}.stage-caption span:last-child{display:none}.stage-nav{gap:.2rem}.stage-button{padding:.5rem .25rem}.stage-button span{display:none}.ack-strip{align-items:flex-start;flex-direction:column;gap:.4rem}.ack-strip span{min-width:0;overflow-wrap:anywhere}.plan-card{padding:1.2rem}}
 @media(max-width:720px){.no-js .menu-toggle{display:none}.no-js .nav-shell{align-items:flex-start;flex-wrap:wrap}.no-js .nav-links{position:static;display:flex;flex:1 0 100%;box-shadow:none;border:0;background:transparent;padding:.25rem 0 0}.no-js .nav-links .button{align-self:flex-start}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}.js .reveal{opacity:1;transform:none}.button:hover{transform:none}}
 </style>
@@ -248,7 +245,7 @@ img{max-width:100%}
     <nav class="nav-links" id="site-nav" aria-label="Primary navigation">
       <a href="#how">How it works</a><a href="#debugger">Debugger</a><a href="#trust">Trust</a><a href="#pricing">Pricing</a>
       <a href="https://api.handoffgraph.dev/v1/auth/start?intent=signin">Sign in</a>
-      <a class="button small primary" href="#waitlist">Request hosted access</a>
+      <a class="button small primary" href="https://api.handoffgraph.dev/v1/auth/start?intent=signup">Sign up free</a>
     </nav>
   </div>
 </header>
@@ -422,7 +419,7 @@ img{max-width:100%}
         <p class="plan-desc">A deliberately bounded hosted account for testing event sync and workstream continuity without becoming a free storage service.</p>
         <ul class="plan-list"><li>1 personal workspace, 2 active devices</li><li>10 device-token issuances lifetime</li><li>5,000 synced events per month</li><li>25,000 synced events lifetime</li><li>64 MiB uploaded lifetime</li><li>Bounded, validated event sync</li></ul>
         <p class="plan-note">Redaction failures are rejected. Cloud sync pauses at a hard cap; local capture never stops. No card required.</p>
-        <div class="plan-actions"><a class="button light" href="#waitlist">Request Hosted Basic access</a><a class="plan-signin" href="https://api.handoffgraph.dev/v1/auth/start?intent=signin">Already have a beta account? Sign in</a></div>
+        <div class="plan-actions"><a class="button light" href="https://api.handoffgraph.dev/v1/auth/start?intent=signup">Sign up for Hosted Basic</a><a class="plan-signin" href="https://api.handoffgraph.dev/v1/auth/start?intent=signin">Already have an account? Sign in</a></div>
       </article>
       <article class="plan-card preview reveal" data-plan="solo">
         <span class="plan-label">Preview · not purchasable</span>
@@ -439,8 +436,8 @@ img{max-width:100%}
         <p class="plan-price"><strong>Planned</strong><span>after Solo</span></p>
         <p class="plan-desc">Shared continuity is roadmap work. It is not part of the current local product or hosted Basic contract.</p>
         <ul class="plan-list"><li>Planned shared workstreams and review</li><li>Planned acknowledgement, comments, and presence</li><li>Pricing and hard limits not yet published</li></ul>
-        <p class="plan-note">Roadmap preview only. Joining the list is not a purchase or reservation.</p>
-        <div class="plan-actions"><a class="button light" href="#waitlist">Join the team beta list</a></div>
+        <p class="plan-note">Roadmap preview only. Team accounts are not available yet.</p>
+        <div class="plan-actions"><span class="button disabled" aria-disabled="true">Not available yet</span></div>
       </article>
     </div>
   </section>
@@ -459,26 +456,10 @@ img{max-width:100%}
     </div>
   </section>
 
-  <section class="section waitlist-wrap shell" id="waitlist">
-    <div class="waitlist-panel reveal">
-      <div class="waitlist-grid">
-        <div class="waitlist-copy"><p class="kicker">Hosted beta</p><h2>Keep the thread.</h2><p>Tell us which agent handoff hurts most. Early access prioritizes teams with real context-loss incidents.</p></div>
-        <form class="waitlist-form" id="waitlist-form" novalidate>
-          <noscript><p>Email <a href="mailto:hello@handoffgraph.dev">hello@handoffgraph.dev</a> to join—the form needs JavaScript.</p></noscript>
-          <div class="form-row"><div class="field"><label for="f-name">Name</label><input id="f-name" name="name" required maxlength="200" autocomplete="name" placeholder="Ada Lovelace" aria-describedby="form-status"></div><div class="field"><label for="f-email">Work email</label><input id="f-email" name="email" type="email" required maxlength="320" autocomplete="email" placeholder="ada@example.com" aria-describedby="form-status"></div></div>
-          <div class="field"><label for="f-agents">The handoff you need</label><input id="f-agents" name="agents_used" maxlength="200" placeholder="Claude Code → Codex"></div>
-          <details class="optional"><summary>Add context (optional)</summary><div class="optional-fields"><div class="form-row"><div class="field"><label for="f-weekly">Sessions / week</label><select id="f-weekly" name="weekly_sessions"><option value="">Select</option><option>1–5</option><option>6–20</option><option>21–50</option><option>50+</option></select></div><div class="field"><label for="f-team">Team size</label><select id="f-team" name="team_size"><option value="">Select</option><option>Solo</option><option>2–5</option><option>6–20</option><option>21–100</option><option>100+</option></select></div></div><div class="field"><label for="f-incident">Worst context-loss incident</label><textarea id="f-incident" name="context_loss_incident" maxlength="4000" placeholder="What did the next agent have to rediscover?"></textarea></div></div></details>
-          <div class="submit-row"><button class="button acid" type="submit">Request early access</button><span class="privacy-note">Posts only the fields shown to our Worker. Accepted requests expire after 90 days. If persistence is unavailable, the browser copy expires after 7 days and an email fallback appears. <a href="mailto:hello@handoffgraph.dev?subject=Delete%20my%20waitlist%20request"><u>Request deletion</u></a>.</span></div>
-          <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
-          <div class="mailto-fallback" id="mailto-fallback" hidden><a id="mailto-link" href="#"><strong>Email your answers instead ↗</strong></a><div class="privacy-note">The Worker could not persist this submission. Use the email link to send the answers directly.</div></div>
-        </form>
-      </div>
-    </div>
-  </section>
 </main>
 
 <footer class="site-footer shell">
-  <div class="footer-grid"><div class="footer-brand"><a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>HandoffGraph</span></a><p>Your agent stops. The work should not.</p></div><nav class="footer-links" aria-label="Footer"><a href="#how">How it works</a><a href="#trust">Trust contract</a><a href="#pricing">Pricing</a><a href="https://api.handoffgraph.dev/v1/auth/start?intent=signin">Hosted sign in</a><a href="#waitlist">Beta list</a><a href="https://github.com/arbazkhan971/handoffgraph" rel="noopener">GitHub ↗</a></nav><div class="footer-meta"><span>Apache-2.0 · local-first · pre-release</span><span>© 2026 HandoffGraph</span></div></div>
+  <div class="footer-grid"><div class="footer-brand"><a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>HandoffGraph</span></a><p>Your agent stops. The work should not.</p></div><nav class="footer-links" aria-label="Footer"><a href="#how">How it works</a><a href="#trust">Trust contract</a><a href="#pricing">Pricing</a><a href="https://api.handoffgraph.dev/v1/auth/start?intent=signup">Sign up</a><a href="https://api.handoffgraph.dev/v1/auth/start?intent=signin">Sign in</a><a href="https://github.com/arbazkhan971/handoffgraph" rel="noopener">GitHub ↗</a></nav><div class="footer-meta"><span>Apache-2.0 · local-first · pre-release</span><span>© 2026 HandoffGraph</span></div></div>
 </footer>
 
 <script>
@@ -505,35 +486,6 @@ img{max-width:100%}
   var revealItems=document.querySelectorAll('.reveal');
   if('IntersectionObserver' in window&&!reduce){var observer=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting){entry.target.classList.add('visible');observer.unobserve(entry.target);}});},{threshold:.12});revealItems.forEach(function(item){observer.observe(item);});}else{revealItems.forEach(function(item){item.classList.add('visible');});}
 
-  var form=document.getElementById('waitlist-form');
-  var status=document.getElementById('form-status');
-  var fallback=document.getElementById('mailto-fallback');
-  var mail=document.getElementById('mailto-link');
-  var submit=form.querySelector('button[type="submit"]');
-  var storageKey='hfg_waitlist_pending';
-  var fields=['name','email','agents_used','weekly_sessions','team_size','context_loss_incident'];
-  try{var pending=JSON.parse(localStorage.getItem(storageKey)||'null');if(pending&&pending.expires_at&&Date.parse(pending.expires_at)<=Date.now())localStorage.removeItem(storageKey);}catch(ignore){try{localStorage.removeItem(storageKey);}catch(ignoreAgain){}}
-  function say(message,kind){status.textContent=message;status.className='form-status '+(kind||'');}
-  form.addEventListener('submit',function(event){
-    event.preventDefault();var data={};var fd=new FormData(form);fields.forEach(function(key){var value=fd.get(key);data[key]=typeof value==='string'?value.trim():'';});
-    var nameField=document.getElementById('f-name');var emailField=document.getElementById('f-email');nameField.removeAttribute('aria-invalid');emailField.removeAttribute('aria-invalid');
-    if(!data.name){nameField.setAttribute('aria-invalid','true');say('Add your name to continue.','err');nameField.focus();return;}
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(data.email)){emailField.setAttribute('aria-invalid','true');say('Enter a valid email address.','err');emailField.focus();return;}
-    submit.disabled=true;say('Requesting access…','');fallback.hidden=true;
-    var controller=typeof AbortController==='function'?new AbortController():null;var timeout=controller?setTimeout(function(){controller.abort();},8000):null;
-    fetch('/api/waitlist',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data),signal:controller?controller.signal:undefined}).then(function(response){
-      var isJson=(response.headers.get('content-type')||'').toLowerCase().includes('application/json');
-      return (isJson?response.json():Promise.resolve({})).catch(function(){return {};}).then(function(body){
-        if(response.status===202&&body.ok===true){try{localStorage.removeItem(storageKey);}catch(ignore){}say('You’re on the list. We’ll write before the hosted beta opens.','ok');form.reset();return;}
-        if(response.status>=400&&response.status<500&&response.status!==429){say(body.error||'Please check your answers and try again.','err');return;}
-        throw new Error('persistence unavailable');
-      });
-    }).catch(function(){
-      var saved=false;try{var now=Date.now();localStorage.setItem(storageKey,JSON.stringify({data:data,saved_at:new Date(now).toISOString(),expires_at:new Date(now+7*24*60*60*1000).toISOString()}));saved=true;}catch(ignore){}
-      var body=fields.map(function(key){return key+': '+(data[key]||'—');}).join('\n');mail.href='mailto:hello@handoffgraph.dev?subject='+encodeURIComponent('HandoffGraph hosted beta')+'&body='+encodeURIComponent(body);fallback.hidden=false;
-      say(saved?'The Worker could not persist this request. A copy is saved in this browser for 7 days; use the email fallback.':'The Worker could not persist this request or save locally; use the email fallback.','err');
-    }).finally(function(){if(timeout)clearTimeout(timeout);submit.disabled=false;});
-  });
 })();
 </script>
 </body>
