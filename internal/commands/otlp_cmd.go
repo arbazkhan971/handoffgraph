@@ -17,27 +17,29 @@ import (
 	"github.com/handoffgraph/handoffgraph/internal/storage"
 )
 
-// RegisterOTLPCmd registers the v0.7-parity OTLP/JSON ingest lane (P1 of
+// RegisterOTLPCmd registers the v0.7-parity OTLP ingest lane (P1 of
 // docs/parity-plan.md).
 //
 // Usage:
 //
-//	handoffgraph otlp import <file> [--workstream <id>]
+//	handoffgraph otlp import <file> [--format auto|json|protobuf] [--workstream <id>]
 //	handoffgraph otlp serve [--addr 127.0.0.1:4318] [--workstream <id>]
 //
-// Both paths convert OTLP/JSON ExportTraceServiceRequest payloads into
-// deterministic hfg.event.v1 events and append them idempotently. Like
-// `resume` and `continue`, the command never launches or contacts an agent;
-// `serve` only listens on the address given (localhost by default).
+// Both paths convert ExportTraceServiceRequest payloads — OTLP/JSON or
+// OTLP/protobuf, the same events either way — into deterministic
+// hfg.event.v1 events and append them idempotently. Like `resume` and
+// `continue`, the command never launches or contacts an agent; `serve` only
+// listens on the address given (localhost by default).
 func RegisterOTLPCmd(app *cli.App) {
 	app.Register(&cli.Command{
 		Name:    "otlp",
-		Summary: "Ingest OTLP/JSON telemetry into the event spine",
-		Usage:   "import <file> [--workstream <id>] | serve [--addr 127.0.0.1:4318] [--workstream <id>]",
+		Summary: "Ingest OTLP telemetry (JSON or protobuf) into the event spine",
+		Usage:   "import <file> [--format auto|json|protobuf] [--workstream <id>] | serve [--addr 127.0.0.1:4318] [--workstream <id>]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("addr", "127.0.0.1:4318", "serve: listen address (localhost by default)")
 			fs.String("workstream", "", "attach imported events to this workstream id")
 			fs.String("capture", "full", "capture tier: full | metadata (drop prompt/completion bodies) | minimal (no attribute values)")
+			fs.String("format", "auto", "import: body format: auto (sniff) | json | protobuf")
 		},
 		Run: otlpCmd,
 	})
@@ -64,19 +66,69 @@ func otlpCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	}
 }
 
-// convertAndAppend runs the OTLP conversion and appends the resulting events
-// idempotently, printing a summary. It is the shared core of import/serve.
-func convertAndAppend(ctx context.Context, c *cli.Context, db *storage.DB, data []byte, workstream, tier string) error {
-	parsedTier, err := otlp.ParseCaptureTier(tier)
-	if err != nil {
-		return err
+// decodeExportBody decodes an OTLP ExportTraceServiceRequest in either wire
+// flavor. format is "auto" (sniff), "json", or "protobuf".
+//
+// Sniffing: OTLP/JSON always starts with '{' (the request is a JSON object),
+// while a protobuf request starts with a field tag — 0x0a for
+// resource_spans, never '{' (0x7b, which would be field 15 wire type 3, a
+// group tag this decoder refuses anyway). Leading whitespace is tolerated on
+// the JSON side; an empty body is treated as JSON so the familiar decode
+// error is what the operator sees.
+func decodeExportBody(data []byte, format string) (*otlp.ExportRequest, error) {
+	switch format {
+	case "", "auto":
+		if looksLikeJSON(data) {
+			format = "json"
+		} else {
+			format = "protobuf"
+		}
+	case "json", "protobuf":
+	default:
+		return nil, fmt.Errorf("invalid --format %q (want auto, json, or protobuf)", format)
+	}
+	if format == "protobuf" {
+		req, err := otlp.DecodeExportRequest(data)
+		if err != nil {
+			return nil, fmt.Errorf("invalid OTLP/protobuf: %w", err)
+		}
+		return req, nil
 	}
 	var req otlp.ExportRequest
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&req); err != nil {
-		return fmt.Errorf("invalid OTLP/JSON: %w", err)
+		return nil, fmt.Errorf("invalid OTLP/JSON: %w", err)
 	}
-	res, err := otlp.Convert(&req, otlp.Options{WorkstreamID: workstream, ObservedAt: time.Now().UTC(), CaptureTier: parsedTier})
+	return &req, nil
+}
+
+// looksLikeJSON reports whether the first non-space byte opens a JSON object.
+func looksLikeJSON(data []byte) bool {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return true // empty/whitespace-only: report the JSON decode error
+}
+
+// convertAndAppend runs the OTLP conversion and appends the resulting events
+// idempotently, printing a summary. It is the shared core of import/serve.
+func convertAndAppend(ctx context.Context, c *cli.Context, db *storage.DB, data []byte, workstream, tier, format string) error {
+	parsedTier, err := otlp.ParseCaptureTier(tier)
+	if err != nil {
+		return err
+	}
+	req, err := decodeExportBody(data, format)
+	if err != nil {
+		return err
+	}
+	res, err := otlp.Convert(req, otlp.Options{WorkstreamID: workstream, ObservedAt: time.Now().UTC(), CaptureTier: parsedTier})
 	if err != nil {
 		return err
 	}
@@ -109,7 +161,7 @@ func otlpImportCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet, path s
 	if err != nil {
 		return err
 	}
-	return convertAndAppend(ctx, c, db, data, stringFlag(fs, "workstream"), stringFlag(fs, "capture"))
+	return convertAndAppend(ctx, c, db, data, stringFlag(fs, "workstream"), stringFlag(fs, "capture"), stringFlag(fs, "format"))
 }
 
 func otlpServeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
@@ -142,7 +194,7 @@ func otlpServeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	go func() {
 		errCh <- srv.ListenAndServe()
 	}()
-	fmt.Fprintf(c.Stdout, "otlp serve listening on http://%s (POST /v1/traces, OTLP/JSON; ctrl-c to stop)\n", addr)
+	fmt.Fprintf(c.Stdout, "otlp serve listening on http://%s (POST /v1/traces, OTLP/JSON or OTLP/protobuf; ctrl-c to stop)\n", addr)
 
 	select {
 	case err := <-errCh:

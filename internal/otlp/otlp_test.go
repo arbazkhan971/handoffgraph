@@ -326,13 +326,24 @@ func TestHandlerIngestIdempotent(t *testing.T) {
 	if health.StatusCode != 200 {
 		t.Fatalf("healthz = %d", health.StatusCode)
 	}
+	// The protobuf flavor is served now (see proto_test.go), so a protobuf
+	// content type with a garbage body is a decode failure, not a media-type
+	// refusal; anything that is neither flavor still gets 415.
 	pbResp, err := http.Post(srv.URL+"/v1/traces", "application/x-protobuf", strings.NewReader("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pbResp.Body.Close()
-	if pbResp.StatusCode != http.StatusUnsupportedMediaType {
-		t.Fatalf("protobuf POST = %d, want 415", pbResp.StatusCode)
+	if pbResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed protobuf POST = %d, want 400", pbResp.StatusCode)
+	}
+	xmlResp, err := http.Post(srv.URL+"/v1/traces", "application/xml", strings.NewReader("<spans/>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	xmlResp.Body.Close()
+	if xmlResp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("xml POST = %d, want 415", xmlResp.StatusCode)
 	}
 	badResp, err := http.Post(srv.URL+"/v1/traces", "application/json", strings.NewReader("{nope"))
 	if err != nil {

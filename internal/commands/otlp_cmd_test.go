@@ -74,6 +74,77 @@ func TestOTLPImportIdempotent(t *testing.T) {
 	}
 }
 
+// TestOTLPImportProtobuf proves the import path is flavor-agnostic: the
+// binary fixture sniffs as protobuf, produces the SAME 9 events as the JSON
+// fixture (so the JSON import right after it is a pure duplicate), and the
+// --format override reaches the same decoder.
+func TestOTLPImportProtobuf(t *testing.T) {
+	isolateDataDir(t)
+	app := newOTLPApp()
+
+	dir := t.TempDir()
+	pbSrc, err := os.ReadFile("../../testdata/fixtures/otlp/genai_session.pb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pbPath := filepath.Join(dir, "genai_session.pb")
+	if err := os.WriteFile(pbPath, pbSrc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	jsonSrc, err := os.ReadFile("../../testdata/fixtures/otlp/genai_session.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := filepath.Join(dir, "genai_session.json")
+	if err := os.WriteFile(jsonPath, jsonSrc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sniffed: no --format, a file whose first byte is not '{'.
+	out, errOut, err := runRegisteredApp(app, "otlp", "import", pbPath)
+	if err != nil {
+		t.Fatalf("otlp import (protobuf): %v\n%s%s", err, out, errOut)
+	}
+	if !strings.Contains(out, "imported 9 event(s)") {
+		t.Fatalf("protobuf import output = %q", out)
+	}
+
+	// The JSON flavor of the same telemetry is now a pure duplicate: both
+	// flavors derive identical event ids.
+	out2, _, err := runRegisteredApp(app, "otlp", "import", jsonPath)
+	if err != nil {
+		t.Fatalf("otlp import (json): %v\n%s", err, out2)
+	}
+	if !strings.Contains(out2, "imported 0 event(s) (9 duplicate(s)") {
+		t.Fatalf("cross-flavor import output = %q", out2)
+	}
+
+	// Explicit overrides: --format protobuf on the binary body works, and
+	// forcing the wrong flavor fails closed instead of importing garbage.
+	if _, _, err := runRegisteredApp(app, "otlp", "import", pbPath, "--format", "protobuf"); err != nil {
+		t.Fatalf("--format protobuf: %v", err)
+	}
+	if _, _, err := runRegisteredApp(app, "otlp", "import", pbPath, "--format", "json"); err == nil {
+		t.Fatal("--format json on a protobuf body was accepted")
+	}
+	if _, _, err := runRegisteredApp(app, "otlp", "import", jsonPath, "--format", "protobuf"); err == nil {
+		t.Fatal("--format protobuf on a JSON body was accepted")
+	}
+	if _, _, err := runRegisteredApp(app, "otlp", "import", jsonPath, "--format", "yaml"); err == nil {
+		t.Fatal("unknown --format accepted")
+	}
+
+	db := openCommandDB(t)
+	defer db.Close()
+	n, err := db.EventCount(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 9 {
+		t.Fatalf("event count after both flavors = %d, want 9", n)
+	}
+}
+
 // TestOTLPServeBindings checks the serve subcommand surfaces: a bad
 // subcommand is rejected, and a listener on an explicit port accepts an
 // OTLP export through the same store the CLI opened.

@@ -20,7 +20,7 @@ import (
 // contract for throttling) instead of queueing without bound.
 const defaultMaxInFlight = 4
 
-// maxRequestBytes bounds one OTLP/JSON export body.
+// maxRequestBytes bounds one OTLP export body (either flavor).
 const maxRequestBytes = 64 << 20 // 64 MiB
 
 // AppendFunc persists converted events. Returning an error aborts the
@@ -28,10 +28,16 @@ const maxRequestBytes = 64 << 20 // 64 MiB
 // reported by the bool return (idempotent re-import) and simply counted.
 type AppendFunc func(ctx context.Context, ev *protocol.Event) (appended bool, err error)
 
-// Handler serves the OTLP/HTTP JSON ingest endpoint:
+// Handler serves the OTLP/HTTP ingest endpoint, both wire flavors:
 //
-//	POST /v1/traces   (application/json, ExportTraceServiceRequest)
+//	POST /v1/traces   (application/json      , ExportTraceServiceRequest)
+//	POST /v1/traces   (application/x-protobuf, ExportTraceServiceRequest)
 //	GET  /healthz
+//
+// The response flavor mirrors the request flavor, as the OTLP/HTTP spec
+// requires: a protobuf export is answered with a protobuf
+// ExportTraceServiceResponse, a JSON export with a JSON one. gRPC is out of
+// scope — protobuf-over-gRPC emitters should front a collector (docs/otlp.md).
 //
 // The handler binds to whatever address the caller chooses; the CLI binds it
 // to localhost by default so telemetry never leaves the machine unasked.
@@ -57,6 +63,28 @@ type exportResponse struct {
 type partialSuccess struct {
 	RejectedSpans int64  `json:"rejectedSpans"`
 	ErrorMessage  string `json:"errorMessage,omitempty"`
+}
+
+// encodeExportResponse renders ExportTraceServiceResponse on the wire:
+//
+//	ExportTraceServiceResponse { ExportTracePartialSuccess partial_success = 1 }
+//	ExportTracePartialSuccess  { int64 rejected_spans = 1; string error_message = 2 }
+//
+// A full success is the empty message (zero bytes), which is exactly what
+// proto3 encodes for an unset submessage — OTLP clients read that as "all
+// spans accepted".
+func encodeExportResponse(resp exportResponse) []byte {
+	if resp.PartialSuccess == nil {
+		return nil
+	}
+	var ps []byte
+	if resp.PartialSuccess.RejectedSpans != 0 {
+		ps = protoAppendVarintField(ps, 1, uint64(resp.PartialSuccess.RejectedSpans))
+	}
+	if resp.PartialSuccess.ErrorMessage != "" {
+		ps = protoAppendString(ps, 2, resp.PartialSuccess.ErrorMessage)
+	}
+	return protoAppendLenDelim(nil, 1, ps)
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -93,29 +121,48 @@ func (h *Handler) serveTraces(w http.ResponseWriter, r *http.Request) {
 
 	ct := r.Header.Get("Content-Type")
 	mediaType := strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+	isProto := false
 	switch mediaType {
 	case "application/json", "":
 		// The OTLP/HTTP JSON flavor; an absent content type is accepted
 		// leniently because single-binary emitters often omit it.
-	case "application/x-protobuf":
-		http.Error(w, "protobuf OTLP is not accepted yet; send OTLP/JSON (application/json)", http.StatusUnsupportedMediaType)
-		return
+	case "application/x-protobuf", "application/protobuf":
+		// The OTLP/HTTP binary flavor. x-protobuf is what the spec names;
+		// application/protobuf is accepted because some SDKs send it.
+		isProto = true
 	default:
-		http.Error(w, fmt.Sprintf("unsupported content type %q; send OTLP/JSON (application/json)", mediaType), http.StatusUnsupportedMediaType)
+		http.Error(w, fmt.Sprintf("unsupported content type %q; send OTLP/JSON (application/json) or OTLP/protobuf (application/x-protobuf)", mediaType), http.StatusUnsupportedMediaType)
 		return
 	}
 
 	body := http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	var req ExportRequest
-	dec := json.NewDecoder(body)
-	if err := dec.Decode(&req); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			http.Error(w, fmt.Sprintf("request body exceeds %d bytes", maxRequestBytes), http.StatusRequestEntityTooLarge)
+	if isProto {
+		raw, err := io.ReadAll(body)
+		if err != nil {
+			if tooLarge(err) {
+				http.Error(w, fmt.Sprintf("request body exceeds %d bytes", maxRequestBytes), http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, fmt.Sprintf("read body: %v", err), http.StatusBadRequest)
 			return
 		}
-		http.Error(w, fmt.Sprintf("invalid OTLP/JSON: %v", err), http.StatusBadRequest)
-		return
+		decoded, err := DecodeExportRequest(raw)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid OTLP/protobuf: %v", err), http.StatusBadRequest)
+			return
+		}
+		req = *decoded
+	} else {
+		dec := json.NewDecoder(body)
+		if err := dec.Decode(&req); err != nil {
+			if tooLarge(err) {
+				http.Error(w, fmt.Sprintf("request body exceeds %d bytes", maxRequestBytes), http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, fmt.Sprintf("invalid OTLP/JSON: %v", err), http.StatusBadRequest)
+			return
+		}
 	}
 
 	var observedAt time.Time
@@ -152,7 +199,19 @@ func (h *Handler) serveTraces(w http.ResponseWriter, r *http.Request) {
 			ErrorMessage:  strings.Join(msgs, "; "),
 		}
 	}
+	if isProto {
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(encodeExportResponse(resp))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// tooLarge reports whether err is the MaxBytesReader cap being hit.
+func tooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
 }
