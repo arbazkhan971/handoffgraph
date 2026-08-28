@@ -22,6 +22,25 @@ APP_ORIGIN = "https://api.handoffgraph.dev"
 LANDING_ORIGIN = "https://handoffgraph.dev"
 WORKOS_REDIRECT_URI = "https://api.handoffgraph.dev/v1/auth/callback"
 
+# Enterprise tier (parity rows 48, 51 — SSO, SCIM, data masking, audit export,
+# and the in-product assistant). Deliberately ABSENT rather than set to
+# "false": handleEERoute (platform/ee/src/ee.ts) enables a route only on the
+# exact string "true", so with this line commented out every /v1/ee/* path and
+# /v1/assistant fall through to the platform 404, byte-identical to any URL
+# this Worker has never heard of. That is the fence — the OSS baseline is
+# intact with no EE configuration at all.
+#
+# Enable it only on a deployment licensed under platform/ee/LICENSE (that
+# directory is NOT open source), and only once migration 0016 has been
+# applied:
+#
+#   npx wrangler d1 migrations apply handoffgraph
+#   # then uncomment:
+# EE_ENABLED = "true"
+#
+# The assistant additionally needs the gateway configured, since it calls the
+# customer's own model through it: see GATEWAY_SEALING_KEY below.
+
 # Persist content-free invocation logs and a sampled trace stream. Worker code
 # never logs request headers, tokens, bodies, SQL binds, or captured events.
 [observability]

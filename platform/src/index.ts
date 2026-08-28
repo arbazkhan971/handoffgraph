@@ -67,6 +67,14 @@ import { evalsScheduled, handleEvalsRoute } from "./evals";
 // wrangler.toml to resolve it. Re-exported here rather than defined here so
 // evals.ts stays the single home of the evaluation loop.
 export { EvalWorkflow } from "./evals";
+// The ONE seam between the OSS Worker and the Enterprise tier (parity rows 48,
+// 51). Everything EE lives under platform/ee/ with its own license; this
+// import and the single delegation pair below are the whole coupling. Every
+// EE route is disabled unless env.EE_ENABLED === "true", and disabled means
+// handleEERoute returns null — so with the flag absent (the default) those
+// paths fall through to the same 404 as any unknown URL and OSS behavior is
+// byte-identical. See platform/ee/src/ee.ts and docs/ee.md.
+import { handleEERoute } from "../ee/src/ee";
 import type {
   D1BoundStatement,
   D1DatabaseLike,
@@ -185,6 +193,8 @@ export default {
       // for POST, which is how POST /v1/prompts/{name}/labels reaches here.
       const playgroundResponse = await handlePlaygroundRoute(request, env);
       if (playgroundResponse !== null) return playgroundResponse;
+      const eeResponse = await handleEERoute(request, env);
+      if (eeResponse !== null) return eeResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }

@@ -11,5 +11,11 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["worker-configuration.d.ts", "src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": [
+    "worker-configuration.d.ts",
+    "src/**/*.ts",
+    "ee/src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts"
+  ]
 }

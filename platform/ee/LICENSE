@@ -1,0 +1,68 @@
+HandoffGraph Enterprise License (HGEL)
+Version 0 — PLACEHOLDER, EVALUATION ONLY
+
+Copyright (c) 2026 the HandoffGraph authors. All rights reserved.
+
+=============================================================================
+THIS IS NOT AN OPEN SOURCE LICENSE. THIS IS NOT THE APACHE LICENSE 2.0.
+=============================================================================
+
+Everything in this directory (platform/ee/ and all of its subdirectories) is
+proprietary. It is NOT covered by the license at the root of this repository,
+and the root license grants you no rights to it. If you are looking for the
+open source parts of HandoffGraph, they are everywhere in this repository
+EXCEPT this directory.
+
+STATUS OF THIS DOCUMENT
+
+This text is a placeholder. It exists so that the licensing boundary is
+unambiguous in source control from the first commit, before real legal text
+has been drafted and reviewed. The definitive HandoffGraph Enterprise License
+has not been written yet. When it is, it replaces this file wholesale, and
+the terms below are superseded in their entirety.
+
+Do not treat this document as legal advice, as a negotiated agreement, or as
+the final terms of any Enterprise offering.
+
+INTERIM GRANT (EVALUATION ONLY)
+
+Until the definitive Enterprise License is published, you are permitted to:
+
+  1. Read this source code.
+  2. Build, run, and test it for the sole purpose of internal, non-production
+     evaluation of HandoffGraph.
+  3. Modify it locally as part of that evaluation.
+
+Until the definitive Enterprise License is published, you may NOT:
+
+  1. Use it in production, or to provide any service to any third party.
+  2. Distribute, sublicense, sell, rent, or host it for others.
+  3. Remove, obscure, or relocate this LICENSE file, or move source files out
+     of this directory in a way that detaches them from it.
+
+NO WARRANTY
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM,
+OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR ITS USE.
+
+SCOPE — WHAT THIS FILE DOES AND DOES NOT COVER
+
+COVERED (proprietary):
+  platform/ee/**            — every source file in this directory tree.
+
+NOT COVERED (open source, root license applies):
+  platform/src/**           — the OSS Worker.
+  platform/migrations/**    — including 0016_ee.sql. A migration declares data
+                              structures, not product behavior; keeping the
+                              schema OSS keeps `migrations apply` a single
+                              ordered list on every deployment. See the header
+                              comment in migrations/0016_ee.sql.
+  platform/test/ee.test.ts  — the EE tests live in the normal OSS test tree so
+                              the one suite covers the whole Worker. They test
+                              the fence; they are not the fenced product.
+
+Contact: licensing@handoffgraph.dev
