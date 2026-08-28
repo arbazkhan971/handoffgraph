@@ -2,13 +2,17 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  comparisonVerdict,
   formatCost,
   formatDuration,
+  formatScoreValue,
+  formatStamp,
   formatTokens,
   formatTime,
   shortID,
   verificationLabel,
 } from './format'
+import type { ExperimentComparison, Score, ScoreDataType } from './types'
 
 describe('formatDuration', () => {
   const cases: Array<[number, string]> = [
@@ -80,6 +84,73 @@ describe('formatCost', () => {
   ]
   it.each(cases)('formatCost(%p, %p) -> %s', (amount, currency, want) => {
     expect(formatCost(amount, currency)).toBe(want)
+  })
+})
+
+describe('formatStamp', () => {
+  const cases: Array<[string | undefined, string]> = [
+    [undefined, '—'],
+    ['', '—'],
+    ['2026-08-21T12:00:00Z', '2026-08-21 12:00:00'],
+    ['2026-08-21T12:00:00.482Z', '2026-08-21 12:00:00'],
+  ]
+  it.each(cases)('formatStamp(%p) -> %s', (ts, want) => {
+    expect(formatStamp(ts)).toBe(want)
+  })
+})
+
+describe('formatScoreValue', () => {
+  const score = (dataType: ScoreDataType, slots: Partial<Score>): Score => ({
+    schema_version: 'hfg.score.v1',
+    score_id: 'evt_1',
+    occurred_at: '2026-08-21T12:00:00Z',
+    name: 'quality',
+    data_type: dataType,
+    target_type: 'trace',
+    target_id: 'trc_1',
+    source: 'evaluation',
+    ...slots,
+  })
+
+  const cases: Array<[string, Score, string]> = [
+    ['numeric', score('NUMERIC', { value: 0.62 }), '0.62'],
+    ['numeric zero', score('NUMERIC', { value: 0 }), '0'],
+    ['numeric missing', score('NUMERIC', {}), '—'],
+    ['category', score('CATEGORY', { string_value: 'regression' }), 'regression'],
+    ['category empty', score('CATEGORY', { string_value: '' }), '—'],
+    ['boolean true', score('BOOLEAN', { bool_value: true }), 'true'],
+    ['boolean false', score('BOOLEAN', { bool_value: false }), 'false'],
+    ['boolean missing', score('BOOLEAN', {}), '—'],
+    // A slot that does not match the declared type is never borrowed.
+    ['numeric never reads the string slot', score('NUMERIC', { string_value: 'nine' }), '—'],
+    ['category never reads the numeric slot', score('CATEGORY', { value: 9 }), '—'],
+  ]
+  it.each(cases)('formatScoreValue(%s) -> %s', (_name, value, want) => {
+    expect(formatScoreValue(value)).toBe(want)
+  })
+})
+
+describe('comparisonVerdict', () => {
+  const cmp = (from: string, to: string, fromP0: number, toP0: number, regression: boolean) =>
+    ({
+      file: 'a.jsonl',
+      from_status: from,
+      to_status: to,
+      from_p0: fromP0,
+      to_p0: toP0,
+      regression,
+    }) as ExperimentComparison
+
+  const cases: Array<[string, ExperimentComparison, string]> = [
+    ['unchanged', cmp('ok', 'ok', 0, 0, false), 'same'],
+    ['new detection', cmp('ok', 'detections', 0, 1, true), 'regression'],
+    ['still failing, worse', cmp('detections', 'detections', 1, 3, true), 'regression'],
+    ['fixed', cmp('detections', 'ok', 1, 0, false), 'recovered'],
+    ['fewer detections', cmp('detections', 'detections', 3, 1, false), 'recovered'],
+    ['invalid example became parseable but still detects', cmp('invalid', 'detections', 0, 0, false), 'changed'],
+  ]
+  it.each(cases)('comparisonVerdict(%s) -> %s', (_name, value, want) => {
+    expect(comparisonVerdict(value)).toBe(want)
   })
 })
 

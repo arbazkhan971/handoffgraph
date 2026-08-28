@@ -105,6 +105,135 @@ export type SpanKind =
 // observed one.
 export type EvidenceLevel = 'OBSERVED' | 'DECLARED' | 'INFERRED'
 
+// ---- Scores (hfg.score.v1, /api/scores) ----
+
+/** Which value slot a score carries. */
+export type ScoreDataType = 'NUMERIC' | 'CATEGORY' | 'BOOLEAN'
+
+/** The spine object a score is attached to. */
+export type ScoreTargetType = 'trace' | 'span' | 'session' | 'checkpoint' | 'workstream'
+
+/** Who produced the score — human judgment vs machine evaluation. */
+export type ScoreSource = 'human' | 'api' | 'evaluation' | 'detection'
+
+/**
+ * One recorded score. Exactly one of value / string_value / bool_value is
+ * set, selected by data_type.
+ *
+ * Unlike the trace and span models, `occurred_at` is an RFC3339 timestamp
+ * string (Go serializes time.Time), not nanoseconds since the epoch.
+ * `provenance` is the event-envelope evidence level: an LLM-judge score
+ * arrives INFERRED and must never render like an OBSERVED measurement.
+ */
+export interface Score {
+  schema_version: string
+  score_id: string
+  workstream_id?: string
+  occurred_at: string
+  name: string
+  data_type: ScoreDataType
+  value?: number
+  string_value?: string
+  bool_value?: boolean
+  target_type: ScoreTargetType
+  target_id: string
+  source: ScoreSource
+  provenance?: EvidenceLevel
+  comment?: string
+}
+
+// ---- Datasets & experiments (/api/datasets, /api/experiments) ----
+
+/**
+ * One immutable dataset version. Datasets are content-addressed: `version`
+ * and `content_hash` are the same manifest hash, surfaced under both names
+ * so identity and integrity can be labeled separately.
+ */
+export interface DatasetVersion {
+  event_id: string
+  name: string
+  version: string
+  example_count: number
+  content_hash: string
+  created_at: string
+}
+
+/** Per-example verdict of the deterministic experiment task. */
+export type ExampleStatus = 'ok' | 'detections' | 'invalid'
+
+/** One recorded experiment run over a pinned dataset version. */
+export interface ExperimentRun {
+  id: string
+  dataset: string
+  version: string
+  passed: boolean
+  passed_count: number
+  failed_count: number
+  example_count: number
+  created_at: string
+}
+
+/** One example's before/after verdict in a run comparison. */
+export interface ExperimentComparison {
+  file: string
+  from_status: ExampleStatus
+  to_status: ExampleStatus
+  from_p0: number
+  to_p0: number
+  regression: boolean
+}
+
+/**
+ * The regression diff between two runs (a = baseline, b = candidate). Only
+ * examples present in both runs appear: an example that exists on one side
+ * only is a different dataset version, not a regression.
+ */
+export interface ExperimentCompare {
+  a: ExperimentRun
+  b: ExperimentRun
+  regressions: number
+  items: ExperimentComparison[]
+}
+
+// ---- Prompts (/api/prompts, /api/prompts/show) ----
+
+/** A label pointer: `production`, `latest`, or any custom label. */
+export interface PromptLabel {
+  label: string
+  version: number
+}
+
+/** One immutable prompt version without its body. */
+export interface PromptVersionRef {
+  version: number
+  hash: string
+  created_at: string
+  created_by?: string
+}
+
+export interface Prompt {
+  name: string
+  version_count: number
+  latest_version: number
+  latest_hash: string
+  latest_created_at: string
+  labels: PromptLabel[]
+  versions: PromptVersionRef[]
+}
+
+/** One prompt version with its body (size-capped when it was created). */
+export interface PromptBody {
+  name: string
+  version: number
+  body: string
+  hash: string
+  created_at: string
+  created_by?: string
+  labels: string[]
+  latest_version: number
+  version_count: number
+}
+
 /** Cursor-friendly list envelope used by every list endpoint. */
 export interface Envelope<T> {
   items: T[]

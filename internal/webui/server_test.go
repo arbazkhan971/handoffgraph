@@ -10,8 +10,11 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/handoffgraph/handoffgraph/internal/datasets"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
+	"github.com/handoffgraph/handoffgraph/internal/prompts"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
+	"github.com/handoffgraph/handoffgraph/internal/scores"
 	"github.com/handoffgraph/handoffgraph/internal/storage"
 )
 
@@ -43,18 +46,32 @@ func ev(ws string, kind protocol.EventKind, at time.Time, seq int64, payload map
 	return e
 }
 
-// dataset is a deterministic three-trace seed:
+// dataset is a deterministic three-trace seed, plus the evaluation surfaces
+// (scores, dataset versions, experiment runs, prompt versions/labels):
 //
 //	WS1 (event-derived workstream, declared title in the payload)
 //	  T1: completed turn — 4 spans, 2 failed (command exit 1 + failed test)
 //	  T3: running turn — 1 open span
 //	WS2 (workstream table row)
 //	  T2: completed turn — 1 span, ok
+//	scores      — one per data type + one INFERRED (LLM-judge) score
+//	datasets    — one name, two immutable content-hash versions
+//	experiments — two runs of the newer version, the second one regressed
+//	prompts     — "triage" v1+v2 with production→v1, "summarize" v1
 type dataset struct {
 	ws1, ws2               string
 	t1, t2, t3             string
 	s1, s2, s3, s4, sa, sb string
-	events                 []*protocol.Event
+
+	// score ids, newest last (they are the recording event ids)
+	scNumeric, scCategory, scBool, scInferred string
+
+	dsName             string
+	dsV1, dsV2         string // dataset version content hashes
+	dsEvent1, dsEvent2 string // dataset.created event ids
+	runA, runB         string // experiment.recorded event ids
+
+	events []*protocol.Event
 }
 
 func buildDataset() *dataset {
@@ -104,7 +121,138 @@ func buildDataset() *dataset {
 		ev(d.ws1, protocol.EventSpanStarted, t0().Add(ms(310)), 21,
 			map[string]any{"span_id": d.sb, "trace_id": d.t3, "kind": "AGENT", "name": "agent"}),
 	}
+	d.events = append(d.events, d.evalEvents()...)
 	return d
+}
+
+// evalEvents seeds the evaluation surfaces using the real payload builders —
+// scores.NewEvent, datasets.BuildVersion, prompts.NewCreatedEvent — so the
+// fixture can never drift from the contracts the CLI writes.
+func (d *dataset) evalEvents() []*protocol.Event {
+	out := []*protocol.Event{}
+
+	score := func(ws string, at time.Time, in scores.Input) *protocol.Event {
+		e, err := scores.NewEvent(ids.Event(), ws, in, at)
+		if err != nil {
+			panic(err)
+		}
+		return e
+	}
+	latency := 412.5
+	helpfulness := 0.82
+	tests := true
+
+	scNumeric := score(d.ws1, t0().Add(ms(400)), scores.Input{
+		Name: "latency_p95_ms", DataType: protocol.ScoreDataTypeNumeric, Value: &latency,
+		TargetType: protocol.ScoreTargetTrace, TargetID: d.t1, Source: protocol.ScoreSourceEvaluation,
+	})
+	scCategory := score(d.ws1, t0().Add(ms(410)), scores.Input{
+		Name: "verdict", DataType: protocol.ScoreDataTypeCategory, StringValue: "regression",
+		TargetType: protocol.ScoreTargetTrace, TargetID: d.t1, Source: protocol.ScoreSourceHuman,
+		Comment: "reviewed the failing WAL test",
+	})
+	scBool := score(d.ws2, t0().Add(ms(420)), scores.Input{
+		Name: "tests_pass", DataType: protocol.ScoreDataTypeBoolean, BoolValue: &tests,
+		TargetType: protocol.ScoreTargetTrace, TargetID: d.t2, Source: protocol.ScoreSourceDetection,
+	})
+	// An LLM-judge score is INFERRED at the envelope level: the payload is
+	// built by the same validator, but the provenance the reducer copies onto
+	// the read model must never read as OBSERVED.
+	scInferred := score(d.ws1, t0().Add(ms(430)), scores.Input{
+		Name: "helpfulness", DataType: protocol.ScoreDataTypeNumeric, Value: &helpfulness,
+		TargetType: protocol.ScoreTargetSpan, TargetID: d.s1, Source: protocol.ScoreSourceEvaluation,
+		Comment: "llm judge (rubric v2)",
+	})
+	scInferred.Provenance = protocol.ProvenanceInferred
+	d.scNumeric, d.scCategory = scNumeric.EventID, scCategory.EventID
+	d.scBool, d.scInferred = scBool.EventID, scInferred.EventID
+	out = append(out, scNumeric, scCategory, scBool, scInferred)
+
+	// Two immutable versions of one dataset. The version strings are real
+	// manifest content hashes computed by the same builder the CLI uses.
+	d.dsName = "core-regressions"
+	line := func(id string) []byte {
+		return []byte(`{"schema_version":"hfg.event.v1","event_id":"` + id + `","kind":"trace.started"}` + "\n")
+	}
+	v1, err := datasets.BuildVersion(d.dsName, []datasets.InputFile{
+		{Name: "wal_reopen.jsonl", Data: line("evt_wal")},
+	})
+	if err != nil {
+		panic(err)
+	}
+	v2, err := datasets.BuildVersion(d.dsName, []datasets.InputFile{
+		{Name: "wal_reopen.jsonl", Data: line("evt_wal")},
+		{Name: "checkout_race.jsonl", Data: line("evt_checkout")},
+	})
+	if err != nil {
+		panic(err)
+	}
+	d.dsV1, d.dsV2 = v1.Version, v2.Version
+	dsEvent := func(at time.Time, v *datasets.Version) *protocol.Event {
+		return ev("", protocol.EventDatasetCreated, at, 0, map[string]any{
+			"name": v.Name, "version": v.Version, "files": v.Files,
+		})
+	}
+	e1 := dsEvent(t0().Add(ms(500)), v1)
+	e2 := dsEvent(t0().Add(ms(510)), v2)
+	d.dsEvent1, d.dsEvent2 = e1.EventID, e2.EventID
+	out = append(out, e1, e2)
+
+	// Two runs of the newer version: the baseline is clean, the candidate
+	// regressed one example (a new P0 detection).
+	runEvent := func(at time.Time, rec datasets.ExperimentRecord) *protocol.Event {
+		raw, err := json.Marshal(rec)
+		if err != nil {
+			panic(err)
+		}
+		e := ev("", protocol.EventExperimentRecorded, at, 0, nil)
+		e.Payload = raw
+		return e
+	}
+	runA := runEvent(t0().Add(ms(600)), datasets.ExperimentRecord{
+		Dataset: d.dsName, Version: d.dsV2, Passed: true,
+		Results: []datasets.ExampleResult{
+			{Name: "checkout_race.jsonl", Hash: v2.Files[0].Hash, Events: 1, Traces: 1, Spans: 0, Status: "ok"},
+			{Name: "wal_reopen.jsonl", Hash: v2.Files[1].Hash, Events: 1, Traces: 1, Spans: 0, Status: "ok"},
+		},
+	})
+	runB := runEvent(t0().Add(ms(610)), datasets.ExperimentRecord{
+		Dataset: d.dsName, Version: d.dsV2, Passed: false,
+		Results: []datasets.ExampleResult{
+			{Name: "checkout_race.jsonl", Hash: v2.Files[0].Hash, Events: 1, Traces: 1, Spans: 0, Status: "ok"},
+			{Name: "wal_reopen.jsonl", Hash: v2.Files[1].Hash, Events: 1, Traces: 1, Spans: 0,
+				P0Detections: 1, Status: "detections"},
+		},
+	})
+	d.runA, d.runB = runA.EventID, runB.EventID
+	out = append(out, runA, runB)
+
+	// Prompts: two versions of "triage" with production pinned to v1 (the
+	// O(1) rollback shape), plus a single-version "summarize".
+	created := func(at time.Time, name, body string, version int) *protocol.Event {
+		e, _, err := prompts.NewCreatedEvent(ids.Event(), "", name, body, "seed", at)
+		if err != nil {
+			panic(err)
+		}
+		if err := prompts.AssignVersion(e, version); err != nil {
+			panic(err)
+		}
+		return e
+	}
+	labeled := func(at time.Time, name, label string, version int) *protocol.Event {
+		e, err := prompts.NewLabeledEvent(ids.Event(), "", name, label, version, at)
+		if err != nil {
+			panic(err)
+		}
+		return e
+	}
+	out = append(out,
+		created(t0().Add(ms(700)), "triage", "You are a triage agent.\nBe terse.", 1),
+		created(t0().Add(ms(710)), "triage", "You are a triage agent.\nCite evidence.", 2),
+		labeled(t0().Add(ms(720)), "triage", "production", 1),
+		created(t0().Add(ms(730)), "summarize", "Summarize the session for handoff.", 1),
+	)
+	return out
 }
 
 func (d *dataset) appendAll(t *testing.T, db *storage.DB) {
@@ -224,8 +372,10 @@ func TestWorkstreamsMergeTableAndEventDerived(t *testing.T) {
 		traceCount int
 	}{
 		// Derived workstream keeps its DECLARED title from the payload.
-		{"derived", d.ws1, "Fix checkout race", 11, 2},
-		{"table row", d.ws2, "Port redaction", 4, 1},
+		// Counts include the workstream-scoped score events; dataset,
+		// experiment and prompt events are not workstream-scoped.
+		{"derived", d.ws1, "Fix checkout race", 14, 2},
+		{"table row", d.ws2, "Port redaction", 5, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -498,6 +648,526 @@ func unique(in []string) []string {
 		}
 	}
 	return out
+}
+
+// ---- /api/scores ----
+
+func TestScoresListFiltersAndOrder(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+	cases := []struct {
+		name   string
+		target string
+		want   []string
+	}{
+		// Newest first, like /api/traces.
+		{"all newest first", "/api/scores", []string{d.scInferred, d.scBool, d.scCategory, d.scNumeric}},
+		{"workstream filter", "/api/scores?workstream=" + d.ws1, []string{d.scInferred, d.scCategory, d.scNumeric}},
+		{"workstream filter ws2", "/api/scores?workstream=" + d.ws2, []string{d.scBool}},
+		{"target filter trace", "/api/scores?target=" + d.t1, []string{d.scCategory, d.scNumeric}},
+		{"target filter span", "/api/scores?target=" + d.s1, []string{d.scInferred}},
+		{"both filters", "/api/scores?workstream=" + d.ws2 + "&target=" + d.t2, []string{d.scBool}},
+		{"filter with no match", "/api/scores?target=trc_ghost", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := get(t, h, http.MethodGet, tc.target)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+			}
+			env := decodeEnvelope[*protocol.Score](t, rec)
+			got := make([]string, 0, len(env.Items))
+			for _, sc := range env.Items {
+				got = append(got, sc.ScoreID)
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("score ids = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScoresValueSlotsAndProvenance(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+	rec := get(t, h, http.MethodGet, "/api/scores")
+	env := decodeEnvelope[*protocol.Score](t, rec)
+	byID := map[string]*protocol.Score{}
+	for _, sc := range env.Items {
+		byID[sc.ScoreID] = sc
+	}
+
+	cases := []struct {
+		name       string
+		id         string
+		dataType   protocol.ScoreDataType
+		provenance protocol.Provenance
+		check      func(t *testing.T, sc *protocol.Score)
+	}{
+		{"numeric", d.scNumeric, protocol.ScoreDataTypeNumeric, protocol.ProvenanceObserved,
+			func(t *testing.T, sc *protocol.Score) {
+				if sc.Value == nil || *sc.Value != 412.5 {
+					t.Errorf("value = %v, want 412.5", sc.Value)
+				}
+				if sc.StringValue != "" || sc.BoolValue != nil {
+					t.Errorf("numeric score filled another value slot: %+v", sc)
+				}
+			}},
+		{"category", d.scCategory, protocol.ScoreDataTypeCategory, protocol.ProvenanceObserved,
+			func(t *testing.T, sc *protocol.Score) {
+				if sc.StringValue != "regression" {
+					t.Errorf("string_value = %q, want regression", sc.StringValue)
+				}
+			}},
+		{"boolean", d.scBool, protocol.ScoreDataTypeBoolean, protocol.ProvenanceObserved,
+			func(t *testing.T, sc *protocol.Score) {
+				if sc.BoolValue == nil || !*sc.BoolValue {
+					t.Errorf("bool_value = %v, want true", sc.BoolValue)
+				}
+			}},
+		// The LLM-judge score must arrive INFERRED so the UI can never
+		// render it like an observed measurement.
+		{"llm judge", d.scInferred, protocol.ScoreDataTypeNumeric, protocol.ProvenanceInferred,
+			func(t *testing.T, sc *protocol.Score) {
+				if sc.TargetType != protocol.ScoreTargetSpan || sc.TargetID != d.s1 {
+					t.Errorf("target = %s/%s, want span/%s", sc.TargetType, sc.TargetID, d.s1)
+				}
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, ok := byID[tc.id]
+			if !ok {
+				t.Fatalf("score %s missing from %d items", tc.id, len(env.Items))
+			}
+			if sc.SchemaVersion != protocol.SchemaVersionScore {
+				t.Errorf("schema_version = %q, want %q", sc.SchemaVersion, protocol.SchemaVersionScore)
+			}
+			if sc.DataType != tc.dataType {
+				t.Errorf("data_type = %q, want %q", sc.DataType, tc.dataType)
+			}
+			if sc.Provenance != tc.provenance {
+				t.Errorf("provenance = %q, want %q", sc.Provenance, tc.provenance)
+			}
+			tc.check(t, sc)
+		})
+	}
+
+	// occurred_at is an RFC3339 string on the wire, not a nanosecond number.
+	// (decodeEnvelope drained the recorder above, so re-request the bytes.)
+	body := get(t, h, http.MethodGet, "/api/scores").Body.String()
+	for _, want := range []string{`"occurred_at": "2026-08-21T12:00:00`, `"schema_version": "hfg.score.v1"`, `"provenance": "INFERRED"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %s:\n%s", want, body)
+		}
+	}
+}
+
+func TestScoresPaginationAndBadParams(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+
+	rec := get(t, h, http.MethodGet, "/api/scores?limit=1")
+	env := decodeEnvelope[*protocol.Score](t, rec)
+	if len(env.Items) != 1 || env.Items[0].ScoreID != d.scInferred || env.NextCursor != d.scInferred {
+		t.Fatalf("page 1 = %d items cursor %q, want [%s]", len(env.Items), env.NextCursor, d.scInferred)
+	}
+	rec = get(t, h, http.MethodGet, "/api/scores?cursor="+env.NextCursor)
+	env = decodeEnvelope[*protocol.Score](t, rec)
+	if len(env.Items) != 3 || env.NextCursor != "" {
+		t.Fatalf("page 2 = %d items cursor %q, want 3 items and no cursor", len(env.Items), env.NextCursor)
+	}
+
+	for _, target := range []string{
+		"/api/scores?limit=abc", "/api/scores?limit=-1",
+		"/api/scores?limit=2000", "/api/scores?cursor=nope",
+	} {
+		t.Run(target, func(t *testing.T) {
+			if rec := get(t, h, http.MethodGet, target); rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// ---- /api/datasets ----
+
+func TestDatasetsList(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+	rec := get(t, h, http.MethodGet, "/api/datasets")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	env := decodeEnvelope[datasetOut](t, rec)
+	if len(env.Items) != 2 {
+		t.Fatalf("items = %d, want 2 versions (body %s)", len(env.Items), rec.Body.String())
+	}
+	cases := []struct {
+		name         string
+		got          datasetOut
+		wantEvent    string
+		wantVersion  string
+		wantExamples int
+	}{
+		{"older version first", env.Items[0], d.dsEvent1, d.dsV1, 1},
+		{"newer version second", env.Items[1], d.dsEvent2, d.dsV2, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got.EventID != tc.wantEvent || tc.got.Version != tc.wantVersion {
+				t.Errorf("row = %+v, want event %s version %s", tc.got, tc.wantEvent, tc.wantVersion)
+			}
+			if tc.got.Name != d.dsName || tc.got.ExampleCount != tc.wantExamples {
+				t.Errorf("row = %+v, want name %s with %d example(s)", tc.got, d.dsName, tc.wantExamples)
+			}
+			// Content-addressed: the version string IS the manifest hash.
+			if tc.got.ContentHash != tc.got.Version || !strings.HasPrefix(tc.got.ContentHash, "sha256:") {
+				t.Errorf("content_hash = %q, want the sha256 manifest hash", tc.got.ContentHash)
+			}
+			if !strings.HasPrefix(tc.got.CreatedAt, "2026-08-21T12:00:00") {
+				t.Errorf("created_at = %q, want an RFC3339 timestamp", tc.got.CreatedAt)
+			}
+		})
+	}
+
+	// Paging and bad params behave like every other list endpoint.
+	env = decodeEnvelope[datasetOut](t, get(t, h, http.MethodGet, "/api/datasets?limit=1"))
+	if len(env.Items) != 1 || env.NextCursor != d.dsEvent1 {
+		t.Errorf("page 1 = %d items cursor %q, want 1 item cursor %s", len(env.Items), env.NextCursor, d.dsEvent1)
+	}
+	if rec := get(t, h, http.MethodGet, "/api/datasets?cursor=nope"); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad cursor status = %d, want 400", rec.Code)
+	}
+}
+
+// ---- /api/experiments ----
+
+func TestExperimentsList(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+	cases := []struct {
+		name   string
+		target string
+		want   []string
+	}{
+		{"newest first", "/api/experiments", []string{d.runB, d.runA}},
+		{"dataset filter", "/api/experiments?dataset=" + d.dsName, []string{d.runB, d.runA}},
+		{"unknown dataset", "/api/experiments?dataset=ghost", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := get(t, h, http.MethodGet, tc.target)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+			}
+			env := decodeEnvelope[experimentOut](t, rec)
+			got := make([]string, 0, len(env.Items))
+			for _, run := range env.Items {
+				got = append(got, run.ID)
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("run ids = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	env := decodeEnvelope[experimentOut](t, get(t, h, http.MethodGet, "/api/experiments"))
+	byID := map[string]experimentOut{}
+	for _, run := range env.Items {
+		byID[run.ID] = run
+	}
+	counts := []struct {
+		name                string
+		id                  string
+		passed              bool
+		passedCnt, failCnt  int
+		version, datasetVal string
+	}{
+		{"baseline run", d.runA, true, 2, 0, d.dsV2, d.dsName},
+		{"regressed run", d.runB, false, 1, 1, d.dsV2, d.dsName},
+	}
+	for _, tc := range counts {
+		t.Run(tc.name, func(t *testing.T) {
+			run := byID[tc.id]
+			if run.Passed != tc.passed || run.PassedCount != tc.passedCnt || run.FailedCount != tc.failCnt {
+				t.Errorf("run = %+v, want passed=%v %d passed / %d failed", run, tc.passed, tc.passedCnt, tc.failCnt)
+			}
+			if run.ExampleCount != 2 || run.Version != tc.version || run.Dataset != tc.datasetVal {
+				t.Errorf("run = %+v, want 2 examples of %s@%s", run, tc.datasetVal, tc.version)
+			}
+		})
+	}
+
+	if rec := get(t, h, http.MethodGet, "/api/experiments?limit=abc"); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad limit status = %d, want 400", rec.Code)
+	}
+}
+
+// ---- /api/experiments/compare ----
+
+func TestExperimentCompare(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+
+	rec := get(t, h, http.MethodGet, "/api/experiments/compare?a="+d.runA+"&b="+d.runB)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var cmp compareOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &cmp); err != nil {
+		t.Fatalf("decode compare: %v (body %s)", err, rec.Body.String())
+	}
+	if cmp.A.ID != d.runA || cmp.B.ID != d.runB {
+		t.Errorf("compare sides = %s/%s, want %s/%s", cmp.A.ID, cmp.B.ID, d.runA, d.runB)
+	}
+	if cmp.Regressions != 1 {
+		t.Errorf("regressions = %d, want 1", cmp.Regressions)
+	}
+	if len(cmp.Items) != 2 {
+		t.Fatalf("items = %d, want 2 (body %s)", len(cmp.Items), rec.Body.String())
+	}
+	// datasets.Compare sorts by example name — the same order the CLI prints.
+	wants := []struct {
+		file       string
+		from, to   string
+		toP0       int
+		regression bool
+	}{
+		{"checkout_race.jsonl", "ok", "ok", 0, false},
+		{"wal_reopen.jsonl", "ok", "detections", 1, true},
+	}
+	for i, want := range wants {
+		got := cmp.Items[i]
+		if got.File != want.file || got.FromStatus != want.from || got.ToStatus != want.to ||
+			got.ToP0 != want.toP0 || got.Regression != want.regression {
+			t.Errorf("items[%d] = %+v, want %+v", i, got, want)
+		}
+	}
+
+	// Reversing the sides turns the regression into a recovery.
+	rec = get(t, h, http.MethodGet, "/api/experiments/compare?a="+d.runB+"&b="+d.runA)
+	if err := json.Unmarshal(rec.Body.Bytes(), &cmp); err != nil {
+		t.Fatalf("decode reversed compare: %v", err)
+	}
+	if cmp.Regressions != 0 {
+		t.Errorf("reversed regressions = %d, want 0", cmp.Regressions)
+	}
+
+	badCases := []struct {
+		name   string
+		target string
+		want   int
+	}{
+		{"missing both", "/api/experiments/compare", http.StatusBadRequest},
+		{"missing b", "/api/experiments/compare?a=" + d.runA, http.StatusBadRequest},
+		{"missing a", "/api/experiments/compare?b=" + d.runB, http.StatusBadRequest},
+		{"unknown run", "/api/experiments/compare?a=" + d.runA + "&b=evt_ghost", http.StatusNotFound},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := get(t, h, http.MethodGet, tc.target)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
+			}
+			var e map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e["error"] == "" {
+				t.Errorf("body = %s, want JSON error object", rec.Body.String())
+			}
+		})
+	}
+}
+
+// ---- /api/prompts ----
+
+func TestPromptsList(t *testing.T) {
+	_, h := newAPIServer(t, seedDataset)
+	rec := get(t, h, http.MethodGet, "/api/prompts")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	env := decodeEnvelope[promptOut](t, rec)
+	if len(env.Items) != 2 || env.Items[0].Name != "summarize" || env.Items[1].Name != "triage" {
+		t.Fatalf("prompts = %+v, want [summarize triage] sorted by name", env.Items)
+	}
+
+	triage := env.Items[1]
+	if triage.VersionCount != 2 || triage.LatestVersion != 2 {
+		t.Errorf("triage = %+v, want 2 versions with latest 2", triage)
+	}
+	if len(triage.Versions) != 2 || triage.Versions[0].Version != 1 || triage.Versions[1].Version != 2 {
+		t.Errorf("triage versions = %+v, want the ladder 1,2", triage.Versions)
+	}
+	if triage.LatestHash == "" || triage.LatestHash != triage.Versions[1].Hash {
+		t.Errorf("latest_hash = %q, want the v2 hash %q", triage.LatestHash, triage.Versions[1].Hash)
+	}
+	// Labels are flattened deterministically by label name; `latest` is
+	// always resolved even though it was never labeled explicitly.
+	wantLabels := []promptLabelOut{{Label: "latest", Version: 2}, {Label: "production", Version: 1}}
+	if len(triage.Labels) != len(wantLabels) {
+		t.Fatalf("labels = %+v, want %+v", triage.Labels, wantLabels)
+	}
+	for i, want := range wantLabels {
+		if triage.Labels[i] != want {
+			t.Errorf("labels[%d] = %+v, want %+v", i, triage.Labels[i], want)
+		}
+	}
+
+	summarize := env.Items[0]
+	if summarize.VersionCount != 1 || len(summarize.Labels) != 1 || summarize.Labels[0].Label != "latest" {
+		t.Errorf("summarize = %+v, want one version labeled only latest", summarize)
+	}
+
+	// Paging by name plus the shared bad-param contract.
+	env = decodeEnvelope[promptOut](t, get(t, h, http.MethodGet, "/api/prompts?limit=1"))
+	if len(env.Items) != 1 || env.NextCursor != "summarize" {
+		t.Errorf("page 1 = %+v cursor %q, want [summarize]", env.Items, env.NextCursor)
+	}
+	env = decodeEnvelope[promptOut](t, get(t, h, http.MethodGet, "/api/prompts?cursor=summarize"))
+	if len(env.Items) != 1 || env.Items[0].Name != "triage" {
+		t.Errorf("page 2 = %+v, want [triage]", env.Items)
+	}
+	if rec := get(t, h, http.MethodGet, "/api/prompts?limit=-3"); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad limit status = %d, want 400", rec.Code)
+	}
+}
+
+// ---- /api/prompts/show ----
+
+func TestPromptShow(t *testing.T) {
+	_, h := newAPIServer(t, seedDataset)
+
+	cases := []struct {
+		name        string
+		target      string
+		wantVersion int
+		wantBody    string
+		wantLabels  []string
+	}{
+		{"defaults to latest", "/api/prompts/show?name=triage", 2, "Cite evidence.", []string{"latest"}},
+		{"explicit version", "/api/prompts/show?name=triage&version=1", 1, "Be terse.", []string{"production"}},
+		{"single version prompt", "/api/prompts/show?name=summarize", 1, "Summarize the session for handoff.", []string{"latest"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := get(t, h, http.MethodGet, tc.target)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+			}
+			var got promptBodyOut
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Version != tc.wantVersion || !strings.Contains(got.Body, tc.wantBody) {
+				t.Errorf("got version %d body %q, want version %d containing %q",
+					got.Version, got.Body, tc.wantVersion, tc.wantBody)
+			}
+			if strings.Join(got.Labels, ",") != strings.Join(tc.wantLabels, ",") {
+				t.Errorf("labels = %v, want %v", got.Labels, tc.wantLabels)
+			}
+			// The recorded hash must match the body that was served.
+			if !strings.HasPrefix(got.Hash, "sha256:") {
+				t.Errorf("hash = %q, want a sha256 content hash", got.Hash)
+			}
+			if got.CreatedBy != "seed" || !strings.HasPrefix(got.CreatedAt, "2026-08-21T12:00:00") {
+				t.Errorf("metadata = %+v, want created_by/created_at from the event", got)
+			}
+		})
+	}
+
+	badCases := []struct {
+		name   string
+		target string
+		want   int
+	}{
+		{"missing name", "/api/prompts/show", http.StatusBadRequest},
+		{"non-numeric version", "/api/prompts/show?name=triage&version=x", http.StatusBadRequest},
+		{"zero version", "/api/prompts/show?name=triage&version=0", http.StatusBadRequest},
+		{"unknown prompt", "/api/prompts/show?name=ghost", http.StatusNotFound},
+		{"unknown version", "/api/prompts/show?name=triage&version=9", http.StatusNotFound},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := get(t, h, http.MethodGet, tc.target)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "error") {
+				t.Errorf("body = %s, want JSON error", rec.Body.String())
+			}
+		})
+	}
+}
+
+// ---- determinism across requests ----
+
+// TestEvalSurfacesDeterministicAcrossRequests mirrors
+// TestTracesDeterministicAcrossRequests for every evaluation endpoint: the
+// response bytes are a pure function of the event log, never of map order.
+func TestEvalSurfacesDeterministicAcrossRequests(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+	targets := []string{
+		"/api/scores",
+		"/api/scores?workstream=" + d.ws1,
+		"/api/datasets",
+		"/api/experiments",
+		"/api/experiments/compare?a=" + d.runA + "&b=" + d.runB,
+		"/api/prompts",
+		"/api/prompts/show?name=triage",
+	}
+	for _, target := range targets {
+		t.Run(target, func(t *testing.T) {
+			first := get(t, h, http.MethodGet, target).Body.String()
+			for i := 0; i < 3; i++ {
+				if again := get(t, h, http.MethodGet, target).Body.String(); again != first {
+					t.Fatalf("request %d differs:\n%s\n---\n%s", i, first, again)
+				}
+			}
+		})
+	}
+}
+
+// TestEvalEnvelopeShapes pins the JSON keys the frontend types mirror.
+func TestEvalEnvelopeShapes(t *testing.T) {
+	d, h := newAPIServer(t, seedDataset)
+	cases := []struct {
+		target string
+		want   []string
+	}{
+		{"/api/scores", []string{`"items"`, `"next_cursor"`, `"score_id"`, `"data_type"`,
+			`"target_type"`, `"target_id"`, `"source"`, `"provenance"`, `"occurred_at"`}},
+		{"/api/datasets", []string{`"items"`, `"next_cursor"`, `"event_id"`, `"name"`,
+			`"version"`, `"example_count"`, `"content_hash"`, `"created_at"`}},
+		{"/api/experiments", []string{`"items"`, `"next_cursor"`, `"id"`, `"dataset"`,
+			`"version"`, `"passed"`, `"passed_count"`, `"failed_count"`, `"example_count"`, `"created_at"`}},
+		{"/api/experiments/compare?a=" + d.runA + "&b=" + d.runB, []string{`"a"`, `"b"`,
+			`"regressions"`, `"items"`, `"file"`, `"from_status"`, `"to_status"`, `"from_p0"`, `"to_p0"`, `"regression"`}},
+		{"/api/prompts", []string{`"items"`, `"next_cursor"`, `"name"`, `"version_count"`,
+			`"latest_version"`, `"latest_hash"`, `"labels"`, `"versions"`}},
+		{"/api/prompts/show?name=triage", []string{`"name"`, `"version"`, `"body"`,
+			`"hash"`, `"created_at"`, `"labels"`, `"latest_version"`, `"version_count"`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.target, func(t *testing.T) {
+			body := get(t, h, http.MethodGet, tc.target).Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("body missing %s:\n%s", want, body)
+				}
+			}
+		})
+	}
+}
+
+// TestEvalSurfacesEmptyStore proves every endpoint answers with an empty
+// envelope (never null items, never a 500) on a store with no such events.
+func TestEvalSurfacesEmptyStore(t *testing.T) {
+	_, h := newAPIServer[*dataset](t, nil)
+	for _, target := range []string{"/api/scores", "/api/datasets", "/api/experiments", "/api/prompts"} {
+		t.Run(target, func(t *testing.T) {
+			rec := get(t, h, http.MethodGet, target)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `"items": []`) {
+				t.Errorf("body = %s, want an empty items array", rec.Body.String())
+			}
+		})
+	}
 }
 
 // ---- methods, unknown API routes, headers ----

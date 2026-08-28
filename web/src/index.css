@@ -773,3 +773,282 @@ code,
   border-radius: 4px;
   padding: 1px 8px;
 }
+
+/* ---- Header nav ---- */
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.app-nav a {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.app-nav a:hover {
+  color: var(--text);
+  text-decoration: none;
+  background: var(--bg-inset);
+}
+
+.app-nav a.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* ---- Filter bar (scores, run comparison) ---- */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-muted);
+  background: var(--bg-inset);
+}
+
+.filter-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.filter-bar select,
+.filter-bar input {
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+  max-width: 340px;
+}
+
+.filter-bar select:focus,
+.filter-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.filter-note {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* ---- Shared grid rows (scores, datasets, runs, comparison, versions) ---- */
+
+.score-grid,
+.score-row,
+.ds-grid,
+.ds-row,
+.run-grid,
+.run-row,
+.cmp-grid,
+.cmp-row,
+.ver-grid,
+.ver-row {
+  display: grid;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.score-grid,
+.ds-grid,
+.run-grid,
+.cmp-grid,
+.ver-grid {
+  color: var(--text-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.score-row,
+.ds-row,
+.cmp-row,
+.run-row {
+  font-size: 13px;
+}
+
+.run-row:last-child,
+.ds-row:last-child,
+.cmp-row:last-child,
+.ver-row:last-child,
+.score-row:last-child {
+  border-bottom: none;
+}
+
+.score-grid,
+.score-row {
+  grid-template-columns: minmax(160px, 1fr) 110px 100px minmax(200px, 1.2fr) 110px 120px 150px;
+}
+
+.ds-grid,
+.ds-row {
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 2fr) 90px 160px;
+}
+
+.run-grid,
+.run-row {
+  grid-template-columns: minmax(200px, 1.2fr) minmax(200px, 1.4fr) 80px 80px 110px 160px;
+}
+
+.cmp-grid,
+.cmp-row {
+  grid-template-columns: minmax(200px, 1.4fr) 160px 160px 130px;
+}
+
+.ver-grid,
+.ver-row {
+  grid-template-columns: 80px minmax(200px, 1.4fr) minmax(140px, 1fr) 160px 100px;
+}
+
+/* Version rows are buttons (they select the body shown below). */
+.ver-row {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  background: transparent;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  cursor: pointer;
+}
+
+.ver-row:hover,
+.run-row:hover,
+.cmp-row:hover,
+.score-row:hover,
+.ds-row:hover {
+  background: #1c2129;
+}
+
+.ver-row.selected,
+.run-row.selected,
+.row.selected {
+  background: #142033;
+}
+
+.score-row .title,
+.cmp-row .title,
+.ds-row .title,
+.ver-row .title {
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.score-row .sub {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.score-row .id,
+.cmp-row .id,
+.ds-row .id,
+.run-row .id,
+.ver-row .id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-row .num,
+.run-row .num {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+}
+
+.ds-row .num.err,
+.run-row .num.err {
+  color: var(--error);
+}
+
+.ver-row .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Score values read by type: a boolean verdict is pass/fail colored, the
+   other types stay literal so a category never looks like a measurement. */
+.score-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.score-value.ok {
+  color: var(--ok);
+}
+
+.score-value.err {
+  color: var(--error);
+}
+
+/* A regressed example is the thing you came to find: it gets a red rail. */
+.cmp-row.regression {
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+  box-shadow: inset 3px 0 0 var(--error);
+}
+
+/* ---- Prompt body ---- */
+
+.facts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 10px 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.facts-row b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.prompt-body {
+  margin: 0;
+  padding: 16px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow: auto;
+}

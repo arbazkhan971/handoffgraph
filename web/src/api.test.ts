@@ -1,6 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchTraceDetail, fetchTraces, fetchWorkstreams } from './api'
-import { mockSpans, mockTrace, mockTraces, mockWorkstreams } from './mocks'
+import {
+  fetchDatasets,
+  fetchExperimentCompare,
+  fetchExperiments,
+  fetchPromptBody,
+  fetchPrompts,
+  fetchScores,
+  fetchTraceDetail,
+  fetchTraces,
+  fetchWorkstreams,
+} from './api'
+import {
+  mockDatasets,
+  mockExperimentCompare,
+  mockExperiments,
+  mockPromptBody,
+  mockPrompts,
+  mockScores,
+  mockSpans,
+  mockTrace,
+  mockTraces,
+  mockWorkstreams,
+} from './mocks'
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -87,5 +108,99 @@ describe('local debugger API client', () => {
 
     vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'read failed' }, 500)))
     await expect(fetchWorkstreams()).rejects.toThrow('/api/workstreams: HTTP 500')
+  })
+})
+
+describe('evaluation-surface API client', () => {
+  const listCases: { name: string; path: string; call: () => Promise<unknown>; items: unknown[] }[] = [
+    { name: 'scores', path: '/api/scores', call: () => fetchScores(), items: mockScores() },
+    { name: 'datasets', path: '/api/datasets', call: () => fetchDatasets(), items: mockDatasets() },
+    {
+      name: 'experiments',
+      path: '/api/experiments',
+      call: () => fetchExperiments(),
+      items: mockExperiments(),
+    },
+    { name: 'prompts', path: '/api/prompts', call: () => fetchPrompts(), items: mockPrompts() },
+  ]
+
+  it.each(listCases)('unwraps the $name envelope', async ({ path, call, items }) => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => json({ items, next_cursor: '' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(call()).resolves.toEqual({ data: items, source: 'live' })
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(path)
+  })
+
+  it.each([
+    ['both filters', { workstream: 'ws_1', target: 'trc_1' }, '/api/scores?workstream=ws_1&target=trc_1'],
+    ['workstream only', { workstream: 'ws_1' }, '/api/scores?workstream=ws_1'],
+    ['target only', { target: 'spn_a/b' }, '/api/scores?target=spn_a%2Fb'],
+    ['no filters', {}, '/api/scores'],
+  ])('builds the score request path with %s', async (_name, filter, want) => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => json({ items: [], next_cursor: '' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchScores(filter)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(want)
+  })
+
+  it('filters mock scores the same way the server filters live ones', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed')
+      }),
+    )
+    const target = mockScores()[0].target_id
+    await expect(fetchScores({ target })).resolves.toEqual({
+      data: mockScores().filter((s) => s.target_id === target),
+      source: 'mock',
+    })
+    await expect(fetchExperiments('handoff-golden')).resolves.toEqual({
+      data: mockExperiments().filter((r) => r.dataset === 'handoff-golden'),
+      source: 'mock',
+    })
+  })
+
+  it('fetches a run comparison and falls back to the derived mock diff', async () => {
+    const compare = mockExperimentCompare('evt_01J2MOCKEXPERIMENT01', 'evt_01J2MOCKEXPERIMENT02')
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => json(compare))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchExperimentCompare('a1', 'b2')).resolves.toEqual({ data: compare, source: 'live' })
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/experiments/compare?a=a1&b=b2')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed')
+      }),
+    )
+    await expect(
+      fetchExperimentCompare('evt_01J2MOCKEXPERIMENT01', 'evt_01J2MOCKEXPERIMENT02'),
+    ).resolves.toEqual({ data: compare, source: 'mock' })
+  })
+
+  it.each([
+    ['pinned version', 'triage', 2, '/api/prompts/show?name=triage&version=2'],
+    ['latest by default', 'triage', undefined, '/api/prompts/show?name=triage'],
+    ['encodes the name', 'a/b', undefined, '/api/prompts/show?name=a%2Fb'],
+  ])('requests a prompt body: %s', async (_name, prompt, version, want) => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => json(mockPromptBody('triage', 2)))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchPromptBody(prompt as string, version as number | undefined)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(want)
+  })
+
+  it('treats 404 on an object endpoint as a live "not here" answer', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'prompt not found' }, 404)))
+    await expect(fetchPromptBody('ghost')).resolves.toEqual({ data: null, source: 'live' })
+    await expect(fetchExperimentCompare('a', 'b')).resolves.toEqual({ data: null, source: 'live' })
+
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'read failed' }, 500)))
+    await expect(fetchPromptBody('triage')).rejects.toThrow('HTTP 500')
+    await expect(fetchScores()).rejects.toThrow('/api/scores: HTTP 500')
   })
 })

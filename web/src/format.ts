@@ -1,6 +1,8 @@
 // Pure formatting helpers shared by every view. Kept free of React so they
 // can be table-tested directly.
 
+import type { ExperimentComparison, Score } from './types'
+
 /** Formats a nanosecond duration for list/detail views. */
 export function formatDuration(ns: number): string {
   if (!Number.isFinite(ns)) return '—'
@@ -57,6 +59,46 @@ export function shortID(id: string | undefined, keep = 4): string {
 export function formatCost(amount: string | undefined, currency: string | undefined): string {
   if (!amount) return '—'
   return currency ? `${amount} ${currency}` : amount
+}
+
+/**
+ * Formats an RFC3339 timestamp (the string form used by /api/scores,
+ * /api/datasets, /api/experiments and /api/prompts) for a dense table:
+ * fractional seconds and the zone marker are dropped, the date is kept.
+ */
+export function formatStamp(ts: string | undefined): string {
+  if (!ts) return '—'
+  return ts.replace(/\.\d+/, '').replace('T', ' ').replace('Z', '')
+}
+
+/**
+ * Renders a score from the single value slot its data_type selects. A slot
+ * that does not match the declared data type is never read, so a malformed
+ * record shows "—" instead of a value borrowed from another type.
+ */
+export function formatScoreValue(score: Score): string {
+  switch (score.data_type) {
+    case 'NUMERIC':
+      return typeof score.value === 'number' && Number.isFinite(score.value) ? String(score.value) : '—'
+    case 'CATEGORY':
+      return score.string_value ? score.string_value : '—'
+    case 'BOOLEAN':
+      return typeof score.bool_value === 'boolean' ? String(score.bool_value) : '—'
+    default:
+      return '—'
+  }
+}
+
+/**
+ * Labels one example's movement between two experiment runs. `regression` is
+ * decided by the server (status downgrade or a new P0 detection); a change
+ * in the other direction is a recovery, and equal verdicts are unchanged.
+ */
+export function comparisonVerdict(cmp: ExperimentComparison): 'regression' | 'recovered' | 'changed' | 'same' {
+  if (cmp.regression) return 'regression'
+  if (cmp.from_status === cmp.to_status && cmp.from_p0 === cmp.to_p0) return 'same'
+  if (cmp.to_p0 < cmp.from_p0 || (cmp.from_status !== 'ok' && cmp.to_status === 'ok')) return 'recovered'
+  return 'changed'
 }
 
 export function verificationLabel(state: string | undefined): string {

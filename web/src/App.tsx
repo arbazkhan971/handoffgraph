@@ -3,13 +3,31 @@
 //   #/workstreams            workstream list
 //   #/traces?workstream=<id> trace list (optionally filtered)
 //   #/traces/<trace_id>      trace detail (tree + waterfall + drawer)
+//   #/scores?workstream=&target=  score list (quality primitives)
+//   #/datasets               dataset versions, experiment runs, run compare
+//   #/prompts                versioned prompt store
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { WorkstreamsView } from './views/WorkstreamsView'
 import { TracesView } from './views/TracesView'
 import { TraceDetailView } from './views/TraceDetailView'
+import { ScoresView } from './views/ScoresView'
+import { DatasetsView } from './views/DatasetsView'
+import { PromptsView } from './views/PromptsView'
 import { EmptyView } from './components/StateViews'
 import type { Trace, Workstream } from './types'
+
+/** Single source of truth for the version shown in the footer. */
+const VERSION = 'v0.7.0-beta.1'
+
+/** Top-level destinations, in header order. */
+const NAV: { path: string; label: string }[] = [
+  { path: '/workstreams', label: 'Workstreams' },
+  { path: '/traces', label: 'Traces' },
+  { path: '/scores', label: 'Scores' },
+  { path: '/datasets', label: 'Datasets' },
+  { path: '/prompts', label: 'Prompts' },
+]
 
 function useHashPath(): { path: string; query: URLSearchParams } {
   const [hash, setHash] = useState(() => window.location.hash || '#/workstreams')
@@ -56,6 +74,23 @@ export default function App() {
     const id = decodeURIComponent(path.slice('/traces/'.length))
     crumb = `Trace · ${id}`
     view = <TraceDetailView traceID={id} onBack={() => navigate(query.get('workstream') ? `/traces?workstream=${query.get('workstream')}` : '/traces')} />
+  } else if (path === '/scores') {
+    const ws = query.get('workstream') ?? undefined
+    const target = query.get('target') ?? undefined
+    crumb = target ? `Scores · ${target}` : ws ? `Scores · ${ws}` : 'Scores'
+    view = (
+      <ScoresView
+        workstreamID={ws}
+        targetID={target}
+        onBack={ws || target ? () => navigate('/scores') : undefined}
+      />
+    )
+  } else if (path === '/datasets') {
+    crumb = 'Datasets & experiments'
+    view = <DatasetsView />
+  } else if (path === '/prompts') {
+    crumb = 'Prompts'
+    view = <PromptsView />
   } else {
     crumb = 'Not found'
     view = (
@@ -75,13 +110,24 @@ export default function App() {
           <img src="/favicon.svg" alt="" />
           HandoffGraph
         </span>
+        <nav className="app-nav">
+          {NAV.map((item) => (
+            <a
+              key={item.path}
+              href={`#${item.path}`}
+              className={path === item.path || path.startsWith(`${item.path}/`) ? 'active' : ''}
+            >
+              {item.label}
+            </a>
+          ))}
+        </nav>
         <span className="crumbs">{crumb}</span>
         <span className="spacer" />
         <span className="kind-chip">session debugger</span>
       </header>
       <main className="app-main">{view}</main>
       <footer className="app-footer">
-        <span>local session debugger · localhost only · v0.5.0</span>
+        <span>local session debugger · localhost only · {VERSION}</span>
         <span>evidence: OBSERVED / DECLARED / INFERRED</span>
       </footer>
     </div>

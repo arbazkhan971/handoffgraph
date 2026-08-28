@@ -5,8 +5,31 @@
 // UI can label what it is showing. Mock fallback never mixes with live data
 // for a single fetch.
 
-import type { DataSource, Envelope, Span, Trace, Workstream } from './types'
-import { mockSpans, mockTrace, mockTraces, mockWorkstreams } from './mocks'
+import type {
+  DataSource,
+  DatasetVersion,
+  Envelope,
+  ExperimentCompare,
+  ExperimentRun,
+  Prompt,
+  PromptBody,
+  Score,
+  Span,
+  Trace,
+  Workstream,
+} from './types'
+import {
+  mockDatasets,
+  mockExperimentCompare,
+  mockExperiments,
+  mockPromptBody,
+  mockPrompts,
+  mockScores,
+  mockSpans,
+  mockTrace,
+  mockTraces,
+  mockWorkstreams,
+} from './mocks'
 
 export interface Loaded<T> {
   data: T
@@ -65,6 +88,37 @@ async function fetchList<T>(path: string, fallback: () => T[]): Promise<Loaded<T
   return { data: loaded.data.items, source: loaded.source }
 }
 
+/**
+ * Fetches a single object (not a list envelope). A live 404 is a real
+ * answer — "no such thing here" — and resolves to null rather than throwing,
+ * matching the trace-detail contract.
+ */
+async function fetchObject<T>(path: string, fallback: () => T | null): Promise<Loaded<T | null>> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), FALLBACK_TIMEOUT_MS)
+  try {
+    return { data: await getJSON<T>(path, ctrl.signal), source: 'live' }
+  } catch (error) {
+    if (error instanceof APIResponseError) {
+      if (error.status === 404) return { data: null, source: 'live' }
+      throw error
+    }
+    return { data: fallback(), source: 'mock' }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Builds `path?k=v` with the empty filters dropped. */
+function withQuery(path: string, params: Record<string, string | undefined>): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value) query.set(key, value)
+  }
+  const encoded = query.toString()
+  return encoded ? `${path}?${encoded}` : path
+}
+
 export function fetchWorkstreams(): Promise<Loaded<Workstream[]>> {
   return fetchList('/api/workstreams', mockWorkstreams)
 }
@@ -121,4 +175,50 @@ export async function fetchTraceDetail(traceID: string): Promise<Loaded<TraceDet
   } finally {
     clearTimeout(timer)
   }
+}
+
+// ---- evaluation surfaces: scores, datasets/experiments, prompts ----
+
+export interface ScoreFilter {
+  workstream?: string
+  target?: string
+}
+
+export function fetchScores(filter: ScoreFilter = {}): Promise<Loaded<Score[]>> {
+  const path = withQuery('/api/scores', { workstream: filter.workstream, target: filter.target })
+  return fetchList(path, () =>
+    mockScores().filter(
+      (s) =>
+        (!filter.workstream || s.workstream_id === filter.workstream) &&
+        (!filter.target || s.target_id === filter.target),
+    ),
+  )
+}
+
+export function fetchDatasets(): Promise<Loaded<DatasetVersion[]>> {
+  return fetchList('/api/datasets', mockDatasets)
+}
+
+export function fetchExperiments(dataset?: string): Promise<Loaded<ExperimentRun[]>> {
+  return fetchList(withQuery('/api/experiments', { dataset }), () =>
+    dataset ? mockExperiments().filter((r) => r.dataset === dataset) : mockExperiments(),
+  )
+}
+
+export function fetchExperimentCompare(a: string, b: string): Promise<Loaded<ExperimentCompare | null>> {
+  return fetchObject<ExperimentCompare>(withQuery('/api/experiments/compare', { a, b }), () =>
+    mockExperimentCompare(a, b),
+  )
+}
+
+export function fetchPrompts(): Promise<Loaded<Prompt[]>> {
+  return fetchList('/api/prompts', mockPrompts)
+}
+
+export function fetchPromptBody(name: string, version?: number): Promise<Loaded<PromptBody | null>> {
+  const path = withQuery('/api/prompts/show', {
+    name,
+    version: version === undefined ? undefined : String(version),
+  })
+  return fetchObject<PromptBody>(path, () => mockPromptBody(name, version))
 }

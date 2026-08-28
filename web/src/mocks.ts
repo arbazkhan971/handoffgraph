@@ -4,7 +4,20 @@
 // when these are in play — the provenance of what you are looking at is
 // never hidden.
 
-import type { Span, Trace, Workstream } from './types'
+import type {
+  DatasetVersion,
+  ExampleStatus,
+  ExperimentCompare,
+  ExperimentComparison,
+  ExperimentRun,
+  Prompt,
+  PromptBody,
+  PromptLabel,
+  Score,
+  Span,
+  Trace,
+  Workstream,
+} from './types'
 
 // Fixed reference: 2026-08-21T12:00:00Z in ns.
 const BASE_NS = Date.UTC(2026, 7, 21, 12, 0, 0) * 1_000_000
@@ -310,4 +323,359 @@ export function mockSpans(traceID: string): Span[] {
 
 export function mockTrace(traceID: string): Trace | undefined {
   return mockTraces().find((t) => t.trace_id === traceID)
+}
+
+// ---- Scores ----
+
+// Scores are returned newest first by /api/scores; the mock preserves that
+// order. Every data type is represented, and so is every provenance level:
+// the LLM-judge row is INFERRED and must render distinctly from the
+// deterministic OBSERVED rows next to it.
+export function mockScores(): Score[] {
+  const score = (
+    id: string,
+    occurredAt: string,
+    workstream: string,
+    name: string,
+    target: Score['target_type'],
+    targetID: string,
+    source: Score['source'],
+    provenance: Score['provenance'],
+    slots: Pick<Score, 'data_type' | 'value' | 'string_value' | 'bool_value'>,
+    comment?: string,
+  ): Score => ({
+    schema_version: 'hfg.score.v1',
+    score_id: id,
+    workstream_id: workstream,
+    occurred_at: occurredAt,
+    name,
+    target_type: target,
+    target_id: targetID,
+    source,
+    provenance,
+    comment,
+    ...slots,
+  })
+
+  return [
+    score(
+      'evt_01J2MOCKSCORE000006',
+      '2026-08-21T12:04:31Z',
+      'ws_01J2MOCKWORKSTREAM01',
+      'helpfulness',
+      'span',
+      'spn_01J2MOCKSPAN0000002',
+      'evaluation',
+      'INFERRED',
+      { data_type: 'NUMERIC', value: 0.62 },
+      'llm judge (rubric v2): thin evidence for the root-cause claim',
+    ),
+    score(
+      'evt_01J2MOCKSCORE000005',
+      '2026-08-21T12:03:02Z',
+      'ws_01J2MOCKWORKSTREAM01',
+      'objective_met',
+      'trace',
+      'trc_01J2MOCKTRACE000003',
+      'api',
+      'DECLARED',
+      { data_type: 'CATEGORY', string_value: 'partial' },
+      'agent-asserted; the turn was interrupted before verification',
+    ),
+    score(
+      'evt_01J2MOCKSCORE000004',
+      '2026-08-21T12:01:44Z',
+      'ws_01J2MOCKWORKSTREAM01',
+      'verdict',
+      'trace',
+      'trc_01J2MOCKTRACE000001',
+      'human',
+      'OBSERVED',
+      { data_type: 'CATEGORY', string_value: 'regression' },
+      'reviewed the failing WAL reopen test',
+    ),
+    score(
+      'evt_01J2MOCKSCORE000003',
+      '2026-08-21T12:01:10Z',
+      'ws_01J2MOCKWORKSTREAM01',
+      'tests_pass',
+      'trace',
+      'trc_01J2MOCKTRACE000001',
+      'detection',
+      'OBSERVED',
+      { data_type: 'BOOLEAN', bool_value: false },
+    ),
+    score(
+      'evt_01J2MOCKSCORE000002',
+      '2026-08-21T12:00:52Z',
+      'ws_01J2MOCKWORKSTREAM01',
+      'tests_pass',
+      'trace',
+      'trc_01J2MOCKTRACE000002',
+      'detection',
+      'OBSERVED',
+      { data_type: 'BOOLEAN', bool_value: true },
+    ),
+    score(
+      'evt_01J2MOCKSCORE000001',
+      '2026-08-21T11:58:20Z',
+      'ws_01J2MOCKWORKSTREAM02',
+      'latency_p95_ms',
+      'trace',
+      'trc_01J2MOCKTRACE000005',
+      'api',
+      'OBSERVED',
+      { data_type: 'NUMERIC', value: 412.5 },
+    ),
+  ]
+}
+
+// ---- Datasets & experiments ----
+
+// Mock content hashes are shortened for readability; real ones are full
+// sha256 digests of the sorted example manifest.
+const DS_CORE_V1 = 'sha256:3f1a7c02d95b6e41'
+const DS_CORE_V2 = 'sha256:9c74be0d1188a35f'
+const DS_HANDOFF_V1 = 'sha256:be0d4471aa20c9e3'
+
+// Sorted the way /api/datasets returns them: by name, then creation order.
+export function mockDatasets(): DatasetVersion[] {
+  return [
+    {
+      event_id: 'evt_01J2MOCKDATASET0001',
+      name: 'core-regressions',
+      version: DS_CORE_V1,
+      example_count: 2,
+      content_hash: DS_CORE_V1,
+      created_at: '2026-08-21T09:14:00Z',
+    },
+    {
+      event_id: 'evt_01J2MOCKDATASET0002',
+      name: 'core-regressions',
+      version: DS_CORE_V2,
+      example_count: 3,
+      content_hash: DS_CORE_V2,
+      created_at: '2026-08-21T11:02:00Z',
+    },
+    {
+      event_id: 'evt_01J2MOCKDATASET0003',
+      name: 'handoff-golden',
+      version: DS_HANDOFF_V1,
+      example_count: 2,
+      content_hash: DS_HANDOFF_V1,
+      created_at: '2026-08-20T16:40:00Z',
+    },
+  ]
+}
+
+interface MockExampleResult {
+  name: string
+  status: ExampleStatus
+  p0: number
+}
+
+// Per-example verdicts behind each run. The run rows and the comparison are
+// both derived from this table, so the mock can never contradict itself.
+const experimentResults: Record<string, MockExampleResult[]> = {
+  evt_01J2MOCKEXPERIMENT01: [
+    { name: 'checkout_race.jsonl', status: 'ok', p0: 0 },
+    { name: 'compaction_gap.jsonl', status: 'ok', p0: 0 },
+    { name: 'wal_reopen.jsonl', status: 'ok', p0: 0 },
+  ],
+  evt_01J2MOCKEXPERIMENT02: [
+    { name: 'checkout_race.jsonl', status: 'ok', p0: 0 },
+    { name: 'compaction_gap.jsonl', status: 'ok', p0: 0 },
+    // The regression: a new P0 detection downgraded this example.
+    { name: 'wal_reopen.jsonl', status: 'detections', p0: 1 },
+  ],
+  evt_01J2MOCKEXPERIMENT03: [
+    { name: 'accept_handoff.jsonl', status: 'ok', p0: 0 },
+    { name: 'reject_stale.jsonl', status: 'ok', p0: 0 },
+  ],
+}
+
+const experimentMeta: { id: string; dataset: string; version: string; created_at: string }[] = [
+  // Newest first, as /api/experiments returns them.
+  {
+    id: 'evt_01J2MOCKEXPERIMENT02',
+    dataset: 'core-regressions',
+    version: DS_CORE_V2,
+    created_at: '2026-08-21T11:47:00Z',
+  },
+  {
+    id: 'evt_01J2MOCKEXPERIMENT01',
+    dataset: 'core-regressions',
+    version: DS_CORE_V2,
+    created_at: '2026-08-21T11:05:00Z',
+  },
+  {
+    id: 'evt_01J2MOCKEXPERIMENT03',
+    dataset: 'handoff-golden',
+    version: DS_HANDOFF_V1,
+    created_at: '2026-08-20T16:45:00Z',
+  },
+]
+
+export function mockExperiments(): ExperimentRun[] {
+  return experimentMeta.map((meta) => {
+    const results = experimentResults[meta.id] ?? []
+    const passedCount = results.filter((r) => r.status === 'ok').length
+    return {
+      id: meta.id,
+      dataset: meta.dataset,
+      version: meta.version,
+      passed: passedCount === results.length,
+      passed_count: passedCount,
+      failed_count: results.length - passedCount,
+      example_count: results.length,
+      created_at: meta.created_at,
+    }
+  })
+}
+
+// Mirrors datasets.Compare in Go: examples present in both runs, sorted by
+// name, with a regression flagged on a status downgrade or a new P0.
+const statusRank: Record<ExampleStatus, number> = { ok: 0, detections: 1, invalid: 2 }
+
+function rankOf(status: ExampleStatus): number {
+  return statusRank[status] ?? 2
+}
+
+function compareResults(a: MockExampleResult[], b: MockExampleResult[]): ExperimentComparison[] {
+  const baseline = new Map(a.map((r) => [r.name, r]))
+  return b
+    .map((r) => r.name)
+    .sort()
+    .flatMap((name) => {
+      const to = b.find((r) => r.name === name)
+      const from = baseline.get(name)
+      if (!to || !from) return []
+      return [
+        {
+          file: name,
+          from_status: from.status,
+          to_status: to.status,
+          from_p0: from.p0,
+          to_p0: to.p0,
+          regression: rankOf(to.status) > rankOf(from.status) || to.p0 > from.p0,
+        },
+      ]
+    })
+}
+
+export function mockExperimentCompare(aID: string, bID: string): ExperimentCompare | null {
+  const runs = mockExperiments()
+  const a = runs.find((r) => r.id === aID)
+  const b = runs.find((r) => r.id === bID)
+  if (!a || !b) return null
+  const items = compareResults(experimentResults[aID] ?? [], experimentResults[bID] ?? [])
+  return { a, b, regressions: items.filter((c) => c.regression).length, items }
+}
+
+// ---- Prompts ----
+
+interface MockPromptVersion {
+  version: number
+  body: string
+  hash: string
+  created_at: string
+  created_by?: string
+}
+
+const promptVersions: Record<string, MockPromptVersion[]> = {
+  'handoff-summary': [
+    {
+      version: 1,
+      body: 'Summarize the session for the next agent.\nList verified facts first, then open questions.',
+      hash: 'sha256:5d2f88a10c4b7e93',
+      created_at: '2026-08-19T10:20:00Z',
+      created_by: 'arbaz',
+    },
+  ],
+  triage: [
+    {
+      version: 1,
+      body: 'You are a triage agent.\nBe terse.',
+      hash: 'sha256:11a4c7f0932b6de5',
+      created_at: '2026-08-18T08:00:00Z',
+      created_by: 'arbaz',
+    },
+    {
+      version: 2,
+      body: 'You are a triage agent.\nBe terse.\nCite the evidence you relied on.',
+      hash: 'sha256:7b90ee31c5d4a026',
+      created_at: '2026-08-20T14:30:00Z',
+      created_by: 'arbaz',
+    },
+    {
+      version: 3,
+      body:
+        'You are a triage agent.\nBe terse.\nCite the evidence you relied on.\n' +
+        'Never present an inferred cause as an observed one.',
+      hash: 'sha256:c3081f5ab6742d19',
+      created_at: '2026-08-21T09:05:00Z',
+      created_by: 'arbaz',
+    },
+  ],
+}
+
+// Explicit label pointers. `latest` is resolved from the version ladder, the
+// way the server derives it, so a rollback only moves `production`.
+const promptLabels: Record<string, PromptLabel[]> = {
+  'handoff-summary': [],
+  triage: [{ label: 'production', version: 2 }],
+}
+
+function resolveLabels(name: string): PromptLabel[] {
+  const versions = promptVersions[name] ?? []
+  const latest = versions.length ? versions[versions.length - 1].version : 0
+  const resolved = new Map<string, number>()
+  if (latest > 0) resolved.set('latest', latest)
+  for (const ref of promptLabels[name] ?? []) resolved.set(ref.label, ref.version)
+  return [...resolved.entries()]
+    .map(([label, version]) => ({ label, version }))
+    .sort((x, y) => (x.label < y.label ? -1 : x.label > y.label ? 1 : 0))
+}
+
+export function mockPrompts(): Prompt[] {
+  return Object.keys(promptVersions)
+    .sort()
+    .map((name) => {
+      const versions = promptVersions[name]
+      const latest = versions[versions.length - 1]
+      return {
+        name,
+        version_count: versions.length,
+        latest_version: latest.version,
+        latest_hash: latest.hash,
+        latest_created_at: latest.created_at,
+        labels: resolveLabels(name),
+        versions: versions.map((v) => ({
+          version: v.version,
+          hash: v.hash,
+          created_at: v.created_at,
+          created_by: v.created_by,
+        })),
+      }
+    })
+}
+
+export function mockPromptBody(name: string, version?: number): PromptBody | null {
+  const versions = promptVersions[name]
+  if (!versions || versions.length === 0) return null
+  const labels = resolveLabels(name)
+  const want = version ?? versions[versions.length - 1].version
+  const found = versions.find((v) => v.version === want)
+  if (!found) return null
+  return {
+    name,
+    version: found.version,
+    body: found.body,
+    hash: found.hash,
+    created_at: found.created_at,
+    created_by: found.created_by,
+    labels: labels.filter((l) => l.version === found.version).map((l) => l.label),
+    latest_version: versions[versions.length - 1].version,
+    version_count: versions.length,
+  }
 }
