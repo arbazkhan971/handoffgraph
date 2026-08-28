@@ -69,12 +69,12 @@ func TestRebuildAndQueryObservations(t *testing.T) {
 	ctx := context.Background()
 	rows := obsRows()
 	fps := []ObsFingerprint{{Fingerprint: "fp1", Provider: "otlp", Agent: "codex-cli", Model: "gpt-5.3"}}
-	if err := db.RebuildObservations(ctx, rows, fps, snapshot(t, db)); err != nil {
+	if err := db.RebuildObservations(ctx, rows, fps, nil, snapshot(t, db)); err != nil {
 		t.Fatal(err)
 	}
 
 	// Idempotent rebuild: same rows twice leaves the same table.
-	if err := db.RebuildObservations(ctx, rows, fps, snapshot(t, db)); err != nil {
+	if err := db.RebuildObservations(ctx, rows, fps, nil, snapshot(t, db)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestRebuildAndQueryObservations(t *testing.T) {
 func TestObservationsStaleAfterAppend(t *testing.T) {
 	db := openDB(t)
 	ctx := context.Background()
-	if err := db.RebuildObservations(ctx, nil, nil, snapshot(t, db)); err != nil {
+	if err := db.RebuildObservations(ctx, nil, nil, nil, snapshot(t, db)); err != nil {
 		t.Fatal(err)
 	}
 	stale, err := db.ObservationsStale(ctx)

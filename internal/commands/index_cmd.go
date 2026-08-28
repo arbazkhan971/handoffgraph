@@ -15,12 +15,13 @@ import (
 )
 
 // RegisterIndexCmd registers the derived wide read model surface (parity
-// rows 9-11).
+// rows 9-13).
 //
 // Usage:
 //
 //	handoffgraph index rebuild          force a deterministic rebuild
 //	handoffgraph query spans [...]      ts_bucket-pruned observation queries
+//	handoffgraph query exceptions [...] derived exception groups
 //
 // The wide table is fully derived and rebuildable; `query` auto-rebuilds
 // when the event log has moved past the last snapshot.
@@ -35,8 +36,11 @@ func RegisterIndexCmd(app *cli.App) {
 		Name:    "query",
 		Summary: "Query the derived wide observation index",
 		Usage: "spans [--workstream <id>] [--trace <id>] [--session <id>] [--agent <a>]\n" +
-			"             [--provider <p>] [--model <m>] [--kind <k>] [--failed]\n" +
-			"             [--from <rfc3339|unix_ns>] [--to <rfc3339|unix_ns>] [--limit N] [--json]",
+			"             [--provider <p>] [--model <m>] [--kind <k>] [--tool <t>] [--failed]\n" +
+			"             [--has-error] [--signal-source native|hook|sdk|import] [--include-shadowed]\n" +
+			"             [--from <rfc3339|unix_ns>] [--to <rfc3339|unix_ns>] [--limit N] [--json]\n" +
+			"       exceptions [--workstream <id>] [--error-type <t>] [--limit N] [--json]\n" +
+			"       usage [--workstream <id>] [--group-by provider|session] [--json]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("workstream", "", "filter by workstream id")
 			fs.String("trace", "", "filter by trace id")
@@ -45,6 +49,11 @@ func RegisterIndexCmd(app *cli.App) {
 			fs.String("provider", "", "filter by provider")
 			fs.String("model", "", "filter by model")
 			fs.String("kind", "", "filter by span kind (MODEL, TOOL, ...)")
+			fs.String("tool", "", "filter by promoted tool_name column")
+			fs.String("error-type", "", "filter by promoted error_type column")
+			fs.Bool("has-error", false, "only spans carrying an error (promoted error_exists marker)")
+			fs.String("signal-source", "", "filter by signal source: native | hook | sdk | import")
+			fs.Bool("include-shadowed", false, "include observations coalescing marked as duplicates")
 			fs.Bool("failed", false, "only failed spans")
 			fs.String("from", "", "window start (RFC3339 or unix nanoseconds)")
 			fs.String("to", "", "window end (RFC3339 or unix nanoseconds)")
@@ -81,18 +90,38 @@ func indexCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	return nil
 }
 
-// rebuildObservations derives and persists the wide read model, returning
-// the row count.
+// rebuildObservations derives and persists the wide read model and every
+// table derived alongside it, returning the observation row count.
 func rebuildObservations(ctx context.Context, db *storage.DB, events []*protocol.Event) (int, error) {
-	rows, prints := observations.Derive(events)
-	if err := db.RebuildObservations(ctx, rows, prints, storage.ObsMeta{
-		EventCount: int64(len(events)),
-		MaxSeq:     maxSeq(events),
-		RebuiltAt:  time.Now().UTC(),
-	}); err != nil {
+	derived := observations.DeriveAll(events)
+	if err := db.RebuildObservations(ctx, derived.Rows, derived.Fingerprints,
+		derived.ExceptionGroups, storage.ObsMeta{
+			EventCount: int64(len(events)),
+			MaxSeq:     maxSeq(events),
+			RebuiltAt:  time.Now().UTC(),
+		}); err != nil {
 		return 0, err
 	}
-	return len(rows), nil
+	return len(derived.Rows), nil
+}
+
+// freshenObservations rebuilds the derived tables when the event log has
+// moved past the last snapshot, so a read never silently serves a stale
+// index.
+func freshenObservations(ctx context.Context, db *storage.DB) error {
+	stale, err := db.ObservationsStale(ctx)
+	if err != nil {
+		return err
+	}
+	if !stale {
+		return nil
+	}
+	events, err := db.ListEvents(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = rebuildObservations(ctx, db, events)
+	return err
 }
 
 // maxSeq returns the highest append sequence in the log (0 when empty).
@@ -114,8 +143,11 @@ func queryCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	if len(args) >= 1 && args[0] == "usage" {
 		return queryUsageCmd(ctx, c, fs)
 	}
+	if len(args) >= 1 && args[0] == "exceptions" {
+		return queryExceptionsCmd(ctx, c, fs)
+	}
 	if len(args) != 1 || args[0] != "spans" {
-		return fmt.Errorf("usage: query spans [...] | query usage [...]")
+		return fmt.Errorf("usage: query spans [...] | query exceptions [...] | query usage [...]")
 	}
 	_, db, err := loadConfigAndDB()
 	if err != nil {
@@ -123,35 +155,37 @@ func queryCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	}
 	defer db.Close()
 
-	// Auto-rebuild when the event log moved past the last snapshot: reads
-	// never silently serve a stale index.
-	stale, err := db.ObservationsStale(ctx)
-	if err != nil {
+	if err := freshenObservations(ctx, db); err != nil {
 		return err
-	}
-	if stale {
-		events, err := db.ListEvents(ctx)
-		if err != nil {
-			return err
-		}
-		if _, err := rebuildObservations(ctx, db, events); err != nil {
-			return err
-		}
 	}
 
 	f := storage.ObsFilter{
-		WorkstreamID: stringFlag(fs, "workstream"),
-		TraceID:      stringFlag(fs, "trace"),
-		SessionID:    stringFlag(fs, "session"),
-		Agent:        stringFlag(fs, "agent"),
-		Provider:     stringFlag(fs, "provider"),
-		Model:        stringFlag(fs, "model"),
-		Kind:         stringFlag(fs, "kind"),
-		Limit:        intFlag(fs, "limit"),
+		WorkstreamID:    stringFlag(fs, "workstream"),
+		TraceID:         stringFlag(fs, "trace"),
+		SessionID:       stringFlag(fs, "session"),
+		Agent:           stringFlag(fs, "agent"),
+		Provider:        stringFlag(fs, "provider"),
+		Model:           stringFlag(fs, "model"),
+		Kind:            stringFlag(fs, "kind"),
+		ToolName:        stringFlag(fs, "tool"),
+		ErrorType:       stringFlag(fs, "error-type"),
+		IncludeShadowed: boolFlag(fs, "include-shadowed"),
+		Limit:           intFlag(fs, "limit"),
+	}
+	if v := stringFlag(fs, "signal-source"); v != "" {
+		src, ok := observations.ParseSignalSource(v)
+		if !ok {
+			return fmt.Errorf("--signal-source must be native, hook, sdk or import")
+		}
+		f.SignalSource = string(src)
 	}
 	if boolFlag(fs, "failed") {
 		t := true
 		f.Failed = &t
+	}
+	if boolFlag(fs, "has-error") {
+		t := true
+		f.HasError = &t
 	}
 	if v := stringFlag(fs, "from"); v != "" {
 		if f.FromNS, err = parseTimeArg(v); err != nil {
@@ -174,12 +208,55 @@ func queryCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 		return enc.Encode(rows)
 	}
 	for _, r := range rows {
-		fmt.Fprintf(c.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%.1fms\n",
+		shadow := ""
+		if r.Shadowed {
+			shadow = "\tshadowed"
+		}
+		fmt.Fprintf(c.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%.1fms\t%s%s\n",
 			time.Unix(0, r.StartedAtNS).UTC().Format(time.RFC3339),
 			r.SpanID, r.Kind, r.Name, r.Status, r.Agent,
-			float64(r.DurationNS)/1e6)
+			float64(r.DurationNS)/1e6, r.SignalSource, shadow)
 	}
 	fmt.Fprintf(c.Stdout, "%d observation(s)\n", len(rows))
+	return nil
+}
+
+// queryExceptionsCmd lists derived exception groups (parity-plan row 13),
+// most frequent first with the grouping hash breaking ties.
+func queryExceptionsCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
+	_, db, err := loadConfigAndDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := freshenObservations(ctx, db); err != nil {
+		return err
+	}
+	groups, err := db.ListExceptionGroups(ctx, storage.ExceptionFilter{
+		WorkstreamID: stringFlag(fs, "workstream"),
+		ErrorType:    stringFlag(fs, "error-type"),
+		Limit:        intFlag(fs, "limit"),
+	})
+	if err != nil {
+		return err
+	}
+	if boolFlag(fs, "json") {
+		enc := json.NewEncoder(c.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(groups)
+	}
+	for _, g := range groups {
+		frame := g.TopFrame
+		if frame == "" {
+			frame = "-"
+		}
+		fmt.Fprintf(c.Stdout, "%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+			g.GroupHash[:12], g.SpanCount, g.ErrorType, g.MessageTemplate, frame,
+			time.Unix(0, g.FirstSeenNS).UTC().Format(time.RFC3339),
+			time.Unix(0, g.LastSeenNS).UTC().Format(time.RFC3339))
+	}
+	fmt.Fprintf(c.Stdout, "%d exception group(s)\n", len(groups))
 	return nil
 }
 

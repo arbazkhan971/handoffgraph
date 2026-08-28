@@ -220,6 +220,71 @@ CREATE TABLE IF NOT EXISTS observations_meta (
     snapshot TEXT NOT NULL
 );
 `},
+	{10, `
+-- Typed attribute promotion (parity-plan row 12) and native-vendor signal
+-- coalescing (parity-plan row 5), both on the derived observation table.
+--
+-- Promotion: the hot filters (tool, model, error class) become real indexed
+-- columns instead of predicates over a JSON attribute blob, and each hot
+-- attribute gets an *_exists marker so "was this attribute present at all"
+-- is an indexed integer comparison rather than a scan. Ideas from the
+-- typed-column promotion pattern in ClickHouse-backed tracing backends,
+-- re-implemented on SQLite.
+--
+-- Coalescing: signal_source records which pipeline observed the span
+-- (native > hook > sdk > import); coalesce_key is the logical session the
+-- span belongs to across pipelines; canonical_session_id names the one
+-- session the read models present for that key; is_shadowed records the
+-- verdict for a lower-precedence duplicate of the same logical span.
+-- Shadowed rows are kept, never deleted: the derived table encodes the
+-- verdict so it can be inspected and re-derived.
+--
+-- Every column here is rebuilt from the append-only event log.
+ALTER TABLE span_observations ADD COLUMN error_type TEXT;
+ALTER TABLE span_observations ADD COLUMN tool_name_exists INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE span_observations ADD COLUMN model_exists INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE span_observations ADD COLUMN error_exists INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE span_observations ADD COLUMN usage_exists INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE span_observations ADD COLUMN signal_source TEXT NOT NULL DEFAULT 'import';
+ALTER TABLE span_observations ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE span_observations ADD COLUMN canonical_session_id TEXT;
+ALTER TABLE span_observations ADD COLUMN is_shadowed INTEGER NOT NULL DEFAULT 0;
+-- One index per promoted filter. is_shadowed deliberately has NO index of
+-- its own: it is a near-constant column, and an index on it would tempt the
+-- planner away from the selective promoted index on every default query
+-- (which always carries is_shadowed = 0). It stays a cheap post-filter.
+CREATE INDEX IF NOT EXISTS idx_obs_tool     ON span_observations(tool_name, ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_model    ON span_observations(model, ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_error    ON span_observations(error_exists, ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_etype    ON span_observations(error_type, ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_signal   ON span_observations(signal_source, ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_coalesce ON span_observations(coalesce_key);
+`},
+	{11, `
+-- Derived exception groups (parity-plan row 13): error-status spans folded
+-- into stable groups keyed by a deterministic hash over
+-- (error_type | normalized message template | top stack frame). The
+-- normalization replaces the parts that vary between otherwise-identical
+-- failures (digit runs, uuids, hex ids, quoted strings, paths) so the same
+-- bug lands in the same group across runs and machines.
+--
+-- Fully derived: rebuilt from the event log in the same transaction as
+-- span_observations, never mutated in place.
+CREATE TABLE IF NOT EXISTS exception_groups (
+    group_hash       TEXT NOT NULL,
+    workstream_id    TEXT NOT NULL,
+    error_type       TEXT NOT NULL,
+    message_template TEXT NOT NULL,
+    top_frame        TEXT NOT NULL DEFAULT '',
+    first_seen_ns    INTEGER NOT NULL,
+    last_seen_ns     INTEGER NOT NULL,
+    span_count       INTEGER NOT NULL DEFAULT 0,
+    sample_span_id   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (workstream_id, group_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_exc_count ON exception_groups(workstream_id, span_count DESC);
+CREATE INDEX IF NOT EXISTS idx_exc_type  ON exception_groups(error_type);
+`},
 }
 
 // migrate applies pending migrations in order.

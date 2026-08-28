@@ -25,6 +25,7 @@ import (
 	"github.com/handoffgraph/handoffgraph/internal/graph"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
 	"github.com/handoffgraph/handoffgraph/internal/ingest"
+	"github.com/handoffgraph/handoffgraph/internal/observations"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 	"github.com/handoffgraph/handoffgraph/internal/redact"
 	"github.com/handoffgraph/handoffgraph/internal/repository"
@@ -82,9 +83,11 @@ func Register(app *cli.App) {
 	})
 	app.Register(&cli.Command{
 		Name: "sessions", Summary: "List native sessions known from captured events",
-		Usage: "[--agent <name>] [--json] [--detect]",
+		Usage: "[--agent <name>] [--signal-source native|hook|sdk|import] [--include-shadowed] [--json] [--detect]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("agent", "", "filter by provider name")
+			fs.String("signal-source", "", "filter by signal source: native | hook | sdk | import")
+			fs.Bool("include-shadowed", false, "include sessions coalescing folded into a higher-precedence source")
 			fs.Bool("json", false, "emit JSON")
 			fs.Bool("detect", false, "detect native sessions from disk (HFG_CODEX_SESSIONS_DIR overrides the codex sessions dir)")
 		},
@@ -575,12 +578,30 @@ func sessionsCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 		return err
 	}
 
+	sourceFilter := stringFlag(fs, "signal-source")
+	if sourceFilter != "" {
+		src, ok := observations.ParseSignalSource(sourceFilter)
+		if !ok {
+			return fmt.Errorf("--signal-source must be native, hook, sdk or import")
+		}
+		sourceFilter = string(src)
+	}
+
+	// Signal coalescing (parity-plan row 5): one logical agent run can reach
+	// us through the vendor's native OTel export, our hook adapter and an SDK
+	// wrapper at once. Rows are aggregated per (provider, native_session_id)
+	// as before, then folded into their cross-pipeline coalesce key so the
+	// listing presents ONE canonical session per run. The lower-precedence
+	// rows are marked shadowed and hidden by default rather than dropped.
 	type sessionAgg struct {
 		provider  string
 		sessionID string
 		count     int
 		first     time.Time
 		last      time.Time
+		signal    observations.SignalSource
+		coalesce  string
+		shadowed  bool
 	}
 	agg := map[string]*sessionAgg{}
 	for _, ev := range events {
@@ -591,10 +612,19 @@ func sessionsCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 			continue
 		}
 		key := ev.Provider + "\x00" + ev.NativeSessionID
+		signal := sessionSignalSource(ev)
 		s, ok := agg[key]
 		if !ok {
-			s = &sessionAgg{provider: ev.Provider, sessionID: ev.NativeSessionID, first: ev.OccurredAt, last: ev.OccurredAt}
+			s = &sessionAgg{
+				provider: ev.Provider, sessionID: ev.NativeSessionID,
+				first: ev.OccurredAt, last: ev.OccurredAt, signal: signal,
+				coalesce: observations.CoalesceKey(
+					observations.CanonicalProvider(ev.Provider, ev.Agent), ev.NativeSessionID),
+			}
 			agg[key] = s
+		}
+		if observations.Precedence(signal) > observations.Precedence(s.signal) {
+			s.signal = signal
 		}
 		s.count++
 		if ev.OccurredAt.Before(s.first) {
@@ -611,22 +641,53 @@ func sessionsCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	}
 	sort.Strings(keys)
 
+	// Canonical source per coalesce key, then the shadow verdict. Both are
+	// pure functions of the aggregate set: iteration runs over the sorted
+	// keys, so import order cannot change who wins.
+	best := map[string]int{}
+	for _, k := range keys {
+		s := agg[k]
+		if s.coalesce == "" {
+			continue
+		}
+		if p := observations.Precedence(s.signal); p > best[s.coalesce] {
+			best[s.coalesce] = p
+		}
+	}
+	for _, k := range keys {
+		s := agg[k]
+		if s.coalesce == "" {
+			continue
+		}
+		s.shadowed = observations.Precedence(s.signal) < best[s.coalesce]
+	}
+
 	type sessionOut struct {
 		Provider        string `json:"provider"`
 		NativeSessionID string `json:"native_session_id"`
 		Events          int    `json:"events"`
 		FirstSeen       string `json:"first_seen"`
 		LastSeen        string `json:"last_seen"`
+		SignalSource    string `json:"signal_source"`
+		Shadowed        bool   `json:"shadowed"`
 	}
 	out := make([]sessionOut, 0, len(agg))
 	for _, k := range keys {
 		s := agg[k]
+		if sourceFilter != "" && string(s.signal) != sourceFilter {
+			continue
+		}
+		if s.shadowed && !boolFlag(fs, "include-shadowed") {
+			continue
+		}
 		out = append(out, sessionOut{
 			Provider:        s.provider,
 			NativeSessionID: s.sessionID,
 			Events:          s.count,
 			FirstSeen:       s.first.Format(time.RFC3339),
 			LastSeen:        s.last.Format(time.RFC3339),
+			SignalSource:    string(s.signal),
+			Shadowed:        s.shadowed,
 		})
 	}
 
@@ -635,10 +696,27 @@ func sessionsCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(out)
 	}
+	// The text columns are stable across releases; the signal source and the
+	// coalescing verdict ride on the JSON form.
 	for _, s := range out {
 		fmt.Fprintf(c.Stdout, "%s\t%s\t%d\t%s\t%s\n", s.Provider, s.NativeSessionID, s.Events, s.FirstSeen, s.LastSeen)
 	}
 	return nil
+}
+
+// sessionSignalSource classifies one raw event's pipeline. OTLP events carry
+// their instrumentation hints in the span payload's attributes; adapter
+// events are classified from the event shape alone.
+func sessionSignalSource(ev *protocol.Event) observations.SignalSource {
+	var attrs map[string]any
+	if len(ev.Payload) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(ev.Payload, &m); err == nil {
+			attrs, _ = m["attributes"].(map[string]any)
+		}
+	}
+	src, _ := observations.DeriveSignalSource(ev.Provider, attrs)
+	return src
 }
 
 // sessionsDetect enumerates native sessions directly from disk via the
