@@ -11,7 +11,7 @@
 //    dashboard config document and no workspace data — docs/dashboards.md)
 //    and POST /v1/admin/reindex; apikeys.ts for /v1/api-keys*, the public
 //    read API under /api/v1/*, and /api/v1/openapi.json; mcp.ts for the
-//    hosted MCP endpoint at POST /v1/mcp)
+//    hosted MCP endpoint at POST /v1/mcp; evals.ts for /v1/evals*)
 //
 // Invariants (see docs/architecture.md and platform/README.md):
 //   - workspace identity comes only from the device token binding;
@@ -47,6 +47,12 @@ import {
 import { artifactsScheduled, handleArtifactsRoute, type ArtifactsEnv } from "./artifacts";
 import { handleDashboardsRoute } from "./dashboards";
 import { handleApiKeysRoute } from "./apikeys";
+import { evalsScheduled, handleEvalsRoute } from "./evals";
+// The Workflows entrypoint for hosted evals must be exported from the Worker's
+// main module for the (currently commented) [[workflows]] binding in
+// wrangler.toml to resolve it. Re-exported here rather than defined here so
+// evals.ts stays the single home of the evaluation loop.
+export { EvalWorkflow } from "./evals";
 import type {
   D1BoundStatement,
   D1DatabaseLike,
@@ -154,6 +160,8 @@ export default {
       if (qualityResponse !== null) return qualityResponse;
       const simulationsResponse = await handleSimulationsRoute(request, env);
       if (simulationsResponse !== null) return simulationsResponse;
+      const evalsResponse = await handleEvalsRoute(request, env);
+      if (evalsResponse !== null) return evalsResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
@@ -181,11 +189,13 @@ export default {
   // Cron dispatcher (see wrangler.toml [triggers]). Sweeps are derived-model
   // maintenance and platform-observation only: compaction copies the spine
   // into object storage, retention slims rebuildable read models, the webhook
-  // sweep fans out deliveries, and the alerts sweep evaluates threshold rules
-  // and APPENDS alert.fired events (the only sweep that writes to the spine,
-  // and it does so by INSERT alone). Each sweep runs in its own try/catch with
-  // content-free logging — hosted maintenance must never affect ingest or
-  // local capture, and one failing sweep must never starve the others.
+  // sweep fans out deliveries, the alerts sweep evaluates threshold rules and
+  // APPENDS alert.fired events, and the evals sweep starts due cron eval
+  // configs and APPENDS score.recorded events (the two sweeps that write to the
+  // spine, and both do so by INSERT alone). Each sweep runs in its own
+  // try/catch with content-free logging — hosted maintenance must never affect
+  // ingest or local capture, and one failing sweep must never starve the
+  // others.
   async scheduled<E extends ArtifactsEnv>(
     controller: ScheduledController,
     env: E,
@@ -217,6 +227,16 @@ export default {
       console.error(JSON.stringify({
         message: "scheduled dispatch failed",
         sweep: "alerts",
+        cron: controller.cron,
+        error_type: error instanceof Error ? error.name : "unknown",
+      }));
+    }
+    try {
+      await evalsScheduled(env);
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "scheduled dispatch failed",
+        sweep: "evals",
         cron: controller.cron,
         error_type: error instanceof Error ? error.name : "unknown",
       }));

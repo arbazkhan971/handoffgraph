@@ -185,12 +185,52 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 # binding = "SIM_WORKFLOW"
 # class_name = "SimulationWorkflow"
 
+# Hosted evals (parity row 29): deterministic evaluators + an optional
+# LLM-as-judge at /v1/evals, recorded as provenance-labelled score.recorded
+# events on the spine (deterministic checks OBSERVED with source 'evaluation',
+# judge verdicts INFERRED with source 'llm_judge'). Cron configs are started by
+# the evals sweep in the scheduled dispatcher on the [triggers] cron below.
+#
+# EVAL_WORKFLOW is the optional durability accelerator. Each trace is evaluated
+# in step.do('trace-<id>'), so a run killed mid-evaluation resumes at the next
+# trace instead of re-billing the judged ones; the deterministic event ids make
+# that replay idempotent (a re-run appends zero duplicate check verdicts). The
+# feature is fully functional without it — src/evals.ts falls back to inline
+# bounded execution under a wall-clock deadline — so this stays commented until
+# the Workflow exists.
+#
+# Enabling it is a two-step change, and BOTH steps are required:
+#   1. npx wrangler workflows create handoffgraph-evals   (then uncomment)
+#   2. in src/evals.ts, add
+#        import { WorkflowEntrypoint } from "cloudflare:workers";
+#      and make the class `extends WorkflowEntrypoint<EvalsEnv, EvalRunParams>`.
+#      The class already has the constructor/run shape that contract requires;
+#      the import is omitted today because the platform test suite runs in plain
+#      node (no miniflare) and could not load it.
+#
+# Unlike SIM_WORKFLOW, instance params carry NO credential at all — only three
+# ids. The judge's BYO provider key lives sealed in the eval_configs row and is
+# unsealed from D1 inside the run, so the Workflows runtime (which persists
+# params) never holds one.
+#
+# [[workflows]]
+# name = "handoffgraph-evals"
+# binding = "EVAL_WORKFLOW"
+# class_name = "EvalWorkflow"
+#
+# Judge credentials are sealed at rest under EVAL_SEALING_KEY, set the same way
+# as the WorkOS, webhook and gateway secrets above (`wrangler secret put
+# EVAL_SEALING_KEY`, or an ignored .dev.vars entry locally). Creating a judge
+# config and starting a judging run BOTH fail closed with 503 while it is
+# unset; deterministic-only eval configs never touch it and keep working.
+
 # One cron drives every sweep (index.ts scheduled dispatcher): artifact
 # compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
 # never touches the events table), the webhook cursor sweep (src/webhooks.ts),
-# and the scheduled-alert evaluator (src/alerts.ts — the only sweep that writes
-# to the spine, and only ever by appending an alert.fired event). Each sweep is
-# isolated in its own try/catch.
+# the scheduled-alert evaluator (src/alerts.ts) and the due-eval starter
+# (src/evals.ts). The last two are the only sweeps that write to the spine, and
+# only ever by APPENDING (alert.fired / score.recorded). Each sweep is isolated
+# in its own try/catch.
 [triggers]
 crons = ["*/5 * * * *"]
 
