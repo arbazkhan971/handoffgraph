@@ -381,3 +381,60 @@ func TestHandlerPartialSuccess(t *testing.T) {
 		t.Fatalf("event count = %d, want 5", n)
 	}
 }
+
+// TestHandlerBackpressure answers 429 + Retry-After once the in-flight cap
+// is exhausted, instead of queueing without bound.
+func TestHandlerBackpressure(t *testing.T) {
+	release := make(chan struct{})
+	db := openTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	h := &Handler{
+		Append: func(ctx context.Context, ev *protocol.Event) (bool, error) {
+			<-release // hold every append open
+			return true, nil
+		},
+		MaxInFlight: 1,
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	data, err := os.ReadFile("../../testdata/fixtures/otlp/genai_session.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	done := make(chan int, 1)
+	go func() {
+		resp, err := http.Post(srv.URL+"/v1/traces", "application/json", strings.NewReader(body))
+		if err != nil {
+			done <- -1
+			return
+		}
+		resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var second *http.Response
+	for {
+		resp, err := http.Post(srv.URL+"/v1/traces", "application/json", strings.NewReader(body))
+		if err == nil {
+			second = resp
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second request never completed")
+		}
+	}
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("saturated POST = %d, want 429", second.StatusCode)
+	}
+	if second.Header.Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+	second.Body.Close()
+	close(release)
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("first POST = %d, want 200", code)
+	}
+}

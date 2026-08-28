@@ -122,6 +122,11 @@ Matrix rows: 5, 12, 13, 23(tiers), 25, 26, 27(local), 33, 34, 44(start), 50, 52.
   redaction choke-point (OpenLIT's product concept, our fail-closed semantics).
 - Agent skills/manifests (`.claude-plugin`-style) so Claude Code/Codex/Pi drive
   import→verify→debug autonomously via MCP.
+  **Shipped (2026-08-28):** `skills/handoffgraph/SKILL.md` +
+  `.claude-plugin/plugin.json` (skill + stdio MCP declaration).
+- Batch import API with backpressure semantics + ingest-side dedup.
+  **Backpressure shipped (2026-08-28):** 429 + Retry-After at the in-flight
+  cap; dedup already deterministic. Remaining: hosted batch endpoints (P3).
 - Public API v0 on Workers (read-only first) + pk/sk keys w/ edge-cached
   rejection; hosted MCP endpoint (remote MCP = v0.11 roadmap item pulled in).
 - One-command UX: `handoffgraph doctor --verify`, clean reset, `open` single port.

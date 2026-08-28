@@ -10,7 +10,7 @@ Your agent stops. The work should not.
 
 ## Status
 
-**v0.6.0-level local product, pre-release** — test suite race-clean. Implemented: the crash-safe local event spine (append-only events, SQLite, deterministic graph/trace reducers, fail-closed redaction, checkpoints); **Codex, Claude, and Pi adapters** with merge-safe hook installers, native-rollout normalization with deterministic (idempotent) event IDs, and native resume; the **local MCP stdio server** (11 goal-oriented tools incl. the scores primitive); the **deterministic detection pack**; the embedded **Session Debugger UI** (`handoffgraph open`); and **verified cross-agent continuation** (`continue --to`) with repository-drift checks and machine-readable acknowledgement.
+**v0.6.0-level local product, pre-release** — test suite race-clean. Implemented: the crash-safe local event spine (append-only events, SQLite, deterministic graph/trace reducers, fail-closed redaction, checkpoints); **Codex, Claude, and Pi adapters** with merge-safe hook installers, native-rollout normalization with deterministic (idempotent) event IDs, and native resume; the **local MCP stdio server** (12 goal-oriented tools: workstream/trace context, checkpoints, decisions, verifications, prompts, scores, file claims, handoff lifecycle); the **deterministic detection pack**; the embedded **Session Debugger UI** (`handoffgraph open`); and **verified cross-agent continuation** (`continue --to`) with repository-drift checks and machine-readable acknowledgement.
 
 The repository now also contains an ahead-of-roadmap **private hosted Basic
 foundation** under `platform/`: AuthKit-compatible sign-up/sign-in, hashed
@@ -140,7 +140,7 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph checkpoint --workstream <id>` | Build a checkpoint from workstream evidence |
 | `handoffgraph checkpoint --from-trace <id>` | Build a checkpoint from one materialized trace |
 | `handoffgraph checkpoint show <id> [--json]` | Inspect a stored checkpoint |
-| `handoffgraph mcp serve` | Run the local MCP stdio server (11 goal-oriented tools) |
+| `handoffgraph mcp serve` | Run the local MCP stdio server (12 goal-oriented tools) |
 | `handoffgraph open` | Serve the local Session Debugger UI (localhost only) |
 | `handoffgraph score record ...` / `score list` | Record/list source-tagged quality scores (numeric, category, boolean) on any spine object |
 | `handoffgraph index rebuild` / `query spans ...` | Wide denormalized observation index: ts_bucket-pruned, fingerprint-filterable span queries (auto-rebuilds when stale) |
@@ -221,6 +221,14 @@ go test -race ./...
 go vet ./...
 gofmt -l .
 ```
+
+## Agent skills
+
+Ship an agent-native surface: `skills/handoffgraph/SKILL.md` (install with
+`npx skills add arbazkhan971/handoffgraph` or copy into your agent's skills
+directory) plus `.claude-plugin/plugin.json` declaring the skill and the
+stdio MCP server, so Claude Code / Cursor / Codex can drive the whole
+verify → checkpoint → handoff loop autonomously.
 
 ## License
 

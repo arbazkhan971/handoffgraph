@@ -8,10 +8,17 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
+
+// defaultMaxInFlight bounds concurrent export processing. SQLite is a
+// single writer; beyond a small number of concurrent exports every extra
+// request only piles up memory, so answer 429 + Retry-After (the OTLP
+// contract for throttling) instead of queueing without bound.
+const defaultMaxInFlight = 4
 
 // maxRequestBytes bounds one OTLP/JSON export body.
 const maxRequestBytes = 64 << 20 // 64 MiB
@@ -36,6 +43,10 @@ type Handler struct {
 	ObservedAt func() time.Time
 	// CaptureTier gates attribute content at emit time. Empty = full.
 	CaptureTier CaptureTier
+	// MaxInFlight bounds concurrent exports; 0 means defaultMaxInFlight.
+	MaxInFlight int64
+
+	inFlight atomic.Int64
 }
 
 // exportResponse is the ExportTraceServiceResponse body.
@@ -68,6 +79,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) serveTraces(w http.ResponseWriter, r *http.Request) {
+	max := h.MaxInFlight
+	if max <= 0 {
+		max = defaultMaxInFlight
+	}
+	if h.inFlight.Load() >= max {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "ingest saturated; retry after 1s", http.StatusTooManyRequests)
+		return
+	}
+	h.inFlight.Add(1)
+	defer h.inFlight.Add(-1)
+
 	ct := r.Header.Get("Content-Type")
 	mediaType := strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
 	switch mediaType {

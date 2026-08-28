@@ -1,0 +1,15 @@
+{
+  "name": "handoffgraph",
+  "version": "0.7.0-beta.1",
+  "description": "Verified cross-agent continuity and session debugging for AI coding agents: workstreams, evidence-checked verification gates, quality scores, datasets/experiments, versioned prompts, and verified handoffs over an append-only local event spine.",
+  "skills": [
+    "skills/handoffgraph/SKILL.md"
+  ],
+  "mcp": {
+    "command": "handoffgraph",
+    "args": ["mcp", "serve"],
+    "transport": "stdio"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/arbazkhan971/handoffgraph"
+}

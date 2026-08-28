@@ -844,7 +844,7 @@ func TestCompleteWorkstream(t *testing.T) {
 	})
 }
 
-// TestToolsetShape pins the exposed surface at exactly nine tools.
+// TestToolsetShape pins the exposed surface order and completeness.
 func TestToolsetShape(t *testing.T) {
 	f := openSeed(t)
 	tools := newToolset(f.db)

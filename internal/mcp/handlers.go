@@ -13,6 +13,7 @@ import (
 	"github.com/handoffgraph/handoffgraph/internal/graph"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
 	"github.com/handoffgraph/handoffgraph/internal/launch"
+	"github.com/handoffgraph/handoffgraph/internal/prompts"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 	"github.com/handoffgraph/handoffgraph/internal/redact"
 	"github.com/handoffgraph/handoffgraph/internal/repository"
@@ -87,6 +88,14 @@ func newToolsetWithRedaction(db *storage.DB, redactionOptions *redact.Options) [
 				"exit_code":     intProp("optional observed exit code; presence marks the verification OBSERVED"),
 			}, "workstream_id", "verification", "result"),
 			Handler: toolRecordVerification(db),
+		},
+		{
+			Name:        "get_prompt",
+			Description: "Get a managed prompt with all immutable versions, current labels, and resolved version per label. Read-only.",
+			InputSchema: schema(map[string]any{
+				"name": strProp("prompt name to resolve"),
+			}, "name"),
+			Handler: toolGetPrompt(db),
 		},
 		{
 			Name:        "record_score",
@@ -1161,6 +1170,48 @@ func toolCompleteWorkstream(db *storage.DB) func(context.Context, json.RawMessag
 			Summary: in.Summary,
 		}, nil
 	}
+}
+
+// ---- prompts (parity rows 33-34) -------------------------------------------
+
+// toolGetPrompt resolves one named prompt from the derived view: versions,
+// labels, resolution table.
+func toolGetPrompt(db *storage.DB) func(context.Context, json.RawMessage) (any, error) {
+	return func(ctx context.Context, args json.RawMessage) (any, error) {
+		var in struct {
+			Name string `json:"name"`
+		}
+		if e := decodeStrict(args, "arguments", &in); e != nil {
+			return nil, e
+		}
+		if in.Name == "" {
+			return nil, errInvalidParams("name is required")
+		}
+		events, e := listEvents(ctx, db)
+		if e != nil {
+			return nil, e
+		}
+		byName := prompts.Materialize(events)
+		pr, ok := byName[in.Name]
+		if !ok {
+			return nil, errInvalidParams(fmt.Sprintf("prompt %q not found", in.Name))
+		}
+		return map[string]any{
+			"name":       pr.Name,
+			"versions":   pr.Versions,
+			"labels":     pr.Labels,
+			"resolution": pr.Resolve(),
+		}, nil
+	}
+}
+
+// listEvents is a small helper so read tools share one path.
+func listEvents(ctx context.Context, db *storage.DB) ([]*protocol.Event, *rpcError) {
+	events, err := db.ListEvents(ctx)
+	if err != nil {
+		return nil, errInternal(err)
+	}
+	return events, nil
 }
 
 // ---- score recording + listing (parity P1, matrix row 24) -------------------

@@ -70,7 +70,8 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Usage + outcome analytics — `query usage` (token/cost rollups per provider/session, decimal-string costs with provenance) and `outcomes` (per-workstream files/commands/tests/handoffs/scores) | `internal/commands` | ✅ tested |
 | Verify gate — `verify --workstream <id> [--baseline <cp>]`: deterministic checks (traces closed, commands ok, tests pass, handoffs acknowledged, score rubric, P0 detections) + baseline score/new-failure regression; CI exit codes; every run appends verification.recorded evidence | `internal/commands` | ✅ tested |
 | Datasets × experiments — `dataset create/list` (immutable content-hash versions, bodies in the object store), `experiment run/list/compare` (deterministic materialize+detection verdicts per example, regression diff) | `internal/datasets`, `internal/commands` | ✅ tested |
-| Prompt store — `prompt create/label/list/show`: immutable hashed versions + mutable labels (production/latest/custom) as derived state, size-capped bodies (fail-closed), prompt↔event linkage view | `internal/prompts`, `internal/commands` | ✅ tested |
+| Prompt store — `prompt create/label/list/show`: immutable hashed versions + mutable labels (production/latest/custom) as derived state, size-capped bodies (fail-closed), prompt↔event linkage view; MCP `get_prompt` (12 tools) | `internal/prompts`, `internal/commands`, `internal/mcp` | ✅ tested |
+| Agent skills — `skills/handoffgraph/SKILL.md` (installable agent workflow) + `.claude-plugin/plugin.json` (skill + stdio MCP declaration); ingest backpressure (429 + Retry-After at in-flight cap) | repo packaging, `internal/otlp` | ✅ |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)

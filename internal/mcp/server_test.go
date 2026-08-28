@@ -236,6 +236,7 @@ var wantToolOrder = []string{
 	"create_checkpoint",
 	"record_decision",
 	"record_verification",
+	"get_prompt",
 	"record_score",
 	"list_scores",
 	"claim_files",
@@ -292,6 +293,16 @@ func TestToolsList(t *testing.T) {
 		props, ok := tool.InputSchema["properties"].(map[string]any)
 		if !ok {
 			t.Fatalf("tool %q inputSchema.properties missing", tool.Name)
+		}
+		// get_prompt is a deliberate exception: prompts are global resources
+		// (org-level), not workstream-scoped, matching every prompt hub in
+		// the category. Everything else must be workstream-scoped.
+		if tool.Name == "get_prompt" {
+			required, ok := tool.InputSchema["required"].([]any)
+			if !ok || len(required) == 0 {
+				t.Fatalf("tool %q inputSchema lacks required fields", tool.Name)
+			}
+			continue
 		}
 		if _, ok := props["workstream_id"]; !ok {
 			t.Fatalf("tool %q inputSchema lacks workstream_id", tool.Name)

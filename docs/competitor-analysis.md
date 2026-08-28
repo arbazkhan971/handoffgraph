@@ -88,7 +88,7 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 | 1 | Native coding-agent adapters (Claude Code, Codex, Pi) + merge-safe idempotent hook install | ours (unique depth) | L | ✅ |
 | 2 | OTLP/HTTP(+gRPC) ingest — be an OTel *backend* (OpenLLMetry/OpenLIT/Phoenix/Claude-native data lands here) | Langfuse, SigNoz, OpenObserve, OpenLLMetry | L + C | P1 |
 | 3 | `handoffgraph.*` attribute namespace over `gen_ai.*` / `coding_agent.*` semconv + interop mappings + reserved-key sanitizer | Langfuse, OpenLIT, SigNoz | L + C | P1 |
-| 4 | Batch ingest API with ingest-side dedup + backpressure semantics (429/retry, truncation markers) | Opik, Langfuse | L + C | P1–P2 |
+| 4 | Batch ingest API with ingest-side dedup + backpressure semantics (429/retry, truncation markers) — **local ✅ (2026-08-28); hosted batch pending** | Opik, Langfuse | L + C | P1 ✅L / P3 |
 | 5 | Native-vendor telemetry coalescing (`signal_source` precedence: native vs hook vs sdk) | OpenLIT, SigNoz | L | P2 |
 | 6 | Proxy/gateway capture mode (OpenAI-compatible endpoint; zero-code baseURL swap) + virtual keys/budgets/rate limits | Helicone, LangWatch, OpenRouter | C | P3 |
 | 7 | Response caching + provider fallback/routing | Helicone, LangWatch | C | P3 |
@@ -158,7 +158,7 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 | 47 | Webhooks on events (prompts, handoffs, detections, alerts) | Langfuse, Helicone | C (Queues) | P3 |
 | 48 | SSO / SCIM / audit logs / data masking (EE tier) | Langfuse EE, SigNoz EE, LangWatch EE | C | P4 |
 | 49 | Tamper-evident audit trail — we get this from the hash-chained spine, free | LangWatch EE sells this | L + C | P3 (market it) |
-| 50 | Agent skills / plugin manifests so coding agents drive the product | DeepEval, SigNoz, Confident AI | L + C | P2 |
+| 50 | Agent skills / plugin manifests so coding agents drive the product — **✅ (2026-08-28)** | DeepEval, SigNoz, Confident AI | L + C | P2 ✅ |
 | 51 | In-product AI assistant over your telemetry (BYO model; answers INFERRED-labelled) | Langfuse, OpenObserve, SigNoz Noz | C | P4 |
 | 52 | One-command local UX with verify/stop/clean + clean reset | Opik, LangWatch (`npx`) | L | P2 |
 | 53 | Multimodal attachments direct-to-object-store | Langfuse | C (R2) | P4 |

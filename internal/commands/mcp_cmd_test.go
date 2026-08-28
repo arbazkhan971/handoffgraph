@@ -140,8 +140,8 @@ func TestMCPCmdServeRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &listRes); err != nil {
 		t.Fatalf("tools/list response: %v", err)
 	}
-	if len(listRes.Result.Tools) != 11 {
-		t.Fatalf("tools = %d, want 11", len(listRes.Result.Tools))
+	if len(listRes.Result.Tools) != 12 {
+		t.Fatalf("tools = %d, want 12", len(listRes.Result.Tools))
 	}
 
 	var callRes struct {
