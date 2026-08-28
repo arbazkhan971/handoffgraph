@@ -116,7 +116,12 @@ func Convert(req *ExportRequest, opts Options) (*Result, error) {
 					startNSByKey[traceHex+"|"+strings.ToLower(sp.SpanID)] = ns
 				}
 				if _, has := sessionKeyByTrace[traceHex]; !has {
-					if key := rawStrAttr(sp.Attributes, "session.id", "langfuse.session.id", "handoffgraph.session_id", "session_id"); key != "" {
+					// Session-key precedence (first hit wins): session.id,
+					// then the OTel GenAI semconv session-correlation
+					// attribute gen_ai.conversation.id, then the older
+					// Langfuse/HandoffGraph/generic keys. Mirrored in the
+					// per-span lookup below and in platform/src/otlp.ts.
+					if key := rawStrAttr(sp.Attributes, "session.id", "gen_ai.conversation.id", "langfuse.session.id", "handoffgraph.session_id", "session_id"); key != "" {
 						sessionKeyByTrace[traceHex] = key
 					}
 				}
@@ -193,14 +198,19 @@ func Convert(req *ExportRequest, opts Options) (*Result, error) {
 				spanHex := strings.ToLower(sp.SpanID)
 				parentHex := strings.ToLower(sp.ParentSpanID)
 
-				sessionKey := strAttr(spanAttrs, "session.id", "langfuse.session.id", "handoffgraph.session_id", "session_id")
+				// Session-key precedence — see the phase-1 scan above.
+				sessionKey := strAttr(spanAttrs, "session.id", "gen_ai.conversation.id", "langfuse.session.id", "handoffgraph.session_id", "session_id")
 				if sessionKey == "" {
 					sessionKey = sessionKeyByTrace[traceHex]
 				}
 				if sessionKey == "" {
 					sessionKey = "otlp-trace-" + traceHex
 				}
-				model := strAttr(spanAttrs, "gen_ai.request.model", "gen_ai.system", "llm.model_name", "coding_agent.model")
+				// Provider detection: gen_ai.provider.name superseded
+				// gen_ai.system in GenAI semconv v1.37.0 (Aug 2025); read
+				// the new key first, fall back to gen_ai.system for older
+				// emitters, then the pre-GenAI heuristics.
+				model := strAttr(spanAttrs, "gen_ai.request.model", "gen_ai.provider.name", "gen_ai.system", "llm.model_name", "coding_agent.model")
 				toolName := strAttr(spanAttrs, "gen_ai.tool.name", "coding_agent.tool")
 				spanKind := mapKind(kindName(sp.Kind), sp.Name, spanAttrs)
 
@@ -420,12 +430,16 @@ func otlpKindName(raw string) string {
 
 // mapKind maps OTLP kind + conventions onto the normalized SpanKind. The
 // raw OTLP kind is preserved separately (payload source_kind). GenAI CLIENT
-// spans are model calls; OpenInference kinds win when present; tool spans
-// are recognized from gen_ai.tool.name / execute_tool naming /
-// coding_agent.tool.
+// spans are model calls; OpenInference's 10-kind enum wins when present
+// (EVALUATOR -> GUARDRAIL, PROMPT -> WORKFLOW — documented on the cases
+// below); tool spans are recognized from gen_ai.tool.name / execute_tool
+// naming / coding_agent.tool.
 func mapKind(rawKind, name string, attrs map[string]any) protocol.SpanKind {
 	oi := strAttr(attrs, "openinference.span.kind")
-	hasGenAI := strAttr(attrs, "gen_ai.operation.name", "gen_ai.request.model", "gen_ai.system") != ""
+	// hasGenAI: gen_ai.provider.name (semconv v1.37.0, Aug 2025) is checked
+	// ahead of the legacy gen_ai.system attribute — same precedence as the
+	// model resolution in Convert.
+	hasGenAI := strAttr(attrs, "gen_ai.operation.name", "gen_ai.request.model", "gen_ai.provider.name", "gen_ai.system") != ""
 	isTool := strAttr(attrs, "gen_ai.tool.name", "coding_agent.tool") != "" ||
 		strings.HasPrefix(name, "execute_tool ")
 	switch {
@@ -437,9 +451,14 @@ func mapKind(rawKind, name string, attrs map[string]any) protocol.SpanKind {
 		return protocol.SpanKindTool
 	case oi == "RETRIEVER" || oi == "RERANKER":
 		return protocol.SpanKindRetrieval
-	case oi == "GUARDRAIL":
+	case oi == "GUARDRAIL" || oi == "EVALUATOR":
+		// EVALUATOR renders a pass/fail or scored verdict over content —
+		// the same quality-gate semantics as GUARDRAIL, so both fold onto
+		// our GUARDRAIL kind.
 		return protocol.SpanKindGuardrail
-	case oi == "CHAIN":
+	case oi == "CHAIN" || oi == "PROMPT":
+		// PROMPT assembles/renders a prompt template — a workflow step,
+		// not a model call — so it folds onto WORKFLOW alongside CHAIN.
 		return protocol.SpanKindWorkflow
 	case isTool:
 		return protocol.SpanKindTool

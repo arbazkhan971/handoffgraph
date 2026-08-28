@@ -1,9 +1,15 @@
+import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
   convertOtlpExport,
   deterministicID,
 } from "../src/otlp";
+
+const testDirectory = dirname(fileURLToPath(import.meta.url));
 
 // Golden pairs generated from the Go implementation
 // (internal/ids.Deterministic) — cross-language id parity is a hard
@@ -24,6 +30,24 @@ const GOLDEN: Array<[prefix: string, key: string, ts: number, id: string]> = [
   ["ses_", "otlp|agent-session-77", 0, "ses_0000000000Z3NG62MJJ8C9XSQT"],
   ["trc_", "otlp|0af7651916cd43dd8448eb211c80319c", 0, "trc_00000000002VMVPQJ146EGCPXN"],
   ["spn_", "otlp|0af7651916cd43dd8448eb211c80319c|b7ad6b7169203331", 0, "spn_0000000000QXWGWJN939C0BB12"],
+  // GenAI semconv v1.37.0 fixture (semconv_v137.json, parity rows 2/3):
+  // gen_ai.conversation.id must outrank langfuse.session.id for the session
+  // key — see TestConvertSemconvV137 in internal/otlp/otlp_test.go, which
+  // pins these same literal ids from the Go reference implementation.
+  ["ses_", "otlp|conv-8842", 0, "ses_0000000000WSSGPRQR3WX4YQ1E"],
+  ["trc_", "otlp|748cd2e72cbe280d4242c6f65a237d76", 0, "trc_0000000000Z2JW9HMJZYCDCS5C"],
+  [
+    "evt_",
+    "otlp|span-start|748cd2e72cbe280d4242c6f65a237d76|0aacf703138cc694",
+    1787918400000,
+    "evt_01M143VEG04WB39V9R2FZ184FV",
+  ],
+  [
+    "evt_",
+    "otlp|span-start|748cd2e72cbe280d4242c6f65a237d76|b5f6be6764e48af6",
+    1787918405000,
+    "evt_01M143VKC8DHPH5EH99NWN59BM",
+  ],
 ];
 
 describe("deterministicID (Go parity)", () => {
@@ -196,6 +220,77 @@ describe("convertOtlpExport", () => {
     expect(payload?.["capture_dropped_keys"]).toBe(1);
     expect((payload?.["attributes"] as Record<string, unknown>)["gen_ai.request.model"]).toBe("gpt-5.3");
     expect((payload?.["attributes"] as Record<string, unknown>)["gen_ai.input.messages"]).toBeUndefined();
+  });
+});
+
+// GenAI semconv v1.37.0 fixture (2026-08-28 market audit, parity rows 2/3).
+// Loaded from testdata (not re-embedded) so the Go and TS suites convert
+// byte-identical input — see internal/otlp/otlp_test.go's
+// TestConvertSemconvV137, which pins the same derived ids from this file.
+const SEMCONV_V137_EXPORT = JSON.parse(
+  readFileSync(resolve(testDirectory, "../../testdata/fixtures/otlp/semconv_v137.json"), "utf8"),
+) as unknown;
+
+describe("convertOtlpExport (GenAI semconv v1.37.0 parity)", () => {
+  it("prefers gen_ai.conversation.id over langfuse.session.id for the session key", async () => {
+    const res = await convertOtlpExport(SEMCONV_V137_EXPORT, {
+      captureTier: "full",
+      observedAt: "2026-08-28T12:00:00Z",
+    });
+    expect(res.rejectedSpans).toEqual([]);
+    // 3 spans × 2 + trace pair + session = 9 events.
+    expect(res.events).toHaveLength(9);
+
+    const sessionIDs = new Set(res.events.map((e) => e["session_id"]));
+    expect(sessionIDs.size).toBe(1);
+    // Go-parity id for key "otlp|conv-8842" — proves conversation.id won,
+    // not "otlp|langfuse-loses".
+    expect([...sessionIDs][0]).toBe("ses_0000000000WSSGPRQR3WX4YQ1E");
+    expect(res.events.every((e) => e["native_session_id"] === "conv-8842")).toBe(true);
+  });
+
+  it("prefers gen_ai.provider.name over the legacy gen_ai.system for the model field", async () => {
+    const res = await convertOtlpExport(SEMCONV_V137_EXPORT, {
+      captureTier: "full",
+      observedAt: "2026-08-28T12:00:00Z",
+    });
+    const chatEnd = res.events.find(
+      (e) => e["kind"] === "span.completed" && e["model"] === "anthropic",
+    );
+    // The chat span sets gen_ai.provider.name="anthropic" AND the legacy
+    // gen_ai.system="anthropic-legacy" with no gen_ai.request.model — the
+    // new key must win, never falling through to the old one.
+    expect(chatEnd).toBeDefined();
+  });
+
+  it("maps OpenInference PROMPT to WORKFLOW and EVALUATOR to GUARDRAIL", async () => {
+    const res = await convertOtlpExport(SEMCONV_V137_EXPORT, {
+      captureTier: "full",
+      observedAt: "2026-08-28T12:00:00Z",
+    });
+    const promptStart = res.events.find(
+      (e) => e["kind"] === "span.started" && (e["payload"] as { name?: string })["name"] === "assemble prompt",
+    );
+    const evalStart = res.events.find(
+      (e) => e["kind"] === "span.started" && (e["payload"] as { name?: string })["name"] === "verify claim",
+    );
+    expect((promptStart?.["payload"] as { span_kind?: string })?.["span_kind"]).toBe("WORKFLOW");
+    expect((evalStart?.["payload"] as { span_kind?: string })?.["span_kind"]).toBe("GUARDRAIL");
+  });
+
+  it("matches the Go-derived golden ids for the root span-start and eval span-start events", async () => {
+    const res = await convertOtlpExport(SEMCONV_V137_EXPORT, {
+      captureTier: "full",
+      observedAt: "2026-08-28T12:00:00Z",
+    });
+    const promptStart = res.events.find(
+      (e) => e["kind"] === "span.started" && (e["payload"] as { name?: string })["name"] === "assemble prompt",
+    );
+    const evalStart = res.events.find(
+      (e) => e["kind"] === "span.started" && (e["payload"] as { name?: string })["name"] === "verify claim",
+    );
+    expect(promptStart?.["event_id"]).toBe("evt_01M143VEG04WB39V9R2FZ184FV");
+    expect(evalStart?.["event_id"]).toBe("evt_01M143VKC8DHPH5EH99NWN59BM");
   });
 });
 

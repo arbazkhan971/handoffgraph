@@ -148,22 +148,53 @@ first time.
 ### Sessions and traces
 
 Session key precedence (first hit wins): span attribute
-`session.id` / `langfuse.session.id` / `handoffgraph.session_id` /
-`session_id`; else the explicit key of the same OTLP trace seen in the same
-batch; else `otlp-trace-<traceHex>`. Agent = resource `service.name`.
+`session.id` / `gen_ai.conversation.id` / `langfuse.session.id` /
+`handoffgraph.session_id` / `session_id`; else the explicit key of the same
+OTLP trace seen in the same batch; else `otlp-trace-<traceHex>`. Agent =
+resource `service.name`.
+
+`gen_ai.conversation.id` is the OTel GenAI semantic-conventions
+session-correlation attribute (added ahead of `langfuse.session.id` /
+`handoffgraph.session_id` / `session_id` on 2026-08-28, market-audit
+finding). It ranks second — behind the more specific `session.id`, ahead of
+the older vendor/generic keys.
 
 ### Attribute mapping
 
 | Input convention | Lands in |
 |---|---|
-| `gen_ai.request.model`, `gen_ai.system`, `llm.model_name`, `coding_agent.model` | event `model` |
+| `gen_ai.request.model` → `gen_ai.provider.name` → `gen_ai.system` → `llm.model_name` → `coding_agent.model` (first hit wins) | event `model` |
 | `gen_ai.tool.name`, `coding_agent.tool`, `execute_tool …` name | span kind `TOOL` + payload `tool_name` |
-| `openinference.span.kind` (`LLM/AGENT/TOOL/RETRIEVER/RERANKER/GUARDRAIL/CHAIN/EMBEDDING`) | normalized span kind (`MODEL/AGENT/TOOL/RETRIEVAL/GUARDRAIL/WORKFLOW/MODEL`) |
+| `openinference.span.kind`: `LLM`/`EMBEDDING`→`MODEL`, `AGENT`→`AGENT`, `TOOL`→`TOOL`, `RETRIEVER`/`RERANKER`→`RETRIEVAL`, `GUARDRAIL`/`EVALUATOR`→`GUARDRAIL`, `CHAIN`/`PROMPT`→`WORKFLOW` | normalized span kind (OpenInference's full 10-kind enum; source kind unchanged in `source_kind`) |
 | GenAI `SPAN_KIND_CLIENT` with `gen_ai.*` | span kind `MODEL` |
 | `gen_ai.usage.input_tokens` / `…output_tokens` / `…cache_read.input_tokens` / `…cache_creation_input_tokens` (and `llm.token_count.prompt/completion`) | summed onto `trace.completed` payload → trace read-model token fields |
 | `status.code = ERROR` (number `2` or name) | `span.failed` + payload `error` message |
 | everything else | preserved under completed-event payload `attributes` |
 | OTLP span kind | payload `source_kind` (raw value preserved) |
+
+**Provider detection** (2026-08-28, market-audit finding): `gen_ai.provider.name`
+superseded `gen_ai.system` in GenAI semconv v1.37.0 (Aug 2025). We read the
+new key first and keep `gen_ai.system` for older emitters that have not
+migrated — the same precedence applies everywhere the vendor/system is
+consulted (the `model` fallback above, and the GenAI-client detection that
+feeds the `SPAN_KIND_CLIENT` → `MODEL` mapping).
+
+**OpenInference EVALUATOR/PROMPT** (2026-08-28, market-audit finding):
+OpenInference's span-kind enum grew from 8 to 10 values. We fold `EVALUATOR`
+onto our `GUARDRAIL` kind — it renders a pass/fail or scored verdict over
+content, the same quality-gate semantics — and `PROMPT` onto `WORKFLOW`,
+since assembling/rendering a prompt template is a workflow step rather than
+a model call. Both are new `case`s in `mapKind` (`convert.go` / `otlp.ts`),
+not a change to the fallback kinds; a source span's raw OTLP kind is still
+carried unchanged in payload `source_kind`.
+
+> As of 2026-08-28, GenAI semantic conventions remain in **Development**
+> status upstream: v1.37.0 (Aug 2025) is the reference version this mapping
+> tracks, and the semantic-conventions repository split planned for Jun 2026
+> means there is no stable, versioned schema URL to pin yet. We therefore
+> track individual attribute names (with an old-key fallback per rename)
+> rather than a `schema_url`, and expect to revisit this note as the spec
+> stabilizes.
 
 ### Sanitizer (fail-closed)
 
@@ -197,4 +228,8 @@ testdata/fixtures/otlp/          genai_session.json + genai_session.pb
                                   built by a test-only encoder and pinned byte
                                   for byte — regenerate with
                                   HFG_UPDATE_OTLP_FIXTURE=1 go test ./internal/otlp)
+                                 semconv_v137.json (gen_ai.provider.name,
+                                  gen_ai.conversation.id, OpenInference
+                                  EVALUATOR/PROMPT — JSON only, no .pb sibling;
+                                  ids cross-checked in platform/test/otlp.test.ts)
 ```

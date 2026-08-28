@@ -163,7 +163,12 @@ export async function convertOtlpExport(
         const ns = parseNano(sp.startTimeUnixNano);
         if (ns !== null) startNSByKey.set(`${traceHex}|${spanHex}`, ns);
         if (!sessionKeyByTrace.has(traceHex)) {
-          const key = rawStrAttr(sp.attributes, "session.id", "langfuse.session.id", "handoffgraph.session_id", "session_id");
+          // Session-key precedence (first hit wins): session.id, then the
+          // OTel GenAI semconv session-correlation attribute
+          // gen_ai.conversation.id, then the older Langfuse/HandoffGraph/
+          // generic keys. Mirrored in the per-span lookup below and in
+          // internal/otlp/convert.go.
+          const key = rawStrAttr(sp.attributes, "session.id", "gen_ai.conversation.id", "langfuse.session.id", "handoffgraph.session_id", "session_id");
           if (key) sessionKeyByTrace.set(traceHex, key);
         }
       }
@@ -233,10 +238,15 @@ export async function convertOtlpExport(
         const spanHex = (sp.spanId as string).toLowerCase();
         const parentHex = typeof sp.parentSpanId === "string" ? sp.parentSpanId.toLowerCase() : "";
 
-        let sessionKey = strAttr(conv.attrs, "session.id", "langfuse.session.id", "handoffgraph.session_id", "session_id");
+        // Session-key precedence — see the phase-1 scan above.
+        let sessionKey = strAttr(conv.attrs, "session.id", "gen_ai.conversation.id", "langfuse.session.id", "handoffgraph.session_id", "session_id");
         if (!sessionKey) sessionKey = sessionKeyByTrace.get(traceHex) ?? "";
         if (!sessionKey) sessionKey = `otlp-trace-${traceHex}`;
-        const model = strAttr(conv.attrs, "gen_ai.request.model", "gen_ai.system", "llm.model_name", "coding_agent.model");
+        // Provider detection: gen_ai.provider.name superseded gen_ai.system
+        // in GenAI semconv v1.37.0 (Aug 2025); read the new key first, fall
+        // back to gen_ai.system for older emitters, then the pre-GenAI
+        // heuristics.
+        const model = strAttr(conv.attrs, "gen_ai.request.model", "gen_ai.provider.name", "gen_ai.system", "llm.model_name", "coding_agent.model");
         const toolName = strAttr(conv.attrs, "gen_ai.tool.name", "coding_agent.tool");
 
         const [sessionID, traceID, spanID] = await Promise.all([
@@ -501,17 +511,30 @@ function kindName(raw: unknown): string {
   }
 }
 
+// mapKind maps OTLP kind + conventions onto the normalized SpanKind. The
+// raw OTLP kind is preserved separately (payload source_kind). GenAI CLIENT
+// spans are model calls; OpenInference's 10-kind enum wins when present
+// (EVALUATOR -> GUARDRAIL, PROMPT -> WORKFLOW — documented below); tool
+// spans are recognized from gen_ai.tool.name / execute_tool naming /
+// coding_agent.tool. Mirrors internal/otlp/convert.go's mapKind exactly.
 function mapKind(rawKind: unknown, name: string, attrs: Record<string, unknown>): string {
   const oi = strAttr(attrs, "openinference.span.kind");
-  const hasGenAI = strAttr(attrs, "gen_ai.operation.name", "gen_ai.request.model", "gen_ai.system") !== "";
+  // hasGenAI: gen_ai.provider.name (semconv v1.37.0, Aug 2025) is checked
+  // ahead of the legacy gen_ai.system attribute — same precedence as the
+  // model resolution above.
+  const hasGenAI = strAttr(attrs, "gen_ai.operation.name", "gen_ai.request.model", "gen_ai.provider.name", "gen_ai.system") !== "";
   const isTool =
     strAttr(attrs, "gen_ai.tool.name", "coding_agent.tool") !== "" || name.startsWith("execute_tool ");
   if (oi === "LLM" || oi === "EMBEDDING") return "MODEL";
   if (oi === "AGENT") return "AGENT";
   if (oi === "TOOL") return "TOOL";
   if (oi === "RETRIEVER" || oi === "RERANKER") return "RETRIEVAL";
-  if (oi === "GUARDRAIL") return "GUARDRAIL";
-  if (oi === "CHAIN") return "WORKFLOW";
+  // EVALUATOR renders a pass/fail or scored verdict over content — the same
+  // quality-gate semantics as GUARDRAIL, so both fold onto our GUARDRAIL kind.
+  if (oi === "GUARDRAIL" || oi === "EVALUATOR") return "GUARDRAIL";
+  // PROMPT assembles/renders a prompt template — a workflow step, not a
+  // model call — so it folds onto WORKFLOW alongside CHAIN.
+  if (oi === "CHAIN" || oi === "PROMPT") return "WORKFLOW";
   if (isTool) return "TOOL";
   if (hasGenAI && kindName(rawKind) === "SPAN_KIND_CLIENT") return "MODEL";
   if (name.startsWith("coding_agent.") || strAttr(attrs, "coding_agent.session") !== "") return "AGENT";

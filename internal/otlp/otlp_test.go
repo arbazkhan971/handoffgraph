@@ -10,12 +10,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/handoffgraph/handoffgraph/internal/ids"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
 
 func loadFixture(t *testing.T) *ExportRequest {
 	t.Helper()
 	data, err := os.ReadFile("../../testdata/fixtures/otlp/genai_session.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var req ExportRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	return &req
+}
+
+// loadSemconvFixture loads the GenAI semconv v1.37.0 golden fixture:
+// gen_ai.provider.name, gen_ai.conversation.id, and OpenInference
+// EVALUATOR/PROMPT spans (2026-08-28 market audit, parity rows 2/3). It is a
+// SEPARATE fixture from genai_session.json — existing fixtures/ids must not
+// move — so this exercises only the new attribute mapping.
+func loadSemconvFixture(t *testing.T) *ExportRequest {
+	t.Helper()
+	data, err := os.ReadFile("../../testdata/fixtures/otlp/semconv_v137.json")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -153,6 +172,113 @@ func TestConvertGenAISession(t *testing.T) {
 	}
 	if tp["token_input"].(float64) != 1200 || tp["token_output"].(float64) != 350 || tp["token_cache_read"].(float64) != 200 {
 		t.Fatalf("trace usage = %v", tp)
+	}
+}
+
+// TestConvertSemconvV137 pins the GenAI semantic-conventions v1.37.0
+// attribute mapping (2026-08-28 market audit, parity rows 2/3):
+//   - provider detection: gen_ai.provider.name wins over the legacy
+//     gen_ai.system when gen_ai.request.model is absent;
+//   - session-key precedence: gen_ai.conversation.id outranks
+//     langfuse.session.id;
+//   - OpenInference's EVALUATOR and PROMPT kinds fold onto our
+//     GUARDRAIL/WORKFLOW kinds instead of being dropped to OTHER.
+//
+// The session/trace ids are pinned literally so platform/test/otlp.test.ts
+// can assert the exact same strings — cross-language id parity is a hard
+// contract. Regenerate both together if convert.go's key formulas change.
+func TestConvertSemconvV137(t *testing.T) {
+	res, err := Convert(loadSemconvFixture(t), Options{ObservedAt: fixedObserved()})
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	if len(res.SpanErrors) != 0 {
+		t.Fatalf("unexpected span errors: %v", res.SpanErrors)
+	}
+	// session.started + trace.started + 3 span.started + 3 span.completed +
+	// trace.completed = 9 events.
+	if len(res.Events) != 9 {
+		t.Fatalf("event count = %d, want 9", len(res.Events))
+	}
+
+	const traceHex = "748cd2e72cbe280d4242c6f65a237d76"
+	const rootSpanHex = "0aacf703138cc694" // "assemble prompt" (PROMPT)
+	const evalSpanHex = "b5f6be6764e48af6" // "verify claim" (EVALUATOR)
+	const sessionKey = "conv-8842"         // gen_ai.conversation.id — NOT langfuse-loses
+
+	wantSessionID := ids.Deterministic(ids.PrefixSession, "otlp|"+sessionKey, 0)
+	wantTraceID := ids.Deterministic(ids.PrefixTrace, "otlp|"+traceHex, 0)
+	// root span starts at 1787918400000000000 ns = 1787918400000 ms.
+	wantRootStartEvtID := ids.Deterministic(ids.PrefixEvent, "otlp|span-start|"+traceHex+"|"+rootSpanHex, 1787918400000)
+	// eval span starts at 1787918405000000000 ns = 1787918405000 ms.
+	wantEvalStartEvtID := ids.Deterministic(ids.PrefixEvent, "otlp|span-start|"+traceHex+"|"+evalSpanHex, 1787918405000)
+	if wantSessionID != "ses_0000000000WSSGPRQR3WX4YQ1E" {
+		t.Fatalf("session id formula drifted from the pinned golden value: %s", wantSessionID)
+	}
+	if wantTraceID != "trc_0000000000Z2JW9HMJZYCDCS5C" {
+		t.Fatalf("trace id formula drifted from the pinned golden value: %s", wantTraceID)
+	}
+	if wantRootStartEvtID != "evt_01M143VEG04WB39V9R2FZ184FV" {
+		t.Fatalf("root span-start event id formula drifted from the pinned golden value: %s", wantRootStartEvtID)
+	}
+	if wantEvalStartEvtID != "evt_01M143VKC8DHPH5EH99NWN59BM" {
+		t.Fatalf("eval span-start event id formula drifted from the pinned golden value: %s", wantEvalStartEvtID)
+	}
+
+	sesIDs := map[string]bool{}
+	for _, ev := range res.Events {
+		if ev.SessionID != wantSessionID {
+			t.Fatalf("%s: session id = %s, want %s (gen_ai.conversation.id must outrank langfuse.session.id)",
+				ev.EventID, ev.SessionID, wantSessionID)
+		}
+		sesIDs[ev.SessionID] = true
+	}
+	if len(sesIDs) != 1 {
+		t.Fatalf("expected exactly one session (conversation.id must collapse the trace), got %d", len(sesIDs))
+	}
+
+	// Provider detection: the chat span sets both gen_ai.provider.name=
+	// "anthropic" and the legacy gen_ai.system="anthropic-legacy" with no
+	// gen_ai.request.model — the new key must win for the model field.
+	var chatEnd *protocol.Event
+	var promptStart, evalStart *protocol.Event
+	for _, ev := range res.Events {
+		switch ev.Kind {
+		case protocol.EventSpanStarted:
+			var p map[string]any
+			_ = json.Unmarshal(ev.Payload, &p)
+			switch p["name"] {
+			case "assemble prompt":
+				promptStart = ev
+			case "verify claim":
+				evalStart = ev
+			}
+		case protocol.EventSpanCompleted:
+			if ev.Model == "anthropic" {
+				chatEnd = ev
+			}
+		}
+	}
+	if chatEnd == nil {
+		t.Fatal("no span.completed event with model resolved from gen_ai.provider.name (system fallback must not win)")
+	}
+
+	// mapKind: OpenInference PROMPT -> WORKFLOW, EVALUATOR -> GUARDRAIL.
+	if promptStart == nil {
+		t.Fatal("no span.started event for the PROMPT root span")
+	}
+	var promptPayload map[string]any
+	_ = json.Unmarshal(promptStart.Payload, &promptPayload)
+	if promptPayload["span_kind"] != string(protocol.SpanKindWorkflow) {
+		t.Fatalf("PROMPT span_kind = %v, want %s", promptPayload["span_kind"], protocol.SpanKindWorkflow)
+	}
+	if evalStart == nil {
+		t.Fatal("no span.started event for the EVALUATOR span")
+	}
+	var evalPayload map[string]any
+	_ = json.Unmarshal(evalStart.Payload, &evalPayload)
+	if evalPayload["span_kind"] != string(protocol.SpanKindGuardrail) {
+		t.Fatalf("EVALUATOR span_kind = %v, want %s", evalPayload["span_kind"], protocol.SpanKindGuardrail)
 	}
 }
 
