@@ -26,20 +26,26 @@ import (
 //
 // Usage:
 //
-//	handoffgraph verify --workstream <id> [--baseline <cp_id>] [--json]
+//	handoffgraph verify --workstream <id> [--baseline <cp_id>] [--json] [--no-cache]
 //
 // Exit codes: 0 = all checks pass; 1 = at least one check failed or a
 // regression against the baseline was found. A verification.recorded event
 // is appended on every run so gates are themselves append-only evidence.
+//
+// The check set (never the baseline comparison, which is cwd/git-dependent)
+// is cached per workstream and reused while the event log is unchanged
+// (parity row 26 tail); --no-cache forces a recompute. The report's
+// "cached" field says which happened.
 func RegisterVerifyCmd(app *cli.App) {
 	app.Register(&cli.Command{
 		Name:    "verify",
 		Summary: "Run deterministic evidence checks and gate on a baseline checkpoint",
-		Usage:   "--workstream <id> [--baseline <cp_id>] [--json]",
+		Usage:   "--workstream <id> [--baseline <cp_id>] [--json] [--no-cache]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("workstream", "", "workstream to verify")
 			fs.String("baseline", "", "baseline checkpoint id (cp_...) to compare against")
 			fs.Bool("json", false, "emit JSON")
+			fs.Bool("no-cache", false, "bypass and refresh the cached check results (parity row 26 tail)")
 		},
 		Run: verifyCmd,
 	})
@@ -57,6 +63,7 @@ type Check struct {
 type verifyReport struct {
 	WorkstreamID   string  `json:"workstream_id"`
 	Passed         bool    `json:"passed"`
+	Cached         bool    `json:"cached"`
 	Checks         []Check `json:"checks"`
 	BaselineID     string  `json:"baseline_id,omitempty"`
 	BaselineScore  int     `json:"-"`
@@ -88,11 +95,42 @@ func verifyCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 
 	var report verifyReport
 	report.WorkstreamID = workstream
-	report.Checks = runVerifyChecks(wsEvents)
+
+	// Materialize once: both the check set and the baseline's new-failures
+	// scan read the same traces/spans, so a single pass here is reused by
+	// both instead of each recomputing it independently.
+	res := trace.Materialize(wsEvents)
+
+	// Cache lookup (parity row 26 tail: cached results). Only the
+	// deterministic []Check slice is ever cached — CurrentScore below is
+	// cwd/git-dependent via repository.State and is always recomputed live.
+	noCache := boolFlag(fs, "no-cache")
+	cacheHit := false
+	if !noCache {
+		if cachedJSON, ok, cerr := db.VerifyCacheGet(ctx, workstream); cerr == nil && ok {
+			var cached []Check
+			if json.Unmarshal([]byte(cachedJSON), &cached) == nil {
+				report.Checks = cached
+				cacheHit = true
+			}
+		}
+	}
+	if !cacheHit {
+		report.Checks = runVerifyChecks(wsEvents, res)
+		// Best-effort: a caching failure must never block the gate itself.
+		if checksJSON, jerr := json.Marshal(report.Checks); jerr == nil {
+			if snapJSON, serr := db.VerifySnapshotJSON(ctx, workstream); serr == nil {
+				if saveErr := db.VerifyCacheSave(ctx, workstream, snapJSON, string(checksJSON)); saveErr != nil {
+					fmt.Fprintf(c.Stderr, "warning: verify cache save failed: %v\n", saveErr)
+				}
+			}
+		}
+	}
+	report.Cached = cacheHit
 
 	baselineID := stringFlag(fs, "baseline")
 	if baselineID != "" {
-		if err := applyBaseline(ctx, db, wsEvents, &report, baselineID, &redact.Options{
+		if err := applyBaseline(ctx, db, wsEvents, res, &report, baselineID, &redact.Options{
 			DenyPaths:    cfg.RedactDenyPaths,
 			UserPatterns: cfg.RedactPatterns,
 		}); err != nil {
@@ -175,10 +213,11 @@ func verifyCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	return nil
 }
 
-// runVerifyChecks executes the deterministic default check set.
-func runVerifyChecks(wsEvents []*protocol.Event) []Check {
+// runVerifyChecks executes the deterministic default check set. res is the
+// caller's single trace.Materialize(wsEvents) pass, shared with
+// applyBaseline so the event log is materialized only once per run.
+func runVerifyChecks(wsEvents []*protocol.Event, res *trace.MaterializeResult) []Check {
 	var checks []Check
-	res := trace.Materialize(wsEvents)
 
 	// 1. Trace liveness: no trace left mid-flight.
 	running := 0
@@ -293,8 +332,11 @@ func runVerifyChecks(wsEvents []*protocol.Event) []Check {
 }
 
 // applyBaseline loads the baseline checkpoint and computes the regression
-// deltas (score + failures newer than the baseline).
-func applyBaseline(ctx context.Context, db *storage.DB, wsEvents []*protocol.Event, report *verifyReport, baselineID string, redaction *redact.Options) error {
+// deltas (score + failures newer than the baseline). res is the caller's
+// single trace.Materialize(wsEvents) pass (shared with runVerifyChecks) so
+// the baseline's new-failures scan does not materialize the log a second
+// time.
+func applyBaseline(ctx context.Context, db *storage.DB, wsEvents []*protocol.Event, res *trace.MaterializeResult, report *verifyReport, baselineID string, redaction *redact.Options) error {
 	// Baseline must belong to the same workstream (scoping discipline).
 	cps, err := db.ListCheckpoints(ctx, report.WorkstreamID)
 	if err != nil {
@@ -334,7 +376,6 @@ func applyBaseline(ctx context.Context, db *storage.DB, wsEvents []*protocol.Eve
 		return err
 	}
 	if ok {
-		res := trace.Materialize(wsEvents)
 		for _, sp := range res.Spans {
 			if sp.Status != "error" && sp.Status != "failed" {
 				continue

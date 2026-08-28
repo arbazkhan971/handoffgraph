@@ -14,8 +14,8 @@ func TestRegisterExposesAllShippedCommands(t *testing.T) {
 		"checkpoint", "claude", "codex", "continue", "detect", "doctor",
 		"event", "fixture", "graph", "handoff", "init", "install", "mcp",
 		"dataset", "experiment", "index", "open", "otlp", "outcomes", "pi",
-		"prompt", "query", "redact", "resume", "score", "sessions", "status",
-		"traces", "verify", "version", "workstream",
+		"prompt", "query", "redact", "reset", "resume", "score", "sessions",
+		"status", "traces", "verify", "version", "workstream",
 	}
 	for _, name := range want {
 		if _, ok := app.Commands[name]; !ok {

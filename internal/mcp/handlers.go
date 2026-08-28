@@ -32,7 +32,7 @@ const eventKindFilesClaimed protocol.EventKind = "files.claimed"
 // values (matching the checkpoint TestEvidence vocabulary).
 var allowedVerificationResults = []string{"passed", "failed", "skipped", "error"}
 
-// newToolset builds the nine v0.4.0 tools in roadmap order.
+// newToolset builds the twelve tools in roadmap order.
 func newToolset(db *storage.DB) []Tool {
 	return newToolsetWithRedaction(db, nil)
 }

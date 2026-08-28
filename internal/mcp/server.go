@@ -5,7 +5,7 @@
 // transport rules: responses go to stdout, one JSON message per line, and all
 // diagnostics go to stderr — stdout is reserved for the protocol.
 //
-// It exposes exactly nine goal-oriented tools backed by the local SQLite
+// It exposes exactly twelve goal-oriented tools backed by the local SQLite
 // event store. Tool access is scoped: any workstream, repository, trace or
 // checkpoint id that is not present in the local database is rejected, so no
 // tool can read or write across workstreams.
@@ -107,7 +107,7 @@ type Server struct {
 	log     *log.Logger
 }
 
-// NewServer returns a server exposing the nine v0.4.0 tools backed by db.
+// NewServer returns a server exposing the twelve tools backed by db.
 func NewServer(db *storage.DB, opts Options) *Server {
 	stderr := opts.Stderr
 	if stderr == nil {

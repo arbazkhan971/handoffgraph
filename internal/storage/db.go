@@ -285,6 +285,19 @@ CREATE TABLE IF NOT EXISTS exception_groups (
 CREATE INDEX IF NOT EXISTS idx_exc_count ON exception_groups(workstream_id, span_count DESC);
 CREATE INDEX IF NOT EXISTS idx_exc_type  ON exception_groups(error_type);
 `},
+	{12, `
+-- Cached verify reports (parity row 26 tail: "cached results"). Keyed by
+-- workstream; snapshot is the freshness fingerprint from
+-- storage.VerifySnapshotJSON (event_count/max_seq over that workstream's
+-- events, excluding verification.recorded rows — see verify_cache.go for
+-- why). Fully derived from the event log and safe to drop/rebuild.
+CREATE TABLE IF NOT EXISTS verify_results (
+    workstream_id TEXT PRIMARY KEY,
+    snapshot      TEXT NOT NULL,
+    report        TEXT NOT NULL,
+    created_at    INTEGER NOT NULL
+);
+`},
 }
 
 // migrate applies pending migrations in order.
@@ -360,6 +373,55 @@ func (d *DB) UserVersion() (int, error) {
 
 // SchemaVersion returns the highest applied migration version.
 func (d *DB) SchemaVersion() (int, error) { return d.schemaVersion() }
+
+// LatestSchemaVersion returns the newest migration version this running
+// binary knows about (the last entry's declared version, not the slice
+// length — migration numbers can carry gaps when they were assigned to
+// parallel work ahead of merge). Health checks (`doctor --verify`) compare
+// the applied schema against this to catch a binary/database mismatch.
+func LatestSchemaVersion() int {
+	if len(migrations) == 0 {
+		return 0
+	}
+	return migrations[len(migrations)-1].version
+}
+
+// MaxSeq returns the highest event sequence number, or 0 when the events
+// table is empty. Paired with EventCount for health checks and caches that
+// need a cheap fingerprint of "how much log there is".
+func (d *DB) MaxSeq(ctx context.Context) (int64, error) {
+	var maxSeq int64
+	err := d.sql.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&maxSeq)
+	return maxSeq, err
+}
+
+// TableExists reports whether name is a table in this database, probed via
+// sqlite_master rather than assumed. Used by `reset` to clear only the
+// derived tables that actually exist in the running binary's schema (some
+// table names in that list are forward-looking and may not be present
+// yet).
+func (d *DB) TableExists(ctx context.Context, name string) (bool, error) {
+	var found string
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, name,
+	).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ClearTable deletes every row from a table. name must come from a
+// compile-time constant list the caller controls (never from external or
+// user input): the identifier is concatenated directly, since
+// database/sql placeholders bind values, not identifiers.
+func (d *DB) ClearTable(ctx context.Context, name string) error {
+	_, err := d.sql.ExecContext(ctx, `DELETE FROM `+name)
+	return err
+}
 
 // backup creates a timestamped copy of the database file before a migration.
 // It is best-effort: for a brand-new database there is nothing to copy.

@@ -9,7 +9,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -38,7 +40,15 @@ import (
 func Register(app *cli.App) {
 	app.Register(&cli.Command{Name: "version", Summary: "Print the version", Run: versionCmd})
 	app.Register(&cli.Command{Name: "init", Summary: "Initialize the local data directory", Run: initCmd})
-	app.Register(&cli.Command{Name: "doctor", Summary: "Diagnose configuration and database health", Run: doctorCmd})
+	app.Register(&cli.Command{
+		Name: "doctor", Summary: "Diagnose configuration and database health",
+		Usage: "[--verify] [--json]",
+		Flags: func(fs *flag.FlagSet) {
+			fs.Bool("verify", false, "run deep health checks: schema version, observations freshness, redaction pattern compile, data-dir disk usage (parity row 52)")
+			fs.Bool("json", false, "emit JSON")
+		},
+		Run: doctorCmd,
+	})
 	app.Register(&cli.Command{Name: "status", Summary: "Show local capture status", Run: statusCmd})
 	app.Register(&cli.Command{Name: "workstream", Summary: "Create or list workstreams", Usage: "new <title> | list", Run: workstreamCmd})
 	app.Register(&cli.Command{Name: "event", Summary: "Import events from a JSONL fixture", Usage: "import <file>", Run: eventCmd})
@@ -119,6 +129,7 @@ func Register(app *cli.App) {
 	RegisterVerifyCmd(app)
 	RegisterDatasetCmd(app)
 	RegisterPromptCmd(app)
+	RegisterResetCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.
@@ -181,51 +192,186 @@ func initCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	return nil
 }
 
+// doctorReport is the structured `doctor` output. It reuses the verify
+// package's Check shape (name/passed/detail) so both diagnostic surfaces
+// render the same way.
+type doctorReport struct {
+	Passed bool    `json:"passed"`
+	Deep   bool    `json:"deep"`
+	Checks []Check `json:"checks"`
+}
+
+// doctorCmd runs basic config/DB health checks, and with --verify (parity
+// row 52) a deeper pass beyond that: schema-at-expected-version, event
+// count + max seq, observations freshness, redaction pattern compile, and
+// data-dir disk usage. It never bails out early on a failing check — every
+// check that can run does, so one report always covers the whole picture —
+// and exits non-zero (via a returned error, matching `verify`'s CI-ready
+// convention) when any check failed.
 func doctorCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
+	deep := boolFlag(fs, "verify")
+	asJSON := boolFlag(fs, "json")
+
+	var report doctorReport
+	report.Deep = deep
+	add := func(name string, passed bool, detail string) {
+		report.Checks = append(report.Checks, Check{Name: name, Passed: passed, Detail: detail})
+	}
+
 	cfg, err := config.Load(".")
 	if err != nil {
+		// No data directory could even be resolved: nothing further to
+		// check against, so this stays a hard error rather than a check.
 		return err
 	}
-	db, err := storage.Open(cfg.DBPath)
-	if err != nil {
-		return fmt.Errorf("database: %w", err)
+
+	db, dbErr := storage.Open(cfg.DBPath)
+	add("db_opens", dbErr == nil, errDetail(dbErr))
+	if dbErr != nil {
+		return finishDoctor(c, &report, asJSON)
 	}
 	defer db.Close()
 
-	ok := true
-	fmt.Fprintln(c.Stdout, "HandoffGraph doctor")
-	fmt.Fprintln(c.Stdout, "-------------------")
+	schemaVer, verErr := db.SchemaVersion()
+	add("schema_version", verErr == nil, firstNonEmpty(errDetail(verErr), fmt.Sprintf("version %d", schemaVer)))
 
-	schemaVer, err := db.SchemaVersion()
-	if err != nil {
-		fmt.Fprintf(c.Stdout, "schema version: ERROR %v\n", err)
-		ok = false
-	} else {
-		fmt.Fprintf(c.Stdout, "schema version: %d\n", schemaVer)
+	userVer, uvErr := db.UserVersion()
+	add("user_version", uvErr == nil, firstNonEmpty(errDetail(uvErr), fmt.Sprintf("sqlite user_version %d", userVer)))
+
+	count, cntErr := db.EventCount(ctx)
+	add("event_count", cntErr == nil, firstNonEmpty(errDetail(cntErr), fmt.Sprintf("%d event(s)", count)))
+
+	if deep {
+		expected := storage.LatestSchemaVersion()
+		add("schema_at_expected_version", verErr == nil && schemaVer == expected,
+			fmt.Sprintf("applied %d, binary expects %d", schemaVer, expected))
+
+		maxSeq, seqErr := db.MaxSeq(ctx)
+		add("max_seq", seqErr == nil, firstNonEmpty(errDetail(seqErr), fmt.Sprintf("max_seq %d", maxSeq)))
+
+		stale, staleErr := db.ObservationsStale(ctx)
+		add("observations_fresh", staleErr == nil && !stale,
+			firstNonEmpty(errDetail(staleErr), staleDetail(stale)))
+
+		_, redErr := redact.New(redact.Options{DenyPaths: cfg.RedactDenyPaths, UserPatterns: cfg.RedactPatterns})
+		add("redaction_patterns_compile", redErr == nil,
+			firstNonEmpty(errDetail(redErr), fmt.Sprintf("%d deny path(s), %d user pattern(s)", len(cfg.RedactDenyPaths), len(cfg.RedactPatterns))))
+
+		size, sizeErr := dirSize(cfg.DataDir)
+		add("data_dir_disk_usage", sizeErr == nil,
+			firstNonEmpty(errDetail(sizeErr), fmt.Sprintf("%s at %s", humanBytes(size), cfg.DataDir)))
 	}
 
-	userVer, err := db.UserVersion()
-	if err != nil {
-		fmt.Fprintf(c.Stdout, "user_version: ERROR %v\n", err)
-		ok = false
-	} else {
-		fmt.Fprintf(c.Stdout, "sqlite user_version: %d\n", userVer)
+	report.Passed = true
+	for _, ck := range report.Checks {
+		if !ck.Passed {
+			report.Passed = false
+		}
 	}
+	return finishDoctor(c, &report, asJSON)
+}
 
-	count, err := db.EventCount(ctx)
-	if err != nil {
-		fmt.Fprintf(c.Stdout, "event count: ERROR %v\n", err)
-		ok = false
+// finishDoctor renders the report (JSON or text) and turns an overall
+// failure into a non-nil error so main.go exits non-zero.
+func finishDoctor(c *cli.Context, report *doctorReport, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(c.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintf(c.Stdout, "event count: %d\n", count)
+		fmt.Fprintln(c.Stdout, "HandoffGraph doctor")
+		fmt.Fprintln(c.Stdout, "-------------------")
+		for _, ck := range report.Checks {
+			mark := "OK"
+			if !ck.Passed {
+				mark = "FAIL"
+			}
+			fmt.Fprintf(c.Stdout, "%-28s %s", ck.Name, mark)
+			if ck.Detail != "" {
+				fmt.Fprintf(c.Stdout, "  (%s)", ck.Detail)
+			}
+			fmt.Fprintln(c.Stdout)
+		}
+		if report.Passed {
+			fmt.Fprintln(c.Stdout, "status: OK")
+		} else {
+			fmt.Fprintln(c.Stdout, "status: PROBLEMS FOUND")
+		}
 	}
-
-	if ok {
-		fmt.Fprintln(c.Stdout, "status: OK")
-	} else {
-		fmt.Fprintln(c.Stdout, "status: PROBLEMS FOUND")
+	if !report.Passed {
+		failed := 0
+		for _, ck := range report.Checks {
+			if !ck.Passed {
+				failed++
+			}
+		}
+		return fmt.Errorf("doctor: %d check(s) failed", failed)
 	}
 	return nil
+}
+
+// errDetail renders err for a check's Detail field, or "" when err is nil.
+func errDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// firstNonEmpty returns a if it is non-empty, else b. Used to prefer an
+// error string over the success detail when a check failed.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func staleDetail(stale bool) string {
+	if stale {
+		return "derived observations table is behind the event log; run to rebuild it"
+	}
+	return "up to date with the event log"
+}
+
+// dirSize sums the apparent size of every regular file under root.
+func dirSize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// humanBytes renders n as a binary-prefixed size (KiB/MiB/...), matching
+// the conventional Go idiom for byte-count display.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func statusCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
