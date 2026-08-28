@@ -4,6 +4,8 @@
 //   GET  /healthz           liveness (no auth)
 //   POST /v1/event-batches  authenticated, idempotent event ingestion
 //   GET  /v1/workstreams    cursor-paginated, workspace-scoped listing
+//   (see observations.ts for /v1/sessions, /v1/observations, /v1/fingerprints
+//    and POST /v1/admin/reindex)
 //
 // Invariants (see docs/architecture.md and platform/README.md):
 //   - workspace identity comes only from the device token binding;
@@ -51,6 +53,7 @@ import {
   validateEventBatch,
   type WorkstreamRow,
 } from "./ingest";
+import { buildObservationStatements, handleObservationsRoute } from "./observations";
 import { PLAN_CATALOG } from "./plans";
 import { prepareQuotaReservation } from "./quota";
 import { handleTeamsRoute } from "./teams";
@@ -103,6 +106,8 @@ export default {
       if (artifactsResponse !== null) return artifactsResponse;
       const webhooksResponse = await handleWebhooksRoute(request, env);
       if (webhooksResponse !== null) return webhooksResponse;
+      const observationsResponse = await handleObservationsRoute(request, env);
+      if (observationsResponse !== null) return observationsResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
@@ -687,6 +692,7 @@ async function handleEventBatches(
       eventsJson,
     ),
     env.DB.prepare(UPSERT_WORKSTREAM_SQL).bind(workstreamRowsJson, eventsJson),
+    ...(await buildObservationStatements(env.DB, device.workspaceId, envelope.events)),
   ];
 
   try {

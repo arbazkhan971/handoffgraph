@@ -928,7 +928,9 @@ describe("worker: POST /v1/event-batches", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(batches[0]).toHaveLength(4);
+    // Constant statement count at the event ceiling: quota, idempotency, raw
+    // events, workstream projection, and the three observation projections.
+    expect(batches[0]).toHaveLength(7);
     expect(JSON.parse(String(batches[0][2].binds[3]))).toHaveLength(MAX_EVENTS_PER_BATCH);
     expect(JSON.parse(String(batches[0][3].binds[0]))).toHaveLength(MAX_EVENTS_PER_BATCH);
   });
@@ -952,8 +954,14 @@ describe("worker: POST /v1/event-batches", () => {
     );
     expect(response.status).toBe(200);
     expect(batches).toHaveLength(1);
-    expect(batches[0]).toHaveLength(4);
-    const [reservation, idempotency, events, projection] = batches[0];
+    expect(batches[0]).toHaveLength(7);
+    const [reservation, idempotency, events, projection, spans, prints, sessions] = batches[0];
+    expect(spans.sql).toContain("observations:upsert-spans");
+    expect(prints.sql).toContain("observations:upsert-fingerprints");
+    expect(sessions.sql).toContain("observations:upsert-sessions");
+    for (const statement of [spans, prints, sessions]) {
+      expect(statement.binds[0]).toBe(TOKEN_WORKSPACE);
+    }
     expect(reservation.sql).toContain("INSERT OR IGNORE INTO quota_reservations");
     expect(reservation.binds[0]).toBe(TOKEN_WORKSPACE);
     expect(reservation.binds[1]).toBe("metered-1");
