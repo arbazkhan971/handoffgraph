@@ -69,6 +69,8 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Wide observations read model — `index rebuild` + `query spans` (denormalized trace attrs on every row, 5-minute ts_bucket prune + exact time predicates, identity fingerprints, stale auto-rebuild; Langfuse-V4/SigNoz patterns re-implemented ideas-only) | `internal/observations`, `internal/storage`, `internal/commands` | ✅ tested (migration 9) |
 | Usage + outcome analytics — `query usage` (token/cost rollups per provider/session, decimal-string costs with provenance) and `outcomes` (per-workstream files/commands/tests/handoffs/scores) | `internal/commands` | ✅ tested |
 | Verify gate — `verify --workstream <id> [--baseline <cp>]`: deterministic checks (traces closed, commands ok, tests pass, handoffs acknowledged, score rubric, P0 detections) + baseline score/new-failure regression; CI exit codes; every run appends verification.recorded evidence | `internal/commands` | ✅ tested |
+| Datasets × experiments — `dataset create/list` (immutable content-hash versions, bodies in the object store), `experiment run/list/compare` (deterministic materialize+detection verdicts per example, regression diff) | `internal/datasets`, `internal/commands` | ✅ tested |
+| Prompt store — `prompt create/label/list/show`: immutable hashed versions + mutable labels (production/latest/custom) as derived state, size-capped bodies (fail-closed), prompt↔event linkage view | `internal/prompts`, `internal/commands` | ✅ tested |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -111,6 +113,9 @@ otlp          import <file> | serve [--addr 127.0.0.1:4318] [--capture tier]
               capture tiers full/metadata/minimal gate attribute content at
               emit, fail-closed; serve listens on localhost only)
 mcp           serve  run the local eleven-tool MCP stdio server
+dataset       create <name> --file ... | list   immutable dataset versions
+experiment    run --dataset <name> | list | compare <a> <b>
+prompt        create | label | list | show        versioned prompts + labels
 score         record ... | list ...
               record/list source-tagged quality scores (NUMERIC/CATEGORY/
               BOOLEAN) on trace/span/session/checkpoint/workstream objects

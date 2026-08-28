@@ -114,6 +114,8 @@ func Register(app *cli.App) {
 	RegisterIndexCmd(app)
 	RegisterAnalyticsCmd(app)
 	RegisterVerifyCmd(app)
+	RegisterDatasetCmd(app)
+	RegisterPromptCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.

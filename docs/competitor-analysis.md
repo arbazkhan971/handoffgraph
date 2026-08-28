@@ -123,7 +123,7 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 | 24 | Universal **scores** primitive (numeric/categorical/bool; attach to trace/span/session; source-tagged) — **local ✅ (CLI + MCP, 2026-08-28)** | Langfuse, Phoenix | L + C | P1 ✅L / C P3 |
 | 25 | Deterministic code evaluators (no-LLM checks, verdicts as evidence) — **✅ via verify checks + detection pack (2026-08-28)** | Phoenix, DeepEval | L | P2 ✅ |
 | 26 | CI regression gate: pinned baseline, cached results, exit-code semantics (`handoffgraph verify`) — **✅ baseline+exit codes (2026-08-28); caching pending** | DeepEval `--official`, Phoenix pytest | L | P2 ✅/partial |
-| 27 | Versioned datasets (hash-pinned) × experiments + run comparison UI | Langfuse, Phoenix, Opik | L + C | P2–P3 |
+| 27 | Versioned datasets (hash-pinned) × experiments + run comparison — **local CLI ✅ (2026-08-28); UI pending** | Langfuse, Phoenix, Opik | L + C | P2 ✅L / P3 |
 | 28 | Human annotation queues + scores via UI/MCP/API | Langfuse, LangWatch, Phoenix | C | P3 |
 | 29 | LLM-as-judge + online/cron evals (BYO keys; results always INFERRED-labelled) | Langfuse, Opik, Phoenix, DeepEval | C (Workflows + AI Gateway) | P3 |
 | 30 | Prompt optimization loop (eval-driven) | DeepEval, LangWatch, Opik | C | P4 |
@@ -133,8 +133,8 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 ### 3.5 Prompt management
 | # | Feature | Provenance | Target | Phase |
 |---|---|---|---|---|
-| 33 | Prompts as immutable versions + mutable labels (production/latest/custom) | Langfuse, Opik, Agenta | L + C | P2 |
-| 34 | Prompt↔trace linkage (`which prompt version produced this session`) | Langfuse | L + C | P2 |
+| 33 | Prompts as immutable versions + mutable labels (production/latest/custom) — **local ✅ (2026-08-28)** | Langfuse, Opik, Agenta | L + C | P2 ✅L / C P3 |
+| 34 | Prompt↔trace linkage (`which prompt version produced this session`) — **local ✅ (2026-08-28)** | Langfuse | L + C | P2 ✅L / C P3 |
 | 35 | Prompt playground (variant diffing; replay traced calls) | Phoenix, Langfuse, Opik | C + L(UI) | P3 |
 | 36 | Prompt CI/CD: webhooks, GitHub Action, label-repoint rollback gated on eval scores | Langfuse | C | P4 |
 

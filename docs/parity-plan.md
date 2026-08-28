@@ -106,8 +106,16 @@ Matrix rows: 5, 12, 13, 23(tiers), 25, 26, 27(local), 33, 34, 44(start), 50, 52.
   Remaining: custom evaluator registration, cached results.
 - Datasets & experiments v1: content-addressed dataset versions (hash-pinned),
   experiment runs as derived read models, comparison table in the debugger UI.
+  **Shipped (2026-08-28):** `dataset create/list` (content-hash versions,
+  bodies in the object store) + `experiment run/list/compare` (deterministic
+  materialize+detections task per example, regression diff, exit codes).
+  Remaining: UI comparison views (P3 hosted dashboards).
 - Prompt store: immutable versions + mutable labels + prompt↔trace linkage;
   MCP tools (`get_prompt`, `record_score`, `annotate`) extended.
+  **Shipped (2026-08-28):** `prompt create/label/list/show` — immutable
+  hashed versions (32 KiB fail-closed cap), mutable labels as derived state,
+  linkage view over event payloads. Remaining: `get_prompt` MCP tool,
+  playground (P4).
 - Detection pack v2 = deterministic evaluator library (loop detection, arg
   correctness, handoff validity — DeepEval's deterministic set, ported).
 - Capture tiers (`minimal` / `metadata` / `full`) enforced at emit with one
