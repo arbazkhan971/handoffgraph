@@ -65,6 +65,7 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Codex CLI wiring (`install`, `sessions`, `resume`; resume prints the shell-quoted `codex resume <id>` invocation) | `internal/commands` | ✅ tested |
 | Cross-agent continuation (bounded payload, drift, append-only status + MCP acknowledgement) | `internal/launch`, `internal/commands`, `internal/mcp` | ✅ tested |
 | OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending) |
+| Scores primitive — `score record`/`list` + MCP `record_score`/`list_scores` (NUMERIC/CATEGORY/BOOLEAN on trace/span/session/checkpoint/workstream, source-tagged, deterministic derived read model, prefix-validated targets) | `internal/scores`, `internal/protocol`, `internal/commands`, `internal/mcp` | ✅ tested |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -98,7 +99,10 @@ detect        run deterministic detections over materialized traces
 otlp          import <file> | serve [--addr 127.0.0.1:4318]
               ingest OTLP/JSON telemetry into the event spine (idempotent;
               serve listens on localhost only)
-mcp           serve  run the local nine-tool MCP stdio server
+mcp           serve  run the local eleven-tool MCP stdio server
+score         record ... | list ...
+              record/list source-tagged quality scores (NUMERIC/CATEGORY/
+              BOOLEAN) on trace/span/session/checkpoint/workstream objects
 open          serve the embedded debugger UI on localhost
 version
 ```
@@ -283,7 +287,7 @@ Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + c
 
 ### Deliberately deferred (per roadmap)
 - Codex App Server integration and 20-real-session acceptance
-- Remote MCP (v0.11.0); the local nine-tool MCP server is implemented
+- Remote MCP (v0.11.0); the local eleven-tool MCP server is implemented
 - Cloudflare hosted platform (private repo, v0.8.0+)
 
 ---

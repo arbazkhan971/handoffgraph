@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/handoffgraph/handoffgraph/internal/checkpoint"
@@ -14,6 +16,7 @@ import (
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 	"github.com/handoffgraph/handoffgraph/internal/redact"
 	"github.com/handoffgraph/handoffgraph/internal/repository"
+	"github.com/handoffgraph/handoffgraph/internal/scores"
 	"github.com/handoffgraph/handoffgraph/internal/storage"
 	"github.com/handoffgraph/handoffgraph/internal/trace"
 )
@@ -84,6 +87,33 @@ func newToolsetWithRedaction(db *storage.DB, redactionOptions *redact.Options) [
 				"exit_code":     intProp("optional observed exit code; presence marks the verification OBSERVED"),
 			}, "workstream_id", "verification", "result"),
 			Handler: toolRecordVerification(db),
+		},
+		{
+			Name:        "record_score",
+			Description: "Record a quality score (numeric, category, or boolean) attached to a trace, span, session, checkpoint, or the workstream itself. Exactly one of value/category/bool_value. Scores are source-tagged (default api) and appended as OBSERVED score.recorded events.",
+			InputSchema: schema(map[string]any{
+				"workstream_id": strProp("workstream id the score belongs to"),
+				"name":          strProp("score name (e.g. handoff.validity, human.review)"),
+				"target_type":   enumProp("scored object type", "trace", "span", "session", "checkpoint", "workstream"),
+				"target_id":     strProp("id of the scored object (trc_.../spn_.../ses_.../cp_.../ws_...)"),
+				"value":         map[string]any{"type": "number", "description": "numeric score value (NUMERIC; exactly one of value/category/bool_value)"},
+				"category":      strProp("category label (CATEGORY; exactly one of value/category/bool_value)"),
+				"bool_value":    map[string]any{"type": "boolean", "description": "boolean verdict (BOOLEAN; exactly one of value/category/bool_value)"},
+				"source":        enumProp("who produced the score", "human", "api", "evaluation", "detection"),
+				"comment":       strProp("optional explanation"),
+			}, "workstream_id", "name", "target_type", "target_id"),
+			Handler: toolRecordScore(db),
+		},
+		{
+			Name:        "list_scores",
+			Description: "List quality scores recorded for a workstream, optionally filtered by target type/id or score name. Read-only.",
+			InputSchema: schema(map[string]any{
+				"workstream_id": strProp("workstream id whose scores to list"),
+				"target_type":   enumProp("filter by scored object type", "trace", "span", "session", "checkpoint", "workstream"),
+				"target_id":     strProp("filter by scored object id"),
+				"name":          strProp("filter by score name"),
+			}, "workstream_id"),
+			Handler: toolListScores(db),
 		},
 		{
 			Name:        "claim_files",
@@ -1130,5 +1160,163 @@ func toolCompleteWorkstream(db *storage.DB) func(context.Context, json.RawMessag
 			},
 			Summary: in.Summary,
 		}, nil
+	}
+}
+
+// ---- score recording + listing (parity P1, matrix row 24) -------------------
+
+type recordScoreArgs struct {
+	WorkstreamID string   `json:"workstream_id"`
+	Name         string   `json:"name"`
+	TargetType   string   `json:"target_type"`
+	TargetID     string   `json:"target_id"`
+	Value        *float64 `json:"value,omitempty"`
+	Category     string   `json:"category,omitempty"`
+	BoolValue    *bool    `json:"bool_value,omitempty"`
+	Source       string   `json:"source,omitempty"`
+	Comment      string   `json:"comment,omitempty"`
+}
+
+type recordScoreResult struct {
+	recordedEventResult
+	Name       string `json:"name"`
+	DataType   string `json:"data_type"`
+	Value      string `json:"value"`
+	TargetType string `json:"target_type"`
+	TargetID   string `json:"target_id"`
+	Source     string `json:"source"`
+}
+
+// toolRecordScore records a score.recorded event — the universal quality
+// primitive: a numeric metric, categorical label, or boolean verdict
+// attached to any spine object, always source-tagged. Exactly one value
+// slot must be supplied, matching the declared target-type shape.
+func toolRecordScore(db *storage.DB) func(context.Context, json.RawMessage) (any, error) {
+	return func(ctx context.Context, args json.RawMessage) (any, error) {
+		var in recordScoreArgs
+		if e := decodeStrict(args, "arguments", &in); e != nil {
+			return nil, e
+		}
+		supplied := 0
+		if in.Value != nil {
+			supplied++
+		}
+		if in.Category != "" {
+			supplied++
+		}
+		if in.BoolValue != nil {
+			supplied++
+		}
+		if supplied != 1 {
+			return nil, errInvalidParams("supply exactly one of value (number), category (string), bool_value (boolean)")
+		}
+		source := in.Source
+		if source == "" {
+			source = string(protocol.ScoreSourceAPI)
+		}
+		input := scores.Input{
+			Name:        in.Name,
+			DataType:    dataTypeFor(in.Value, in.Category, in.BoolValue),
+			Value:       in.Value,
+			StringValue: in.Category,
+			BoolValue:   in.BoolValue,
+			TargetType:  protocol.ScoreTargetType(strings.ToLower(in.TargetType)),
+			TargetID:    in.TargetID,
+			Source:      protocol.ScoreSource(strings.ToLower(source)),
+			Comment:     in.Comment,
+		}
+		ws, _, e := loadWorkstream(ctx, db, in.WorkstreamID)
+		if e != nil {
+			return nil, e
+		}
+		ev, err := scores.NewEvent(ids.Event(), ws.ID, input, time.Now().UTC())
+		if err != nil {
+			return nil, errInvalidParams(err.Error())
+		}
+		if _, err := db.AppendEvent(ctx, ev); err != nil {
+			return nil, errInternal(err)
+		}
+		return recordScoreResult{
+			recordedEventResult: recordedEventResult{
+				EventID:      ev.EventID,
+				WorkstreamID: ws.ID,
+				Kind:         string(protocol.EventScoreRecorded),
+				Provenance:   string(ev.Provenance),
+			},
+			Name:       input.Name,
+			DataType:   string(input.DataType),
+			Value:      scoreValueDisplay(input),
+			TargetType: string(input.TargetType),
+			TargetID:   input.TargetID,
+			Source:     string(input.Source),
+		}, nil
+	}
+}
+
+// dataTypeFor picks the score data type from the supplied value slot.
+func dataTypeFor(value *float64, category string, boolValue *bool) protocol.ScoreDataType {
+	switch {
+	case value != nil:
+		return protocol.ScoreDataTypeNumeric
+	case category != "":
+		return protocol.ScoreDataTypeCategory
+	case boolValue != nil:
+		return protocol.ScoreDataTypeBoolean
+	default:
+		return ""
+	}
+}
+
+// scoreValueDisplay renders the value slot for tool output.
+func scoreValueDisplay(in scores.Input) string {
+	switch in.DataType {
+	case protocol.ScoreDataTypeNumeric:
+		if in.Value != nil {
+			return strconv.FormatFloat(*in.Value, 'g', -1, 64)
+		}
+	case protocol.ScoreDataTypeCategory:
+		return in.StringValue
+	case protocol.ScoreDataTypeBoolean:
+		if in.BoolValue != nil {
+			return strconv.FormatBool(*in.BoolValue)
+		}
+	}
+	return ""
+}
+
+type listScoresArgs struct {
+	WorkstreamID string `json:"workstream_id"`
+	TargetType   string `json:"target_type,omitempty"`
+	TargetID     string `json:"target_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+}
+
+// toolListScores derives the score read model for a workstream and returns
+// the deterministic, optionally filtered view.
+func toolListScores(db *storage.DB) func(context.Context, json.RawMessage) (any, error) {
+	return func(ctx context.Context, args json.RawMessage) (any, error) {
+		var in listScoresArgs
+		if e := decodeStrict(args, "arguments", &in); e != nil {
+			return nil, e
+		}
+		_, events, e := loadWorkstream(ctx, db, in.WorkstreamID)
+		if e != nil {
+			return nil, e
+		}
+		all := scores.Materialize(events)
+		out := make([]*protocol.Score, 0, len(all))
+		for _, s := range all {
+			if in.TargetType != "" && string(s.TargetType) != strings.ToLower(in.TargetType) {
+				continue
+			}
+			if in.TargetID != "" && s.TargetID != in.TargetID {
+				continue
+			}
+			if in.Name != "" && s.Name != in.Name {
+				continue
+			}
+			out = append(out, s)
+		}
+		return map[string]any{"scores": out, "count": len(out)}, nil
 	}
 }

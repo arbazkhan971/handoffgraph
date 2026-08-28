@@ -228,13 +228,16 @@ func TestInitializeParams(t *testing.T) {
 	}
 }
 
-// wantToolOrder is the roadmap v0.4.0 tool list, in order.
+// wantToolOrder is the shipped tool list, in order (v0.4.0 nine + the
+// parity-P1 score primitive pair).
 var wantToolOrder = []string{
 	"get_workstream_context",
 	"get_trace_context",
 	"create_checkpoint",
 	"record_decision",
 	"record_verification",
+	"record_score",
+	"list_scores",
 	"claim_files",
 	"handoff_workstream",
 	"accept_handoff",

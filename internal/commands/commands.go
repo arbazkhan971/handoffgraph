@@ -110,6 +110,7 @@ func Register(app *cli.App) {
 	RegisterWebUICmd(app)
 	RegisterLaunchCmd(app)
 	RegisterOTLPCmd(app)
+	RegisterScoreCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.

@@ -64,6 +64,7 @@ const (
 	EventTestStarted          EventKind = "test.started"
 	EventTestCompleted        EventKind = "test.completed"
 	EventDecisionRecorded     EventKind = "decision.recorded"
+	EventScoreRecorded        EventKind = "score.recorded"
 	EventErrorObserved        EventKind = "error.observed"
 	EventCheckpointCreated    EventKind = "checkpoint.created"
 	EventHandoffCreated       EventKind = "handoff.created"

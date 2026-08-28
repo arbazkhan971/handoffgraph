@@ -65,3 +65,25 @@ func stringFlag(fs *flag.FlagSet, name string) string {
 	v, _ := g.Get().(string)
 	return v
 }
+
+// consumePositionals drains fs.Args() after the framework's initial parse.
+// Go's flag package stops at the first positional argument, so commands
+// that interleave positionals with flags (subcommands, file arguments)
+// re-parse the remainder here: each pass takes one positional and re-parses
+// the rest until nothing is left. Returns the positional arguments in
+// order.
+func consumePositionals(fs *flag.FlagSet) ([]string, error) {
+	var positional []string
+	for {
+		rem := fs.Args()
+		if len(rem) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rem[0])
+		if err := fs.Parse(rem[1:]); err != nil {
+			// Unknown flags and malformed values are usage errors; surface
+			// them to the command unchanged.
+			return positional, err
+		}
+	}
+}

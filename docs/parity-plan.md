@@ -67,8 +67,13 @@ Matrix rows: 2, 3, 4, 9, 10, 11, 24, 37, 38.
   `coding_agent.*`; interop docs for OpenInference/OpenLLMetry/Langfuse attrs.
 - Read-model upgrade: wide `span_observations` (trace attrs denormalized),
   `ts_bucket` indexes, fingerprint tables, promoted columns.
-- `score.record` event type + read model (numeric/categorical/bool, target
-  trace/span/session, source-tagged) wired into CLI + MCP + UI.
+- `score.recorded` event type + read model (numeric/categorical/bool, target
+  trace/span/session/checkpoint/workstream, source-tagged) wired into
+  CLI + MCP + UI. **Shipped (2026-08-28, event kind `score.recorded`):**
+  `internal/scores` deterministic materializer + validated payload builder,
+  `score record`/`score list` CLI, MCP `record_score`/`list_scores` (now 11
+  tools). Source-tagged (human/api/evaluation/detection); target prefixes
+  enforced; the UI list view and an llm_judge INFERRED source remain open.
 - Coding-agent outcome analytics read models (edits accepted/rejected, commits,
   PRs, session outcomes) — we already capture the events.
 - Batch import API with backpressure semantics + ingest-side dedup.

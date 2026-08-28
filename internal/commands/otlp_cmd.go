@@ -43,20 +43,9 @@ func RegisterOTLPCmd(app *cli.App) {
 }
 
 func otlpCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
-	// The framework parses flags Go-style, which stops at the first
-	// positional argument. This command mixes positionals (subcommand, file)
-	// with flags in any order, so consume them iteratively: each pass takes
-	// one positional and re-parses the remainder until nothing is left.
-	var positional []string
-	for {
-		rem := fs.Args()
-		if len(rem) == 0 {
-			break
-		}
-		positional = append(positional, rem[0])
-		if err := fs.Parse(rem[1:]); err != nil {
-			return err
-		}
+	positional, err := consumePositionals(fs)
+	if err != nil {
+		return err
 	}
 	if len(positional) < 1 {
 		return fmt.Errorf("usage: otlp import <file> | otlp serve [--addr <addr>]")

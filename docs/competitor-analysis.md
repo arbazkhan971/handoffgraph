@@ -120,7 +120,7 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 ### 3.4 Evals & quality
 | # | Feature | Provenance | Target | Phase |
 |---|---|---|---|---|
-| 24 | Universal **scores** primitive (numeric/categorical/bool; attach to trace/span/session; source-tagged) | Langfuse, Phoenix | L + C | P1 |
+| 24 | Universal **scores** primitive (numeric/categorical/bool; attach to trace/span/session; source-tagged) — **local ✅ (CLI + MCP, 2026-08-28)** | Langfuse, Phoenix | L + C | P1 ✅L / C P3 |
 | 25 | Deterministic code evaluators (no-LLM checks, verdicts as evidence) | Phoenix, DeepEval | L | P2 |
 | 26 | CI regression gate: pinned baseline, cached results, exit-code semantics (`handoffgraph verify`) | DeepEval `--official`, Phoenix pytest | L | P2 |
 | 27 | Versioned datasets (hash-pinned) × experiments + run comparison UI | Langfuse, Phoenix, Opik | L + C | P2–P3 |
