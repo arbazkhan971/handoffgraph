@@ -37,6 +37,7 @@ func RegisterOTLPCmd(app *cli.App) {
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("addr", "127.0.0.1:4318", "serve: listen address (localhost by default)")
 			fs.String("workstream", "", "attach imported events to this workstream id")
+			fs.String("capture", "full", "capture tier: full | metadata (drop prompt/completion bodies) | minimal (no attribute values)")
 		},
 		Run: otlpCmd,
 	})
@@ -65,13 +66,17 @@ func otlpCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 
 // convertAndAppend runs the OTLP conversion and appends the resulting events
 // idempotently, printing a summary. It is the shared core of import/serve.
-func convertAndAppend(ctx context.Context, c *cli.Context, db *storage.DB, data []byte, workstream string) error {
+func convertAndAppend(ctx context.Context, c *cli.Context, db *storage.DB, data []byte, workstream, tier string) error {
+	parsedTier, err := otlp.ParseCaptureTier(tier)
+	if err != nil {
+		return err
+	}
 	var req otlp.ExportRequest
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&req); err != nil {
 		return fmt.Errorf("invalid OTLP/JSON: %w", err)
 	}
-	res, err := otlp.Convert(&req, otlp.Options{WorkstreamID: workstream, ObservedAt: time.Now().UTC()})
+	res, err := otlp.Convert(&req, otlp.Options{WorkstreamID: workstream, ObservedAt: time.Now().UTC(), CaptureTier: parsedTier})
 	if err != nil {
 		return err
 	}
@@ -104,7 +109,7 @@ func otlpImportCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet, path s
 	if err != nil {
 		return err
 	}
-	return convertAndAppend(ctx, c, db, data, stringFlag(fs, "workstream"))
+	return convertAndAppend(ctx, c, db, data, stringFlag(fs, "workstream"), stringFlag(fs, "capture"))
 }
 
 func otlpServeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
@@ -116,11 +121,16 @@ func otlpServeCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 
 	addr := stringFlag(fs, "addr")
 	workstream := stringFlag(fs, "workstream")
+	tier, err := otlp.ParseCaptureTier(stringFlag(fs, "capture"))
+	if err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Addr: addr,
 		Handler: &otlp.Handler{
 			Append:       db.AppendEvent,
 			WorkstreamID: workstream,
+			CaptureTier:  tier,
 		},
 		// Local ingest only: never an internet-facing service.
 		ReadHeaderTimeout: 10 * time.Second,

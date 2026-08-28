@@ -61,8 +61,11 @@ Matrix rows: 2, 3, 4, 9, 10, 11, 24, 37, 38.
   **Shipped (2026-08-28): OTLP/JSON flavor** — `otlp import` + localhost
   `otlp serve`, GenAI/OpenInference/OpenLIT/Langfuse attribute mapping,
   deterministic ids with idempotent replay, fail-closed sanitizer,
-  `partialSuccess` reporting (`docs/otlp.md`). Remaining: protobuf + gRPC
-  flavors, capture tiers.
+  `partialSuccess` reporting (`docs/otlp.md`). **Capture tiers shipped
+  (2026-08-28):** `--capture full|metadata|minimal` gates attribute content
+  at emit (body prefixes dropped+counted under metadata; key manifest only
+  under minimal) — OpenLIT's tier concept with fail-closed semantics.
+  Remaining: protobuf + gRPC flavors.
 - `handoffgraph.*` attribute namespace mapped over `gen_ai.*` /
   `coding_agent.*`; interop docs for OpenInference/OpenLLMetry/Langfuse attrs.
 - Read-model upgrade: wide `span_observations` (trace attrs denormalized),

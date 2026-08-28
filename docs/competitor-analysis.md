@@ -115,7 +115,7 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 | 20 | Local MCP stdio server; UI calls the same tools agents call | Langfuse (pattern), ours | L | ✅ → extend P2 |
 | 21 | Remote/hosted MCP server over the same tool layer | Langfuse, SigNoz, Opik, OpenObserve | C | P2 |
 | 22 | Embedded debugger UI (trace tree, waterfall, detections) | ours | L | ✅ → extend P2–P3 |
-| 23 | Fail-closed redaction + capture tiers (minimal/metadata/full) enforced at emit | ours (stricter than OpenLIT's best-effort tiers) | L | ✅ → tiers P2 |
+| 23 | Fail-closed redaction + capture tiers (minimal/metadata/full) enforced at emit — **tiers ✅ (2026-08-28)** | ours (stricter than OpenLIT's best-effort tiers) | L | ✅ |
 
 ### 3.4 Evals & quality
 | # | Feature | Provenance | Target | Phase |

@@ -64,7 +64,7 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | CLI framework + subcommands (flag helpers, JSONL redact preview) | `internal/cli`, `internal/commands` | ✅ tested |
 | Codex CLI wiring (`install`, `sessions`, `resume`; resume prints the shell-quoted `codex resume <id>` invocation) | `internal/commands` | ✅ tested |
 | Cross-agent continuation (bounded payload, drift, append-only status + MCP acknowledgement) | `internal/launch`, `internal/commands`, `internal/mcp` | ✅ tested |
-| OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending) |
+| OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending; capture tiers shipped) |
 | Scores primitive — `score record`/`list` + MCP `record_score`/`list_scores` (NUMERIC/CATEGORY/BOOLEAN on trace/span/session/checkpoint/workstream, source-tagged, deterministic derived read model, prefix-validated targets) | `internal/scores`, `internal/protocol`, `internal/commands`, `internal/mcp` | ✅ tested |
 | Wide observations read model — `index rebuild` + `query spans` (denormalized trace attrs on every row, 5-minute ts_bucket prune + exact time predicates, identity fingerprints, stale auto-rebuild; Langfuse-V4/SigNoz patterns re-implemented ideas-only) | `internal/observations`, `internal/storage`, `internal/commands` | ✅ tested (migration 9) |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
@@ -100,9 +100,10 @@ detect        run deterministic detections over materialized traces
 index         rebuild the derived wide observation index
 query         spans [--workstream|--trace|--session|--agent|--kind|--failed|--from|--to]
               ts_bucket-pruned queries over the wide read model (auto-rebuilds)
-otlp          import <file> | serve [--addr 127.0.0.1:4318]
+otlp          import <file> | serve [--addr 127.0.0.1:4318] [--capture tier]
               ingest OTLP/JSON telemetry into the event spine (idempotent;
-              serve listens on localhost only)
+              capture tiers full/metadata/minimal gate attribute content at
+              emit, fail-closed; serve listens on localhost only)
 mcp           serve  run the local eleven-tool MCP stdio server
 score         record ... | list ...
               record/list source-tagged quality scores (NUMERIC/CATEGORY/

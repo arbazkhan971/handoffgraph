@@ -14,11 +14,23 @@ SDK — can feed the spine without a HandoffGraph SDK.
 
 ```bash
 # One-shot import of an OTLP/JSON request body
-handoffgraph otlp import ./export.json [--workstream ws_...]
+handoffgraph otlp import ./export.json [--workstream ws_...] [--capture tier]
 
 # Local ingest listener (localhost by default; never expose it)
-handoffgraph otlp serve --addr 127.0.0.1:4318
+handoffgraph otlp serve --addr 127.0.0.1:4318 [--capture tier]
 ```
+
+Capture tiers (`--capture`, default `full` — local-first):
+
+| Tier | What lands in `payload.attributes` |
+|---|---|
+| `full` | everything (still sanitized; reserved keys dropped+counted) |
+| `metadata` | structural attrs (model, usage, tool names, session, kinds); prompt/completion/retrieval body prefixes dropped + counted (`capture_dropped_keys`, `capture_tier` on the payload) |
+| `minimal` | no attribute values at all; sorted `attribute_keys` manifest preserves structure without content |
+
+Tier drops are recorded on the payload — never silent. The hosted tier
+will default to `metadata`; the local default stays `full` because
+content never leaves the machine unasked.
 
 Endpoints:
 

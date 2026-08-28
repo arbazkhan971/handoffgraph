@@ -34,6 +34,8 @@ type Handler struct {
 	WorkstreamID string
 	// ObservedAt overrides the capture timestamp (tests); zero means now.
 	ObservedAt func() time.Time
+	// CaptureTier gates attribute content at emit time. Empty = full.
+	CaptureTier CaptureTier
 }
 
 // exportResponse is the ExportTraceServiceResponse body.
@@ -97,7 +99,7 @@ func (h *Handler) serveTraces(w http.ResponseWriter, r *http.Request) {
 	if h.ObservedAt != nil {
 		observedAt = h.ObservedAt()
 	}
-	result, err := Convert(&req, Options{WorkstreamID: h.WorkstreamID, ObservedAt: observedAt})
+	result, err := Convert(&req, Options{WorkstreamID: h.WorkstreamID, ObservedAt: observedAt, CaptureTier: h.CaptureTier})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

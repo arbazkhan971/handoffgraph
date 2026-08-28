@@ -23,6 +23,10 @@ type Options struct {
 	// It never participates in identifier derivation, so re-import is
 	// idempotent regardless of when it runs.
 	ObservedAt time.Time
+	// CaptureTier gates attribute content at emit time (minimal/metadata/
+	// full). Empty means full. Tier drops are counted on the payload, never
+	// silent.
+	CaptureTier CaptureTier
 }
 
 // SpanError reports one rejected span. The rest of the batch still converts.
@@ -67,6 +71,10 @@ func Convert(req *ExportRequest, opts Options) (*Result, error) {
 	observedAt := opts.ObservedAt
 	if observedAt.IsZero() {
 		observedAt = time.Now().UTC()
+	}
+	tier := opts.CaptureTier
+	if tier == "" {
+		tier = CaptureFull
 	}
 
 	res := &Result{}
@@ -179,6 +187,7 @@ func Convert(req *ExportRequest, opts Options) (*Result, error) {
 						spanAttrs[k] = v
 					}
 				}
+				tierAttrs, tierDropped, keyManifest := applyTier(spanAttrs, tier)
 
 				traceHex := strings.ToLower(sp.TraceID)
 				spanHex := strings.ToLower(sp.SpanID)
@@ -272,8 +281,15 @@ func Convert(req *ExportRequest, opts Options) (*Result, error) {
 					endKind = protocol.EventSpanFailed
 					endPayload["error"] = sp.Status.errorString()
 				}
-				if len(spanAttrs) > 0 {
-					endPayload["attributes"] = spanAttrs
+				if len(tierAttrs) > 0 {
+					endPayload["attributes"] = tierAttrs
+				}
+				if keyManifest != nil {
+					endPayload["attribute_keys"] = keyManifest
+				}
+				if tierDropped > 0 {
+					endPayload["capture_dropped_keys"] = tierDropped
+					endPayload["capture_tier"] = string(tier)
 				}
 				emit(endEvt, endNS, sesID, sessionKey, endKind, endPayload, model, serviceName, nil)
 			}
