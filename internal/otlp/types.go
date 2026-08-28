@@ -285,14 +285,24 @@ func (a *AnyValue) decodeNested(data []byte) error {
 		return nil
 	}
 	if raw, ok := one("arrayValue"); ok {
+		// The OTLP proto names ArrayValue's repeated field "values", which is
+		// what proto3-JSON emitters (and the protobuf decoder in proto.go)
+		// produce. Earlier builds of this decoder read "elements" instead, so
+		// both spellings are accepted; "values" wins when a payload carries
+		// both, since that is the spec-defined field.
 		var arr struct {
+			Values   []AnyValue `json:"values"`
 			Elements []AnyValue `json:"elements"`
 		}
 		if err := json.Unmarshal(raw, &arr); err != nil {
 			return err
 		}
-		out := make([]any, 0, len(arr.Elements))
-		for _, e := range arr.Elements {
+		items := arr.Values
+		if items == nil {
+			items = arr.Elements
+		}
+		out := make([]any, 0, len(items))
+		for _, e := range items {
 			out = append(out, e.Value())
 		}
 		a.v = out

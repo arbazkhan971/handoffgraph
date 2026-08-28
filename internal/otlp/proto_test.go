@@ -30,6 +30,11 @@ type pbAttr struct {
 	str   string
 	i64   int64
 	isInt bool
+	// anyValue, when non-nil, is a pre-encoded common.v1.AnyValue body used
+	// verbatim instead of the string/int arms above. It is how the
+	// array-attribute fixture (arrayvalue_test.go) encodes ArrayValue without
+	// teaching this struct every arm of the oneof.
+	anyValue []byte
 }
 
 type pbSpan struct {
@@ -101,9 +106,12 @@ func genaiSessionFixture() pbFixture {
 // encode renders common.v1.KeyValue.
 func (a pbAttr) encode() []byte {
 	var av []byte
-	if a.isInt {
+	switch {
+	case a.anyValue != nil:
+		av = a.anyValue
+	case a.isInt:
 		av = protoAppendVarintField(av, 3, uint64(a.i64)) // AnyValue.int_value
-	} else {
+	default:
 		av = protoAppendString(av, 1, a.str) // AnyValue.string_value
 	}
 	var kv []byte

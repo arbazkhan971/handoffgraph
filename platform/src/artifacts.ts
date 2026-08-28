@@ -23,7 +23,7 @@
 
 import { monotonicFactory } from "ulid";
 
-import { authenticate, hasCapability, sha256Hex, type DeviceBinding, type DeviceLookup } from "./auth";
+import { authenticate, deviceLookup, hasCapability, sha256Hex, type DeviceBinding } from "./auth";
 import type { D1DatabaseLike } from "./db";
 import {
   WORKSTREAM_ID_PATTERN,
@@ -127,12 +127,6 @@ function json(status: number, body: unknown): Response {
 }
 
 // -- SQL ---------------------------------------------------------------------
-
-const DEVICE_BY_TOKEN_SQL = `
-  /* artifacts:device-by-token */
-  SELECT id, workspace_id, token_hash, capabilities, revoked_at
-  FROM devices
-  WHERE token_hash = ?1`;
 
 const COMPACTION_CANDIDATES_SQL = `
   /* artifacts:compaction-candidates */
@@ -904,36 +898,6 @@ function exportSummary(row: ExportRow): Record<string, unknown> {
 }
 
 // -- device auth --------------------------------------------------------------
-
-interface DeviceRecord {
-  id: string;
-  workspace_id: string;
-  token_hash: string;
-  capabilities: string | null;
-  revoked_at: number | null;
-}
-
-function deviceLookup(db: D1DatabaseLike): DeviceLookup {
-  return {
-    async byTokenHash(hash) {
-      const record = await db.prepare(DEVICE_BY_TOKEN_SQL).bind(hash).first<DeviceRecord>();
-      if (record === null) return null;
-      return {
-        deviceId: record.id,
-        workspaceId: record.workspace_id,
-        tokenHash: record.token_hash,
-        capabilities:
-          record.capabilities === null
-            ? []
-            : record.capabilities
-                .split(",")
-                .map((capability) => capability.trim())
-                .filter((capability) => capability.length > 0),
-        revokedAt: record.revoked_at,
-      };
-    },
-  };
-}
 
 /**
  * Every route here is device-plane and gated on 'read'.

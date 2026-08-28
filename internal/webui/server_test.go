@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/handoffgraph/handoffgraph/internal/buildinfo"
 	"github.com/handoffgraph/handoffgraph/internal/datasets"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
 	"github.com/handoffgraph/handoffgraph/internal/prompts"
@@ -1171,6 +1172,49 @@ func TestEvalSurfacesEmptyStore(t *testing.T) {
 }
 
 // ---- methods, unknown API routes, headers ----
+
+// ---- /api/version ----
+
+func TestVersionReportsTheRunningBuild(t *testing.T) {
+	_, h := newAPIServer[*dataset](t, nil)
+	rec := get(t, h, http.MethodGet, "/api/version")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("cache-control = %q, want no-store", cc)
+	}
+
+	var out versionOut
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The handler must report the binary's own version, never a constant of
+	// its own: under `go test` that is buildinfo's development marker.
+	if out.Version != buildinfo.Version() {
+		t.Fatalf("version = %q, want %q (buildinfo.Version())", out.Version, buildinfo.Version())
+	}
+	if out.Version == "" {
+		t.Fatal("version is empty")
+	}
+}
+
+func TestVersionNeedsNoDatabaseAndRejectsOtherMethods(t *testing.T) {
+	_, h := newAPIServer[*dataset](t, nil)
+	// Answers on an empty store: a UI that cannot load data can still name the
+	// build it is talking to.
+	if rec := get(t, h, http.MethodGet, "/api/version"); rec.Code != http.StatusOK {
+		t.Fatalf("empty-store status = %d, want 200", rec.Code)
+	}
+	for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
+		if rec := get(t, h, method, "/api/version"); rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s status = %d, want 405", method, rec.Code)
+		}
+	}
+}
 
 func TestAPIMethodsAndUnknownRoutes(t *testing.T) {
 	_, h := newAPIServer(t, seedDataset)

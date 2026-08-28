@@ -299,6 +299,55 @@ describe("cross-flavor, cross-language id parity", () => {
   });
 });
 
+// ---- arrayValue fixture: the cross-flavor regression ------------------------
+//
+// ArrayValue's repeated field is `values` in the proto, so protobuf always
+// decoded it correctly while the JSON converter did not understand the spec
+// wrapper at all — the same telemetry diverged by wire flavor. This pair of
+// fixtures is the Go-authored statement of that case
+// (internal/otlp/arrayvalue_test.go pins the identical claim), read from disk
+// here so the two languages judge the same bytes.
+
+const ARRAY_PB_FIXTURE = new Uint8Array(readFileSync(join(FIXTURE_DIR, "array_values.pb")));
+const ARRAY_JSON_FIXTURE = JSON.parse(
+  readFileSync(join(FIXTURE_DIR, "array_values.json"), "utf8"),
+) as unknown;
+
+function completedAttributes(events: ReadonlyArray<Record<string, unknown>>): Record<string, unknown> {
+  const done = events.find((e) => e["kind"] === "span.completed");
+  const payload = (done as { payload?: Record<string, unknown> } | undefined)?.["payload"];
+  return (payload?.["attributes"] ?? {}) as Record<string, unknown>;
+}
+
+describe("arrayValue cross-flavor parity", () => {
+  it("decodes the .pb into the very object graph the .json parses to", () => {
+    expect(decodeExportRequest(ARRAY_PB_FIXTURE)).toEqual(ARRAY_JSON_FIXTURE);
+  });
+
+  it("carries arrayValue attributes through conversion identically in both flavors", async () => {
+    const fromProto = await convertOtlpExport(decodeExportRequest(ARRAY_PB_FIXTURE), CONVERT);
+    const fromJson = await convertOtlpExport(ARRAY_JSON_FIXTURE, CONVERT);
+
+    expect(fromProto.rejectedSpans).toEqual([]);
+    expect(fromJson.rejectedSpans).toEqual([]);
+    expect(fromProto.events.length).toBeGreaterThan(0);
+
+    // The arrays themselves: real lists, not an undecoded {arrayValue: …}
+    // wrapper and not an empty list.
+    const attributes = completedAttributes(fromJson.events);
+    expect(attributes["tool.files"]).toEqual(["cmd/main.go", "internal/otlp/types.go"]);
+    expect(attributes["tool.exit_codes"]).toEqual([0, 2]);
+    expect(attributes["tool.matrix"]).toEqual([["unit", "race"]]);
+
+    // And the flavors agree on every byte of every event, ids included.
+    expect(fromProto.events.map((e) => e["event_id"])).toEqual(
+      fromJson.events.map((e) => e["event_id"]),
+    );
+    expect(fromProto.events).toEqual(fromJson.events);
+    expect(completedAttributes(fromProto.events)).toEqual(attributes);
+  });
+});
+
 // ---- decoder behavior -------------------------------------------------------
 
 describe("decodeExportRequest wire rules", () => {

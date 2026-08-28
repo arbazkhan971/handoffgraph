@@ -16,8 +16,21 @@ import type {
   Score,
   Span,
   Trace,
+  VersionInfo,
   Workstream,
 } from './types'
+
+/**
+ * The version shown when no Go binary is answering /api/version — `npm run
+ * dev`, or the built bundle opened without the server. It is the ONE literal
+ * for that case: App.tsx's footer fallback reads it from here rather than
+ * carrying a second copy that could drift.
+ */
+export const MOCK_VERSION = 'v0.7.0-beta.1'
+
+export function mockVersion(): VersionInfo {
+  return { version: MOCK_VERSION }
+}
 
 // Fixed reference: 2026-08-21T12:00:00Z in ns.
 const BASE_NS = Date.UTC(2026, 7, 21, 12, 0, 0) * 1_000_000

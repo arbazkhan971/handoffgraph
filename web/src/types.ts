@@ -240,5 +240,10 @@ export interface Envelope<T> {
   next_cursor: string
 }
 
+/** GET /api/version — the build version of the binary serving this UI. */
+export interface VersionInfo {
+  version: string
+}
+
 /** Where the data shown in a view came from. */
 export type DataSource = 'live' | 'mock'

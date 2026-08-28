@@ -8,9 +8,11 @@ import {
   fetchScores,
   fetchTraceDetail,
   fetchTraces,
+  fetchVersion,
   fetchWorkstreams,
 } from './api'
 import {
+  MOCK_VERSION,
   mockDatasets,
   mockExperimentCompare,
   mockExperiments,
@@ -20,6 +22,7 @@ import {
   mockSpans,
   mockTrace,
   mockTraces,
+  mockVersion,
   mockWorkstreams,
 } from './mocks'
 
@@ -202,5 +205,50 @@ describe('evaluation-surface API client', () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'read failed' }, 500)))
     await expect(fetchPromptBody('triage')).rejects.toThrow('HTTP 500')
     await expect(fetchScores()).rejects.toThrow('/api/scores: HTTP 500')
+  })
+})
+
+describe('fetchVersion', () => {
+  it('reports the version the binary serves', async () => {
+    const fetchMock = vi.fn(async () => json({ version: 'v1.2.3' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchVersion()).resolves.toEqual({ data: { version: 'v1.2.3' }, source: 'live' })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/version',
+      expect.objectContaining({ headers: { Accept: 'application/json' } }),
+    )
+  })
+
+  it('reports the development build as the binary spells it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ version: 'dev' })))
+    await expect(fetchVersion()).resolves.toEqual({ data: { version: 'dev' }, source: 'live' })
+  })
+
+  it('falls back to the bundled version when no server answers', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed')
+      }),
+    )
+    await expect(fetchVersion()).resolves.toEqual({ data: mockVersion(), source: 'mock' })
+  })
+
+  it('falls back rather than erroring on a server failure — the footer is cosmetic', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'boom' }, 500)))
+    await expect(fetchVersion()).resolves.toEqual({ data: mockVersion(), source: 'mock' })
+  })
+
+  it('falls back on a malformed or empty version payload', async () => {
+    for (const body of [{}, { version: '' }, { version: 42 }, null]) {
+      vi.stubGlobal('fetch', vi.fn(async () => json(body)))
+      await expect(fetchVersion()).resolves.toEqual({ data: mockVersion(), source: 'mock' })
+    }
+  })
+
+  it('uses the same fallback literal the footer shows in dev', () => {
+    expect(mockVersion()).toEqual({ version: MOCK_VERSION })
+    expect(MOCK_VERSION).toMatch(/^v\d+\.\d+\.\d+/)
   })
 })

@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/handoffgraph/handoffgraph/internal/buildinfo"
 	"github.com/handoffgraph/handoffgraph/internal/datasets"
 	"github.com/handoffgraph/handoffgraph/internal/prompts"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
@@ -91,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/experiments/compare", s.handleExperimentCompare)
 	mux.HandleFunc("GET /api/prompts", s.handlePrompts)
 	mux.HandleFunc("GET /api/prompts/show", s.handlePromptShow)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.Handle("/", http.HandlerFunc(s.handleStatic))
 	return withSecurityHeaders(mux)
 }
@@ -185,6 +187,21 @@ func (s *Server) materialize(ctx context.Context) (*trace.MaterializeResult, err
 		return nil, err
 	}
 	return trace.Materialize(events), nil
+}
+
+// ---- /api/version ----
+
+// versionOut is the whole payload: the binary's build version, so the UI shows
+// what is actually serving it instead of a constant compiled into the bundle.
+type versionOut struct {
+	Version string `json:"version"`
+}
+
+// handleVersion reports the running binary's version. It touches no database,
+// so it answers even when the event store is unreadable — a UI that cannot
+// load data can still say which build it is talking to.
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, versionOut{Version: buildinfo.Version()})
 }
 
 // ---- /api/workstreams ----

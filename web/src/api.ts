@@ -16,6 +16,7 @@ import type {
   Score,
   Span,
   Trace,
+  VersionInfo,
   Workstream,
 } from './types'
 import {
@@ -28,6 +29,7 @@ import {
   mockSpans,
   mockTrace,
   mockTraces,
+  mockVersion,
   mockWorkstreams,
 } from './mocks'
 
@@ -117,6 +119,28 @@ function withQuery(path: string, params: Record<string, string | undefined>): st
   }
   const encoded = query.toString()
   return encoded ? `${path}?${encoded}` : path
+}
+
+/**
+ * The version of the binary serving this UI. Unlike every other call here, a
+ * server error is not worth surfacing: the footer falls back to the bundled
+ * version rather than turning a cosmetic label into an error state, so any
+ * failure — unreachable, timeout, or a 5xx — resolves as `source: 'mock'`.
+ */
+export async function fetchVersion(): Promise<Loaded<VersionInfo>> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), FALLBACK_TIMEOUT_MS)
+  try {
+    const data = await getJSON<VersionInfo>('/api/version', ctrl.signal)
+    if (typeof data?.version !== 'string' || data.version === '') {
+      return { data: mockVersion(), source: 'mock' }
+    }
+    return { data, source: 'live' }
+  } catch {
+    return { data: mockVersion(), source: 'mock' }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export function fetchWorkstreams(): Promise<Loaded<Workstream[]>> {

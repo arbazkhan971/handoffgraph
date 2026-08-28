@@ -5,6 +5,8 @@
 // is never stored. The workspace binding is derived exclusively from the
 // device row — values in a request body can never influence it.
 
+import type { D1DatabaseLike } from "./db";
+
 export interface DeviceBinding {
   /** Device id (`dev_<ulid>`). */
   deviceId: string;
@@ -21,6 +23,56 @@ export interface DeviceBinding {
 /** Persistence seam for device lookup — D1 in production, plain objects in tests. */
 export interface DeviceLookup {
   byTokenHash(hash: string): Promise<DeviceBinding | null>;
+}
+
+/** One row of the `devices` table, as the lookup query selects it. */
+interface DeviceRecord {
+  id: string;
+  workspace_id: string;
+  token_hash: string;
+  capabilities: string | null;
+  revoked_at: number | null;
+}
+
+/**
+ * The canonical device-lookup query. The `auth:device-by-token` marker is the
+ * dispatch key test fakes may match on; the `FROM devices` clause is what the
+ * existing fakes across the suite already key on, and both are load-bearing —
+ * do not reword either.
+ */
+const DEVICE_BY_TOKEN_SQL = `
+  /* auth:device-by-token */
+  SELECT id, workspace_id, token_hash, capabilities, revoked_at
+  FROM devices
+  WHERE token_hash = ?1`;
+
+/**
+ * The one D1-backed DeviceLookup. Every route module that authenticates a
+ * device bearer token uses this adapter rather than repeating the query:
+ * one place decides how a stored row becomes a DeviceBinding, so the
+ * capabilities split and the revoked_at contract cannot drift per module.
+ */
+export function deviceLookup(db: D1DatabaseLike): DeviceLookup {
+  return {
+    async byTokenHash(hash) {
+      const record = await db.prepare(DEVICE_BY_TOKEN_SQL).bind(hash).first<DeviceRecord>();
+      if (record === null) return null;
+      const binding: DeviceBinding = {
+        deviceId: record.id,
+        workspaceId: record.workspace_id,
+        tokenHash: record.token_hash,
+        capabilities:
+          record.capabilities === null
+            ? []
+            : record.capabilities
+                .split(",")
+                .map((capability) => capability.trim())
+                .filter((capability) => capability.length > 0),
+        revokedAt: record.revoked_at,
+      };
+      return binding;
+    },
+  };
 }
 
 export type AuthResult =

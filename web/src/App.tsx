@@ -8,6 +8,8 @@
 //   #/prompts                versioned prompt store
 
 import { useEffect, useState, type ReactNode } from 'react'
+import { fetchVersion } from './api'
+import { MOCK_VERSION } from './mocks'
 import { WorkstreamsView } from './views/WorkstreamsView'
 import { TracesView } from './views/TracesView'
 import { TraceDetailView } from './views/TraceDetailView'
@@ -17,8 +19,28 @@ import { PromptsView } from './views/PromptsView'
 import { EmptyView } from './components/StateViews'
 import type { Trace, Workstream } from './types'
 
-/** Single source of truth for the version shown in the footer. */
-const VERSION = 'v0.7.0-beta.1'
+/**
+ * Footer fallback: the version shown when no Go binary is answering
+ * /api/version (`npm run dev`, or a bundle opened straight from disk). When
+ * the binary IS serving the UI, the footer shows the build it reports instead,
+ * so the label can never claim a version the running binary is not.
+ */
+const VERSION = MOCK_VERSION
+
+/** Reads the served binary's version once on mount; falls back to VERSION. */
+function useVersion(): string {
+  const [version, setVersion] = useState(VERSION)
+  useEffect(() => {
+    let live = true
+    void fetchVersion().then(({ data, source }) => {
+      if (live && source === 'live') setVersion(data.version)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return version
+}
 
 /** Top-level destinations, in header order. */
 const NAV: { path: string; label: string }[] = [
@@ -49,6 +71,7 @@ const navigate = (to: string): void => {
 
 export default function App() {
   const { path, query } = useHashPath()
+  const version = useVersion()
 
   let view: ReactNode
   let crumb: string
@@ -127,7 +150,7 @@ export default function App() {
       </header>
       <main className="app-main">{view}</main>
       <footer className="app-footer">
-        <span>local session debugger · localhost only · {VERSION}</span>
+        <span>local session debugger · localhost only · {version}</span>
         <span>evidence: OBSERVED / DECLARED / INFERRED</span>
       </footer>
     </div>

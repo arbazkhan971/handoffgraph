@@ -26,10 +26,9 @@
 
 import {
   authenticate,
+  deviceLookup,
   hasCapability,
   sha256Hex,
-  type DeviceBinding,
-  type DeviceLookup,
 } from "./auth";
 import {
   authenticateAccountSession,
@@ -369,44 +368,6 @@ async function handleAccountPage(request: Request, env: AccountEnv): Promise<Res
       "x-frame-options": "DENY",
     },
   });
-}
-
-// -- device lookup -----------------------------------------------------------
-
-interface DeviceRecord {
-  id: string;
-  workspace_id: string;
-  token_hash: string;
-  capabilities: string | null;
-  revoked_at: number | null;
-}
-
-const DEVICE_BY_TOKEN_SQL = `
-  SELECT id, workspace_id, token_hash, capabilities, revoked_at
-  FROM devices
-  WHERE token_hash = ?1`;
-
-function deviceLookup(db: D1DatabaseLike): DeviceLookup {
-  return {
-    async byTokenHash(hash) {
-      const record = await db.prepare(DEVICE_BY_TOKEN_SQL).bind(hash).first<DeviceRecord>();
-      if (record === null) return null;
-      const binding: DeviceBinding = {
-        deviceId: record.id,
-        workspaceId: record.workspace_id,
-        tokenHash: record.token_hash,
-        capabilities:
-          record.capabilities === null
-            ? []
-            : record.capabilities
-                .split(",")
-                .map((capability) => capability.trim())
-                .filter((capability) => capability.length > 0),
-        revokedAt: record.revoked_at,
-      };
-      return binding;
-    },
-  };
 }
 
 // -- POST /v1/otlp -------------------------------------------------------------

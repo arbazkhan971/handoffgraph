@@ -35,6 +35,7 @@ import {
   scopeDenial,
   type Validation,
 } from "./ingest";
+import { validateOutboundURL } from "./urlguard";
 import { monotonicFactory } from "ulid";
 
 // -- ids -----------------------------------------------------------------------
@@ -621,6 +622,26 @@ export function validateChannels(value: unknown): Validation<AlertChannel[]> {
 }
 
 /**
+ * Registration-time SSRF screen over a validated channel set (src/urlguard.ts).
+ * Returns the first unsafe destination's reason, or null when every URL-bearing
+ * channel is acceptable.
+ *
+ * Deliberately NOT folded into validateChannels: that validator also re-reads
+ * stored rows (parseChannels), and a guard that tightens over time must not
+ * silently mute channels a workspace registered under the older rules. New
+ * registrations are refused; existing rows keep dispatching until an operator
+ * re-registers them.
+ */
+export function unsafeChannelReason(channels: readonly AlertChannel[]): string | null {
+  for (const channel of channels) {
+    if (channel.type === "email") continue;
+    const verdict = validateOutboundURL(channelTarget(channel));
+    if (!verdict.ok) return verdict.reason;
+  }
+  return null;
+}
+
+/**
  * Read a stored channel array back through the SAME validator that wrote it,
  * so a row can never dispatch to a destination the API would have rejected.
  * A row that fails to re-validate (only reachable by writing D1 directly)
@@ -838,6 +859,8 @@ async function createAlertRule(request: Request, env: AlertsEnv): Promise<Respon
 
   const channels = validateChannels(body.channels);
   if (!channels.ok) return json(channels.status, { error: channels.error });
+  const unsafeReason = unsafeChannelReason(channels.value);
+  if (unsafeReason !== null) return json(400, { error: "unsafe_url", reason: unsafeReason });
 
   const id = newAlertRuleID();
   const createdAt = Math.floor(Date.now() / 1000);

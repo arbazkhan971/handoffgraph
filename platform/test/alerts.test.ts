@@ -1011,6 +1011,48 @@ describe("POST /v1/alerts", () => {
     expect(await response!.json()).toEqual({ error: "webhook channel url must be an https:// URL" });
   });
 
+  it("rejects an unsafe channel URL with 400 unsafe_url and the tripped rule", async () => {
+    // Registration-time SSRF screen (src/urlguard.ts); full matrix in
+    // test/urlguard.test.ts. Both URL-bearing channel types are screened.
+    const cases: [unknown, string][] = [
+      [
+        { type: "webhook", url: "https://169.254.169.254/latest/meta-data" },
+        "url host is a private, loopback, link-local, or metadata IPv4 address",
+      ],
+      [{ type: "webhook", url: "https://localhost/hook" }, "url host is a loopback hostname"],
+      [
+        { type: "slack", webhook_url: "https://hooks.internal/services/T/B/X" },
+        "url host is in the private .internal name space",
+      ],
+      [{ type: "slack", webhook_url: "https://hooks.slack.example:9000/x" }, "url port must be 443 or 8443"],
+    ];
+    for (const [channel, reason] of cases) {
+      const { db, statements } = mockDb({ first: authedFirst() });
+      const response = await handleAlertsRoute(
+        createRequest({ ...VALID_RULE, channels: [channel] }),
+        { DB: db },
+      );
+      expect(response?.status).toBe(400);
+      expect(await response!.json()).toEqual({ error: "unsafe_url", reason });
+      expect(statements.some((s) => s.sql.includes("alerts:insert-rule"))).toBe(false);
+    }
+  });
+
+  it("still accepts an email channel alongside a safe webhook channel", async () => {
+    const { db } = mockDb({ first: authedFirst() });
+    const response = await handleAlertsRoute(
+      createRequest({
+        ...VALID_RULE,
+        channels: [
+          { type: "email", to: "oncall@example.com" },
+          { type: "webhook", url: "https://example.com/hook" },
+        ],
+      }),
+      { DB: db },
+    );
+    expect(response?.status).toBe(201);
+  });
+
   it("rejects a malformed email channel", async () => {
     const { db } = mockDb({ first: authedFirst() });
     const response = await handleAlertsRoute(

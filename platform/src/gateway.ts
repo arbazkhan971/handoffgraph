@@ -62,6 +62,7 @@ import {
   readRequestBody,
 } from "./ingest";
 import { deterministicID } from "./otlp";
+import { validateOutboundURL } from "./urlguard";
 
 // -- ids -----------------------------------------------------------------------
 
@@ -575,27 +576,21 @@ export async function checkRateLimit(
 
 // -- validation ---------------------------------------------------------------------
 
-const PRIVATE_HOST_PATTERN =
-  /^(?:localhost|127\.|0\.0\.0\.0$|10\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|\[?::1\]?$|metadata\.google\.internal$)/i;
-
 /**
- * Literal-address guard for custom upstreams. This is NOT an SSRF defence:
- * it cannot see through DNS (a hostname resolving to 169.254.169.254 passes)
- * and does not pin redirects. It exists so the obvious mistake is caught, and
- * the real guard is called out as outstanding in docs/gateway.md.
+ * Registration-time guard for custom upstreams, delegating every judgement to
+ * the shared screen in src/urlguard.ts (https only, no userinfo, no private/
+ * loopback/link-local/metadata literals, no localhost/.internal/.local names,
+ * ports 443/8443 only). Returns the base URL with trailing slashes trimmed, or
+ * null when it must not be registered.
+ *
+ * Still NOT a complete SSRF defence: it cannot see through DNS (a hostname
+ * that resolves to 169.254.169.254 only at delivery time passes) and does not
+ * pin redirects. urlguard.ts documents that boundary; the egress-side control
+ * remains outstanding in docs/gateway.md.
  */
 export function validateUpstreamBaseUrl(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.length > 2048) return null;
-  if (!value.startsWith("https://")) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "https:" || parsed.hostname.length === 0) return null;
-  if (parsed.username.length > 0 || parsed.password.length > 0) return null;
-  if (PRIVATE_HOST_PATTERN.test(parsed.hostname)) return null;
+  if (!validateOutboundURL(value).ok) return null;
   return value.replace(/\/+$/, "");
 }
 
@@ -625,9 +620,16 @@ interface CreateKeyInput {
   fallbacks: { base_url: string; api_key: string }[];
 }
 
+/**
+ * Failure shape for validateCreateKeyBody. `reason` is present only for the
+ * SSRF screen, where the caller answers 400 {error: 'unsafe_url', reason} so
+ * the operator learns which rule their base URL tripped.
+ */
+type CreateKeyRejection = { ok: false; error: string; reason?: string };
+
 export function validateCreateKeyBody(
   body: Record<string, unknown>,
-): { ok: true; value: CreateKeyInput } | { ok: false; error: string } {
+): { ok: true; value: CreateKeyInput } | CreateKeyRejection {
   const name = body.name;
   if (typeof name !== "string" || name.length === 0 || name.length > MAX_KEY_NAME_LENGTH) {
     return { ok: false, error: `name must be a string of 1..${MAX_KEY_NAME_LENGTH} characters` };
@@ -663,6 +665,8 @@ export function validateCreateKeyBody(
     return { ok: false, error: "upstream must be an object" };
   }
   const upstreamRecord = upstreamRaw as Record<string, unknown>;
+  const upstreamGuard = validateOutboundURL(upstreamRecord.base_url);
+  if (!upstreamGuard.ok) return { ok: false, error: "unsafe_url", reason: upstreamGuard.reason };
   const baseUrl = validateUpstreamBaseUrl(upstreamRecord.base_url);
   if (baseUrl === null) {
     return { ok: false, error: "upstream.base_url must be a public https:// URL" };
@@ -683,6 +687,8 @@ export function validateCreateKeyBody(
         return { ok: false, error: "each fallback must be an object" };
       }
       const record = item as Record<string, unknown>;
+      const fallbackGuard = validateOutboundURL(record.base_url);
+      if (!fallbackGuard.ok) return { ok: false, error: "unsafe_url", reason: fallbackGuard.reason };
       const fallbackUrl = validateUpstreamBaseUrl(record.base_url);
       if (fallbackUrl === null) {
         return { ok: false, error: "fallbacks[].base_url must be a public https:// URL" };
@@ -746,7 +752,14 @@ async function createGatewayKey(request: Request, env: GatewayEnv): Promise<Resp
   const body = await readSmallJsonBody(request);
   if (body === null) return json(400, { error: "request body must be a JSON object" });
   const validated = validateCreateKeyBody(body);
-  if (!validated.ok) return json(400, { error: validated.error });
+  if (!validated.ok) {
+    return json(
+      400,
+      validated.reason === undefined
+        ? { error: validated.error }
+        : { error: validated.error, reason: validated.reason },
+    );
+  }
   const input = validated.value;
 
   const token = newVirtualKeyToken();

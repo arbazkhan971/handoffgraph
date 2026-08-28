@@ -430,6 +430,48 @@ describe("POST /v1/gateway/keys", () => {
     }
   });
 
+  it("answers 400 unsafe_url with the tripped rule for an unsafe upstream", async () => {
+    // Registration-time SSRF screen (src/urlguard.ts); full matrix in
+    // test/urlguard.test.ts.
+    const cases: [string, string][] = [
+      ["http://api.openai.example/v1", "url must use https"],
+      ["https://169.254.169.254/latest", "url host is a private, loopback, link-local, or metadata IPv4 address"],
+      ["https://[fd00::1]/v1", "url host is a private, loopback, or link-local IPv6 address"],
+      ["https://metadata.google.internal/v1", "url host is in the private .internal name space"],
+      ["https://api.openai.example:8080/v1", "url port must be 443 or 8443"],
+      ["https://user:pass@api.openai.example/v1", "url must not contain userinfo"],
+    ];
+    for (const [baseUrl, reason] of cases) {
+      const { db, statements } = mockDb({ first: authedFirst() });
+      const response = await handleGatewayRoute(
+        createRequest({ ...validBody, upstream: { ...validBody.upstream, base_url: baseUrl } }),
+        makeEnv(db),
+        neverFetch,
+      );
+      expect(response?.status).toBe(400);
+      expect(await response!.json()).toEqual({ error: "unsafe_url", reason });
+      expect(statements.some((s) => s.sql.includes("gateway:insert-key"))).toBe(false);
+    }
+  });
+
+  it("screens fallback base URLs the same way as the primary upstream", async () => {
+    const { db, statements } = mockDb({ first: authedFirst() });
+    const response = await handleGatewayRoute(
+      createRequest({
+        ...validBody,
+        fallbacks: [{ base_url: "https://10.0.0.5/v1", api_key: "sk-fallback" }],
+      }),
+      makeEnv(db),
+      neverFetch,
+    );
+    expect(response?.status).toBe(400);
+    expect(await response!.json()).toEqual({
+      error: "unsafe_url",
+      reason: "url host is a private, loopback, link-local, or metadata IPv4 address",
+    });
+    expect(statements.some((s) => s.sql.includes("gateway:insert-key"))).toBe(false);
+  });
+
   it("rejects a non-decimal budget", async () => {
     const { db } = mockDb({ first: authedFirst() });
     const response = await handleGatewayRoute(

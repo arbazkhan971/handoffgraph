@@ -294,6 +294,86 @@ describe("convertOtlpExport (GenAI semconv v1.37.0 parity)", () => {
   });
 });
 
+// ---- arrayValue spellings (proto3 JSON) --------------------------------------
+//
+// The OTLP proto names ArrayValue's repeated field `values`. This converter
+// historically only understood a bare array body, so a spec-correct emitter's
+// array attribute survived as an undecoded wrapper object instead of a list.
+// internal/otlp/arrayvalue_test.go pins the same three cases in Go.
+
+const ARRAY_SPELLINGS_TRACE = "9f3c1d5b70a24e8ab6c0d1e2f3a4b5c6";
+
+async function convertOneAttribute(value: unknown): Promise<unknown> {
+  const res = await convertOtlpExport(
+    {
+      resourceSpans: [
+        {
+          scopeSpans: [
+            {
+              spans: [
+                {
+                  traceId: ARRAY_SPELLINGS_TRACE,
+                  spanId: "1a2b3c4d5e6f7081",
+                  name: "execute_tool run_tests",
+                  kind: 1,
+                  startTimeUnixNano: "1787918400000000000",
+                  endTimeUnixNano: "1787918402000000000",
+                  attributes: [{ key: "tool.files", value }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    { captureTier: "full", observedAt: "2026-08-28T12:00:00Z" },
+  );
+  expect(res.rejectedSpans).toEqual([]);
+  const done = res.events.find((e) => e["kind"] === "span.completed");
+  const payload = (done as { payload?: Record<string, unknown> })["payload"];
+  return (payload?.["attributes"] as Record<string, unknown>)["tool.files"];
+}
+
+describe("convertOtlpExport (arrayValue spellings)", () => {
+  it("decodes the spec spelling {arrayValue: {values}}", async () => {
+    await expect(
+      convertOneAttribute({
+        arrayValue: { values: [{ stringValue: "cmd/main.go" }, { intValue: "2" }] },
+      }),
+    ).resolves.toEqual(["cmd/main.go", 2]);
+  });
+
+  it("still decodes the legacy {arrayValue: {elements}} spelling", async () => {
+    await expect(
+      convertOneAttribute({ arrayValue: { elements: [{ stringValue: "legacy" }] } }),
+    ).resolves.toEqual(["legacy"]);
+  });
+
+  it("lets values win when a payload carries both spellings", async () => {
+    await expect(
+      convertOneAttribute({
+        arrayValue: { elements: [{ stringValue: "legacy" }], values: [{ stringValue: "spec" }] },
+      }),
+    ).resolves.toEqual(["spec"]);
+  });
+
+  it("keeps accepting a bare array body and recurses into nested arrays", async () => {
+    await expect(convertOneAttribute({ arrayValue: [{ stringValue: "bare" }] })).resolves.toEqual([
+      "bare",
+    ]);
+    await expect(
+      convertOneAttribute({
+        arrayValue: { values: [{ arrayValue: { values: [{ stringValue: "unit" }] } }] },
+      }),
+    ).resolves.toEqual([["unit"]]);
+  });
+
+  it("decodes an empty values list as an empty array", async () => {
+    await expect(convertOneAttribute({ arrayValue: { values: [] } })).resolves.toEqual([]);
+    await expect(convertOneAttribute({ arrayValue: {} })).resolves.toEqual([]);
+  });
+});
+
 // ---- worker route -----------------------------------------------------------
 
 import { default as worker } from "../src/index";

@@ -402,6 +402,32 @@ function rawStrAttr(kvs: unknown, ...keys: string[]): string {
   return "";
 }
 
+/**
+ * Decode one proto3-JSON ArrayValue body.
+ *
+ * The OTLP proto names ArrayValue's repeated field `values`, so a spec-correct
+ * emitter (and src/otlp_proto.ts, which bridges protobuf into these same
+ * shapes) writes {arrayValue: {values: [...]}}. Historic HandoffGraph builds
+ * read `elements` instead, and some emitters copied that, so both spellings
+ * are accepted and `values` wins when a payload carries both. A bare array
+ * body ({arrayValue: [...]}) is the third accepted legacy shape.
+ *
+ * Elements are AnyValue wrappers themselves, so each one recurses.
+ */
+function decodeArrayValue(body: unknown): unknown[] | null {
+  if (Array.isArray(body)) return body.map(decodeAnyValue);
+  if (body === null || typeof body !== "object") return null;
+  const o = body as Record<string, unknown>;
+  // An ArrayValue message with no members is an empty array, matching what
+  // the Go decoder produces for the same bytes — never an undecoded wrapper.
+  const items = Array.isArray(o["values"])
+    ? o["values"]
+    : Array.isArray(o["elements"])
+      ? o["elements"]
+      : [];
+  return items.map(decodeAnyValue);
+}
+
 function decodeAnyValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
   if (typeof v !== "object") return v;
@@ -412,7 +438,10 @@ function decodeAnyValue(v: unknown): unknown {
     return typeof o["intValue"] === "string" ? Number(o["intValue"]) : o["intValue"];
   }
   if (typeof o["doubleValue"] === "number" && Object.keys(o).length === 1) return o["doubleValue"];
-  if (Array.isArray(o["arrayValue"])) return o["arrayValue"];
+  if ("arrayValue" in o) {
+    const decoded = decodeArrayValue(o["arrayValue"]);
+    if (decoded !== null) return decoded;
+  }
   return v;
 }
 

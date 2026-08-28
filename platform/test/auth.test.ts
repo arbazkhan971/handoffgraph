@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   authenticate,
+  deviceLookup,
   extractBearerToken,
   hasCapability,
   sha256Hex,
@@ -10,6 +11,7 @@ import {
   type DeviceBinding,
   type DeviceLookup,
 } from "../src/auth";
+import type { D1BoundStatement, D1DatabaseLike, D1Statement } from "../src/db";
 
 const HEX_64 = "a".repeat(64);
 // Valid 26-char ULID bodies (Crockford base32, no I/L/O/U).
@@ -98,6 +100,97 @@ describe("hasCapability", () => {
     expect(hasCapability(binding(), "ingest")).toBe(true);
     expect(hasCapability(binding(), "admin")).toBe(false);
     expect(hasCapability(binding({ capabilities: [] }), "ingest")).toBe(false);
+  });
+});
+
+// The one D1-backed DeviceLookup, previously copy-pasted into index.ts and
+// artifacts.ts. Its row → binding mapping is what every route's workspace
+// scoping rests on, so it is pinned here rather than only through callers.
+describe("deviceLookup", () => {
+  interface Recorded {
+    sql: string;
+    binds: unknown[];
+  }
+
+  function lookupDb(row: unknown) {
+    const statements: Recorded[] = [];
+    const db: D1DatabaseLike = {
+      prepare(sql: string) {
+        const statement = {
+          sql,
+          binds: [] as unknown[],
+          bind(...values: unknown[]) {
+            statement.binds = values;
+            return statement;
+          },
+          async first<T = unknown>() {
+            return row as T | null;
+          },
+          async all<T = unknown>() {
+            return { results: [] as T[] };
+          },
+          async run() {
+            return { success: true };
+          },
+        };
+        statements.push(statement);
+        return statement as unknown as D1Statement & D1BoundStatement;
+      },
+      async batch() {
+        return [];
+      },
+    };
+    return { db, statements };
+  }
+
+  const row = {
+    id: `dev_${DEV_ULID}`,
+    workspace_id: `wsp_${WSP_ULID}`,
+    token_hash: HEX_64,
+    capabilities: "ingest, read",
+    revoked_at: null,
+  };
+
+  it("queries devices by token hash and maps the row onto a binding", async () => {
+    const { db, statements } = lookupDb(row);
+    const result = await deviceLookup(db).byTokenHash(HEX_64);
+    expect(result).toEqual({
+      deviceId: `dev_${DEV_ULID}`,
+      workspaceId: `wsp_${WSP_ULID}`,
+      tokenHash: HEX_64,
+      // Whitespace around the comma-separated list is trimmed.
+      capabilities: ["ingest", "read"],
+      revokedAt: null,
+    });
+    expect(statements).toHaveLength(1);
+    expect(statements[0].binds).toEqual([HEX_64]);
+    // Both dispatch keys the test fakes across this suite rely on.
+    expect(statements[0].sql).toContain("FROM devices");
+    expect(statements[0].sql).toContain("/* auth:device-by-token */");
+  });
+
+  it("returns null for an unknown token hash", async () => {
+    const { db } = lookupDb(null);
+    await expect(deviceLookup(db).byTokenHash(HEX_64)).resolves.toBeNull();
+  });
+
+  it("maps null and empty capability lists to no capabilities", async () => {
+    for (const capabilities of [null, "", " , "]) {
+      const { db } = lookupDb({ ...row, capabilities });
+      const binding = await deviceLookup(db).byTokenHash(HEX_64);
+      expect(binding?.capabilities).toEqual([]);
+    }
+  });
+
+  it("carries revoked_at through so authenticate can fail closed", async () => {
+    const { db } = lookupDb({ ...row, revoked_at: 1_700_000_000 });
+    const binding = await deviceLookup(db).byTokenHash(HEX_64);
+    expect(binding?.revokedAt).toBe(1_700_000_000);
+    await expect(authenticate("Bearer dev_tok", deviceLookup(db))).resolves.toEqual({
+      ok: false,
+      status: 401,
+      error: "unauthorized",
+    });
   });
 });
 

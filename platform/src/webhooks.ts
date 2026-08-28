@@ -8,7 +8,9 @@
 //   - webhooksScheduled(env): a cron sweep that reads new rows from the
 //     append-only `events` table past each workspace's cursor, matches them
 //     against active endpoints' subscribed kinds, writes queued delivery
-//     rows, and enqueues one message per (endpoint, event) match.
+//     rows, and enqueues one message per (endpoint, event) match. The same
+//     tick then reconciles delivery rows left 'queued' by an earlier tick
+//     that committed rows but died before enqueueing their messages.
 //   - webhooksQueue(batch, env): the Queues consumer. It signs a
 //     content-free event summary with the endpoint's unsealed secret and
 //     POSTs it; non-2xx/throw rethrows so Cloudflare Queues retries, and the
@@ -25,6 +27,7 @@ import {
   parsePagination,
   readRequestBody,
 } from "./ingest";
+import { validateOutboundURL } from "./urlguard";
 import { monotonicFactory } from "ulid";
 
 // -- ids ----------------------------------------------------------------------
@@ -367,6 +370,12 @@ async function createWebhookEndpoint(request: Request, env: WebhooksEnv): Promis
 
   const url = validateWebhookUrl(body.url);
   if (url === null) return json(400, { error: "url must be an https:// URL" });
+
+  // Registration-time SSRF guard (src/urlguard.ts): private/loopback/
+  // link-local/metadata literals, credentialed URLs and odd ports never reach
+  // the delivery path. DNS rebinding is explicitly out of scope there.
+  const guard = validateOutboundURL(url);
+  if (!guard.ok) return json(400, { error: "unsafe_url", reason: guard.reason });
 
   const eventKinds = validateEventKinds(body.event_kinds);
   if (eventKinds === null) {
@@ -714,13 +723,12 @@ async function sweepWorkspace(
     db.prepare(UPSERT_CURSOR_SQL).bind(workspaceId, maxSeq),
   ];
   // Delivery rows and the cursor advance atomically: a message can only be
-  // enqueued for a delivery row that durably exists. The converse gap is a
-  // known, accepted limitation — if queue.send() throws partway through the
-  // loop below, the rows already committed above for not-yet-sent messages
-  // stay 'queued' with no message ever created for them (the cursor has
-  // already moved past their source events, so a later sweep will not
-  // re-see them). A future reconciliation pass over stale 'queued' rows
-  // would close this gap; today's scope stops at commit-then-send.
+  // enqueued for a delivery row that durably exists. The converse gap — if
+  // queue.send() throws partway through the loop below, the rows already
+  // committed above for not-yet-sent messages stay 'queued' with no message
+  // ever created for them, and the cursor has already moved past their source
+  // events — is closed by reconcileStuckDeliveries() on a later tick, not by
+  // re-sweeping the events table.
   await db.batch(statements);
 
   for (const message of messages) {
@@ -728,10 +736,116 @@ async function sweepWorkspace(
   }
 }
 
+// -- reconciliation (stuck 'queued' delivery rows) ---------------------------------
+
+/**
+ * How long a row may sit 'queued' before reconciliation treats it as stranded.
+ * Comfortably longer than one delivery's full Queues retry ladder, so a row
+ * that is merely mid-flight is never re-enqueued underneath the consumer.
+ */
+export const STUCK_DELIVERY_AGE_SECONDS = 600;
+
+/** Rows reconciled per sweep. Bounded so one tick can never fan out unboundedly. */
+export const RECONCILE_LIMIT = 100;
+
+interface StuckDeliveryRow {
+  id: string;
+  workspace_id: string;
+  endpoint_id: string;
+  event_id: string;
+  attempt: number;
+  kind: string | null;
+  workstream_id: string | null;
+  occurred_at: string | null;
+}
+
+// The join to `events` re-reads the content-free summary the message carries.
+// A delivery whose source event is gone (retention) has nothing to deliver, so
+// it is selected here and retired as 'dead' rather than re-enqueued blind.
+const STUCK_DELIVERIES_SQL = `
+  /* webhooks:stuck-deliveries */
+  SELECT d.id AS id,
+         d.workspace_id AS workspace_id,
+         d.endpoint_id AS endpoint_id,
+         d.event_id AS event_id,
+         d.attempt AS attempt,
+         e.kind AS kind,
+         e.workstream_id AS workstream_id,
+         e.occurred_at AS occurred_at
+  FROM webhook_deliveries AS d
+  LEFT JOIN events AS e
+    ON e.workspace_id = d.workspace_id AND e.event_id = d.event_id
+  WHERE d.status = 'queued' AND d.created_at <= ?1
+  ORDER BY d.created_at ASC, d.id ASC
+  LIMIT ?2`;
+
+const RETRY_DELIVERY_SQL = `
+  /* webhooks:reconcile-retry */
+  UPDATE webhook_deliveries
+  SET attempt = ?3
+  WHERE id = ?1 AND workspace_id = ?2 AND status = 'queued'`;
+
+const RETIRE_DELIVERY_SQL = `
+  /* webhooks:reconcile-dead */
+  UPDATE webhook_deliveries
+  SET status = 'dead', attempt = ?3
+  WHERE id = ?1 AND workspace_id = ?2 AND status = 'queued'`;
+
+/**
+ * Re-enqueue delivery rows that a previous tick committed but never managed to
+ * put on the queue (queue.send() threw after the D1 batch, and the cursor had
+ * already advanced past their source events, so no sweep will ever re-see
+ * them).
+ *
+ * The attempt column is the bound: each reconciliation round durably bumps it
+ * BEFORE sending, so a row that keeps failing to enqueue climbs to
+ * MAX_DELIVERY_ATTEMPTS and is retired 'dead' instead of being retried
+ * forever. Bumping first also means a send that throws is still counted — the
+ * failure mode this whole pass exists for cannot hide from its own bound.
+ *
+ * Re-enqueueing is safe against double delivery: the consumer keys on the
+ * delivery row id and its status update is scoped to non-terminal rows, so a
+ * row that did get delivered is never resurrected (migration 0007's
+ * webhook_deliveries_terminal_status trigger enforces that in-schema too).
+ */
+async function reconcileStuckDeliveries(
+  db: D1DatabaseLike,
+  queue: QueueLike<WebhookQueueMessage>,
+  nowSeconds: number,
+): Promise<void> {
+  const cutoff = nowSeconds - STUCK_DELIVERY_AGE_SECONDS;
+  const stuck = await db
+    .prepare(STUCK_DELIVERIES_SQL)
+    .bind(cutoff, RECONCILE_LIMIT)
+    .all<StuckDeliveryRow>();
+
+  for (const row of stuck.results) {
+    const attempt = Number.isSafeInteger(row.attempt) && row.attempt > 0 ? row.attempt : 1;
+    const orphaned = row.kind === null || row.occurred_at === null;
+    if (orphaned || attempt >= MAX_DELIVERY_ATTEMPTS) {
+      await db.prepare(RETIRE_DELIVERY_SQL).bind(row.id, row.workspace_id, attempt).run();
+      continue;
+    }
+
+    const nextAttempt = attempt + 1;
+    await db.prepare(RETRY_DELIVERY_SQL).bind(row.id, row.workspace_id, nextAttempt).run();
+    await queue.send({
+      delivery_id: row.id,
+      workspace_id: row.workspace_id,
+      endpoint_id: row.endpoint_id,
+      event_id: row.event_id,
+      kind: row.kind as string,
+      workstream_id: row.workstream_id,
+      occurred_at: row.occurred_at as string,
+    });
+  }
+}
+
 /**
  * Cron-triggered sweep: fan out new events (past each workspace's cursor)
  * to queued delivery rows + Queues messages, one workspace at a time so a
- * single workspace's failure never blocks the rest of the tick.
+ * single workspace's failure never blocks the rest of the tick, then
+ * reconcile any rows an earlier tick stranded in 'queued'.
  */
 export async function webhooksScheduled(env: WebhooksEnv): Promise<void> {
   const queue = env.WEBHOOK_QUEUE;
@@ -752,6 +866,17 @@ export async function webhooksScheduled(env: WebhooksEnv): Promise<void> {
         error_type: error instanceof Error ? error.name : "unknown",
       }));
     }
+  }
+
+  // Its own try/catch: reconciliation is repair work, and a failure here must
+  // never look like a failed sweep to the scheduled dispatcher.
+  try {
+    await reconcileStuckDeliveries(env.DB, queue, Math.floor(Date.now() / 1000));
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: "webhooks reconciliation failed",
+      error_type: error instanceof Error ? error.name : "unknown",
+    }));
   }
 }
 

@@ -220,6 +220,31 @@ describe("POST /v1/webhooks", () => {
     expect(response?.status).toBe(400);
   });
 
+  it("rejects an unsafe url with 400 unsafe_url and the tripped rule", async () => {
+    // The registration-time SSRF screen (src/urlguard.ts). One case per rule
+    // family here; the full matrix lives in test/urlguard.test.ts.
+    const cases: [string, string][] = [
+      ["https://169.254.169.254/latest/meta-data", "url host is a private, loopback, link-local, or metadata IPv4 address"],
+      ["https://10.0.0.5/hook", "url host is a private, loopback, link-local, or metadata IPv4 address"],
+      ["https://[::1]/hook", "url host is a private, loopback, or link-local IPv6 address"],
+      ["https://localhost/hook", "url host is a loopback hostname"],
+      ["https://metadata.google.internal/hook", "url host is in the private .internal name space"],
+      ["https://example.com:8080/hook", "url port must be 443 or 8443"],
+      ["https://user:pass@example.com/hook", "url must not contain userinfo"],
+    ];
+    for (const [url, reason] of cases) {
+      const { db, statements } = mockDb({ first: authedFirst() });
+      const response = await handleWebhooksRoute(
+        createRequest({ url, event_kinds: ["handoff.created"] }),
+        makeEnv(db),
+      );
+      expect(response?.status).toBe(400);
+      expect(await response!.json()).toEqual({ error: "unsafe_url", reason });
+      // Nothing was written: the row never reaches D1.
+      expect(statements.some((s) => s.sql.includes("webhooks:insert-endpoint"))).toBe(false);
+    }
+  });
+
   it("rejects event kinds outside the recognized set", async () => {
     const { db } = mockDb({ first: authedFirst() });
     const response = await handleWebhooksRoute(
@@ -591,6 +616,232 @@ describe("webhooksScheduled (sweep)", () => {
   });
 });
 
+// -- webhooksScheduled (reconciliation of stranded 'queued' rows) ----------------------
+
+describe("webhooksScheduled (reconciliation)", () => {
+  interface DeliveryState {
+    id: string;
+    workspace_id: string;
+    endpoint_id: string;
+    event_id: string;
+    attempt: number;
+    status: string;
+    created_at: number;
+  }
+
+  const EVENT = {
+    event_id: "evt_stuck",
+    kind: "handoff.created",
+    workstream_id: "ws_1",
+    occurred_at: "2026-01-01T00:00:00Z",
+  };
+
+  /**
+   * A fake D1 that keeps a real webhook_deliveries table in memory and answers
+   * the module's own reconciliation SQL against it — including the LEFT JOIN
+   * to `events` and the status/attempt updates — so the test exercises the
+   * whole loop, not a stubbed row.
+   */
+  function reconcileDb(rows: DeliveryState[], options: { orphaned?: boolean } = {}) {
+    return mockDb({
+      all: (statement) => {
+        if (statement.sql.includes("webhooks:stuck-deliveries")) {
+          const [cutoff, limit] = statement.binds as [number, number];
+          return rows
+            .filter((row) => row.status === "queued" && row.created_at <= cutoff)
+            .sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : 1))
+            .slice(0, limit)
+            .map((row) => ({
+              id: row.id,
+              workspace_id: row.workspace_id,
+              endpoint_id: row.endpoint_id,
+              event_id: row.event_id,
+              attempt: row.attempt,
+              kind: options.orphaned === true ? null : EVENT.kind,
+              workstream_id: options.orphaned === true ? null : EVENT.workstream_id,
+              occurred_at: options.orphaned === true ? null : EVENT.occurred_at,
+            }));
+        }
+        return [];
+      },
+      first: () => null,
+      run: (statement) => {
+        const [id, workspaceId, attempt] = statement.binds as [string, string, number];
+        const row = rows.find(
+          (r) => r.id === id && r.workspace_id === workspaceId && r.status === "queued",
+        );
+        if (row === undefined) return;
+        row.attempt = attempt;
+        if (statement.sql.includes("webhooks:reconcile-dead")) row.status = "dead";
+      },
+    });
+  }
+
+  function stuckRow(overrides: Partial<DeliveryState> = {}): DeliveryState {
+    return {
+      id: WHD_ONE,
+      workspace_id: TOKEN_WORKSPACE,
+      endpoint_id: WHE_ONE,
+      event_id: EVENT.event_id,
+      attempt: 1,
+      status: "queued",
+      // Well past the 10-minute staleness cutoff.
+      created_at: Math.floor(Date.now() / 1000) - 3600,
+      ...overrides,
+    };
+  }
+
+  it("re-enqueues a row the previous tick stranded when queue.send threw", async () => {
+    // Tick 1: the D1 batch commits two delivery rows, then the second send
+    // throws — exactly the gap this pass exists to repair.
+    const firstTickSent: WebhookQueueMessage[] = [];
+    const failingQueue: QueueLike<WebhookQueueMessage> = {
+      async send(message) {
+        firstTickSent.push(message);
+        if (firstTickSent.length === 2) throw new Error("queue unavailable");
+      },
+    };
+    const events = [
+      { seq: 1, event_id: "evt_sent", kind: "handoff.created", workstream_id: "ws_1", occurred_at: "2026-01-01T00:00:00Z" },
+      { seq: 2, event_id: EVENT.event_id, kind: "handoff.created", workstream_id: "ws_1", occurred_at: "2026-01-01T00:00:01Z" },
+    ];
+    const committed: Array<{ id: string; event_id: string }> = [];
+    const { db: sweepDb } = mockDb({
+      all: (statement) => {
+        if (statement.sql.includes("webhooks:sweep-active-workspaces")) {
+          return [{ workspace_id: TOKEN_WORKSPACE }];
+        }
+        if (statement.sql.includes("webhooks:sweep-endpoints")) {
+          return [{ id: WHE_ONE, event_kinds: JSON.stringify(["handoff.created"]) }];
+        }
+        if (statement.sql.includes("webhooks:sweep-events")) return events;
+        return [];
+      },
+      first: () => null,
+      batch: (statements) => {
+        const insert = statements.find((s) => s.sql.includes("webhooks:insert-deliveries"));
+        if (insert !== undefined) {
+          committed.push(...(JSON.parse(insert.binds[0] as string) as Array<{ id: string; event_id: string }>));
+        }
+      },
+    });
+
+    await webhooksScheduled({ DB: sweepDb, WEBHOOK_QUEUE: failingQueue });
+
+    // Both rows are durable; only the first message made it onto the queue,
+    // and the cursor has moved past both events, so no sweep will re-see them.
+    expect(committed).toHaveLength(2);
+    expect(firstTickSent).toHaveLength(2);
+    const stranded = committed[1];
+    expect(stranded.event_id).toBe(EVENT.event_id);
+
+    // Tick 2 (10+ minutes later): reconciliation picks the stranded row up.
+    const rows = [stuckRow({ id: stranded.id, event_id: stranded.event_id })];
+    const sent: WebhookQueueMessage[] = [];
+    const queue: QueueLike<WebhookQueueMessage> = {
+      async send(message) {
+        sent.push(message);
+      },
+    };
+    const { db } = reconcileDb(rows);
+    await webhooksScheduled({ DB: db, WEBHOOK_QUEUE: queue });
+
+    expect(sent).toEqual([
+      {
+        delivery_id: stranded.id,
+        workspace_id: TOKEN_WORKSPACE,
+        endpoint_id: WHE_ONE,
+        event_id: EVENT.event_id,
+        kind: EVENT.kind,
+        workstream_id: EVENT.workstream_id,
+        occurred_at: EVENT.occurred_at,
+      },
+    ]);
+    // The attempt count moved BEFORE the send, so a repeated failure is bounded.
+    expect(rows[0]).toMatchObject({ status: "queued", attempt: 2 });
+  });
+
+  it("only looks at rows older than the staleness cutoff", async () => {
+    const fresh = stuckRow({ created_at: Math.floor(Date.now() / 1000) - 60 });
+    const sent: WebhookQueueMessage[] = [];
+    const { db } = reconcileDb([fresh]);
+    await webhooksScheduled({
+      DB: db,
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+    expect(sent).toEqual([]);
+    expect(fresh).toMatchObject({ status: "queued", attempt: 1 });
+  });
+
+  it("retires a row at the attempt cap as dead instead of re-enqueueing forever", async () => {
+    const capped = stuckRow({ attempt: MAX_DELIVERY_ATTEMPTS });
+    const sent: WebhookQueueMessage[] = [];
+    const { db } = reconcileDb([capped]);
+    await webhooksScheduled({
+      DB: db,
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+    expect(sent).toEqual([]);
+    expect(capped).toMatchObject({ status: "dead", attempt: MAX_DELIVERY_ATTEMPTS });
+  });
+
+  it("climbs to dead over successive ticks when the queue stays broken", async () => {
+    const rows = [stuckRow()];
+    const brokenQueue: QueueLike<WebhookQueueMessage> = {
+      async send() {
+        throw new Error("queue still unavailable");
+      },
+    };
+    for (let tick = 0; tick < MAX_DELIVERY_ATTEMPTS + 1; tick++) {
+      const { db } = reconcileDb(rows);
+      // A throwing queue must never escape the scheduled sweep.
+      await expect(
+        webhooksScheduled({ DB: db, WEBHOOK_QUEUE: brokenQueue }),
+      ).resolves.toBeUndefined();
+    }
+    expect(rows[0]).toMatchObject({ status: "dead", attempt: MAX_DELIVERY_ATTEMPTS });
+  });
+
+  it("retires a row whose source event is gone rather than sending a blank message", async () => {
+    const orphan = stuckRow();
+    const sent: WebhookQueueMessage[] = [];
+    const { db } = reconcileDb([orphan], { orphaned: true });
+    await webhooksScheduled({
+      DB: db,
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+    expect(sent).toEqual([]);
+    expect(orphan.status).toBe("dead");
+  });
+
+  it("bounds one tick to 100 rows", async () => {
+    const rows = Array.from({ length: 250 }, (_, index) =>
+      stuckRow({ id: `whd_01J${String(index).padStart(2, "0")}${"E".repeat(21)}`, created_at: 1_700_000_000 + index }),
+    );
+    const sent: WebhookQueueMessage[] = [];
+    const { db } = reconcileDb(rows);
+    await webhooksScheduled({
+      DB: db,
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+    expect(sent).toHaveLength(100);
+    // Deterministic slice: the oldest rows first, never a random 100.
+    expect(sent.map((m) => m.delivery_id)).toEqual(rows.slice(0, 100).map((r) => r.id));
+  });
+
+  it("never re-enqueues a row that already reached a terminal status", async () => {
+    const delivered = stuckRow({ status: "delivered" });
+    const dead = stuckRow({ id: `whd_01J${"F".repeat(23)}`, status: "dead" });
+    const sent: WebhookQueueMessage[] = [];
+    const { db } = reconcileDb([delivered, dead]);
+    await webhooksScheduled({
+      DB: db,
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+    expect(sent).toEqual([]);
+  });
+});
+
 // -- webhooksQueue (consumer) ---------------------------------------------------------
 
 describe("webhooksQueue (consumer)", () => {
@@ -917,6 +1168,141 @@ describe("0007 webhooks migration (node:sqlite)", () => {
     expect(() =>
       db.prepare(`UPDATE webhook_cursors SET last_seq = ? WHERE workspace_id = ?`).run(20, TOKEN_WORKSPACE),
     ).not.toThrow();
+    db.close();
+  });
+});
+
+// -- reconciliation against the REAL schema (node:sqlite) ---------------------------
+//
+// The mocked-D1 tests above prove the loop's behaviour; this one proves the SQL
+// itself — column names, the LEFT JOIN to `events`, the status/attempt
+// updates — against migration 0007 as applied, executed by webhooksScheduled.
+
+/** Minimal D1DatabaseLike over a real node:sqlite database. */
+function sqliteD1(db: DatabaseSync): D1DatabaseLike {
+  const prepare = (sql: string): D1Statement & D1BoundStatement => {
+    let binds: unknown[] = [];
+    const statement = {
+      bind(...values: unknown[]) {
+        binds = values;
+        return statement;
+      },
+      async first<T = unknown>(): Promise<T | null> {
+        return (db.prepare(sql).get(...(binds as never[])) ?? null) as T | null;
+      },
+      async all<T = unknown>(): Promise<{ results: T[] }> {
+        return { results: db.prepare(sql).all(...(binds as never[])) as T[] };
+      },
+      async run() {
+        db.prepare(sql).run(...(binds as never[]));
+        return { success: true };
+      },
+      // The batch path needs the deferred form; see batch() below.
+      __sql: sql,
+      get __binds() {
+        return binds;
+      },
+    };
+    return statement as unknown as D1Statement & D1BoundStatement;
+  };
+  return {
+    prepare,
+    async batch(statements: D1BoundStatement[]) {
+      db.exec("BEGIN");
+      try {
+        for (const bound of statements) {
+          const carrier = bound as unknown as { __sql: string; __binds: unknown[] };
+          db.prepare(carrier.__sql).run(...(carrier.__binds as never[]));
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return [];
+    },
+  };
+}
+
+function insertEvent(db: DatabaseSync, eventId: string, kind: string): void {
+  db.prepare(`
+    INSERT INTO events
+      (workspace_id, event_id, occurred_at, workstream_id, kind, ingested_at, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    TOKEN_WORKSPACE,
+    eventId,
+    "2026-01-01T00:00:00Z",
+    "ws_1",
+    kind,
+    1_700_000_000,
+    JSON.stringify({ event_id: eventId }),
+  );
+}
+
+describe("webhooksScheduled reconciliation (node:sqlite, real schema)", () => {
+  function seed(deliveryOverrides: Record<string, unknown> = {}): DatabaseSync {
+    const db = migratedDatabase();
+    // The endpoint subscribes to a DIFFERENT kind than the stranded event, so
+    // the sweep half of the tick has nothing to do and the assertions below
+    // observe reconciliation alone.
+    insertEndpoint(db, { event_kinds: JSON.stringify(["prompt.labeled"]) });
+    insertEvent(db, "evt_stranded", "handoff.created");
+    insertDelivery(db, { event_id: "evt_stranded", created_at: 1_700_000_000, ...deliveryOverrides });
+    return db;
+  }
+
+  function readDelivery(db: DatabaseSync): { status: string; attempt: number } {
+    return db
+      .prepare("SELECT status, attempt FROM webhook_deliveries WHERE id = ?")
+      .get(WHD_ONE) as { status: string; attempt: number };
+  }
+
+  it("re-enqueues a stranded row and bumps its attempt, against the real tables", async () => {
+    const db = seed();
+    const sent: WebhookQueueMessage[] = [];
+    await webhooksScheduled({
+      DB: sqliteD1(db),
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+
+    expect(sent).toEqual([
+      {
+        delivery_id: WHD_ONE,
+        workspace_id: TOKEN_WORKSPACE,
+        endpoint_id: WHE_ONE,
+        event_id: "evt_stranded",
+        kind: "handoff.created",
+        workstream_id: "ws_1",
+        occurred_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    expect(readDelivery(db)).toEqual({ status: "queued", attempt: 2 });
+    db.close();
+  });
+
+  it("retires a capped row as dead, which the terminal-status trigger accepts", async () => {
+    const db = seed({ });
+    db.prepare("UPDATE webhook_deliveries SET attempt = ? WHERE id = ?").run(MAX_DELIVERY_ATTEMPTS, WHD_ONE);
+    const sent: WebhookQueueMessage[] = [];
+    await webhooksScheduled({
+      DB: sqliteD1(db),
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+    expect(sent).toEqual([]);
+    expect(readDelivery(db)).toEqual({ status: "dead", attempt: MAX_DELIVERY_ATTEMPTS });
+    db.close();
+  });
+
+  it("leaves a row that is not yet stale alone", async () => {
+    const db = seed({ created_at: Math.floor(Date.now() / 1000) });
+    const sent: WebhookQueueMessage[] = [];
+    await webhooksScheduled({
+      DB: sqliteD1(db),
+      WEBHOOK_QUEUE: { async send(message) { sent.push(message); } },
+    });
+    expect(sent).toEqual([]);
+    expect(readDelivery(db)).toEqual({ status: "queued", attempt: 1 });
     db.close();
   });
 });
