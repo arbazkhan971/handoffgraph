@@ -51,10 +51,12 @@ database_name = "handoffgraph"
 database_id = "e51cf2d3-d955-4308-8fff-e6405110b1bf"
 migrations_dir = "migrations"
 
-# R2 bucket for content-addressed objects. Three prefixes live here:
-#   artifacts/<workspace_id>/  compacted JSONL tiers of the event spine
-#   exports/<workspace_id>/    user-requested NDJSON extracts
-#   (spans.body_ref)           large span bodies, never inlined into D1 rows
+# R2 bucket for content-addressed objects. Four prefixes live here:
+#   artifacts/<workspace_id>/   compacted JSONL tiers of the event spine
+#   exports/<workspace_id>/     user-requested NDJSON extracts
+#   attachments/<workspace_id>/ multimodal uploads (parity row 53); keyed by
+#                                content_sha256, see migration 0017
+#   (spans.body_ref)            large span bodies, never inlined into D1 rows
 # Create it once with: npx wrangler r2 bucket create handoffgraph-bodies
 [[r2_buckets]]
 binding = "BODIES"

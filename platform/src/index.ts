@@ -15,6 +15,8 @@
 //    hosted MCP endpoint at POST /v1/mcp; playground.ts for
 //    /v1/playground/*, POST /v1/prompts/{name}/labels and
 //    POST /v1/prompt-optimizer/suggest)
+//    hosted MCP endpoint at POST /v1/mcp; attachments.ts for
+//    POST/GET /v1/attachments and GET /v1/attachments/{sha256})
 //
 // Invariants (see docs/architecture.md and platform/README.md):
 //   - workspace identity comes only from the device token binding;
@@ -56,6 +58,7 @@ import { handleAnnotationsRoute } from "./annotations";
 // SimulationWorkflow below.
 export { AnnotationQueueRoom } from "./annotations";
 import { artifactsScheduled, handleArtifactsRoute, type ArtifactsEnv } from "./artifacts";
+import { handleAttachmentsRoute } from "./attachments";
 import { handleDashboardsRoute } from "./dashboards";
 import { handleApiKeysRoute } from "./apikeys";
 import { evalsScheduled, handleEvalsRoute } from "./evals";
@@ -152,6 +155,8 @@ export default {
       if (teamsResponse !== null) return teamsResponse;
       const artifactsResponse = await handleArtifactsRoute(request, env);
       if (artifactsResponse !== null) return artifactsResponse;
+      const attachmentsResponse = await handleAttachmentsRoute(request, env);
+      if (attachmentsResponse !== null) return attachmentsResponse;
       const webhooksResponse = await handleWebhooksRoute(request, env);
       if (webhooksResponse !== null) return webhooksResponse;
       const dashboardsResponse = await handleDashboardsRoute(request, env);
