@@ -86,7 +86,7 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 | # | Feature | Provenance | Target | Phase |
 |---|---|---|---|---|
 | 1 | Native coding-agent adapters (Claude Code, Codex, Pi) + merge-safe idempotent hook install | ours (unique depth) | L | ✅ |
-| 2 | OTLP/HTTP(+gRPC) ingest — be an OTel *backend* (OpenLLMetry/OpenLIT/Phoenix/Claude-native data lands here) | Langfuse, SigNoz, OpenObserve, OpenLLMetry | L + C | P1 |
+| 2 | OTLP/HTTP(+gRPC) ingest — be an OTel *backend* (OpenLLMetry/OpenLIT/Phoenix/Claude-native data lands here) — **local ✅ + hosted converter ✅ w/ Go-parity ids (2026-08-28); route wiring pending** | Langfuse, SigNoz, OpenObserve, OpenLLMetry | L + C | P1 ✅L |
 | 3 | `handoffgraph.*` attribute namespace over `gen_ai.*` / `coding_agent.*` semconv + interop mappings + reserved-key sanitizer | Langfuse, OpenLIT, SigNoz | L + C | P1 |
 | 4 | Batch ingest API with ingest-side dedup + backpressure semantics (429/retry, truncation markers) — **local ✅ (2026-08-28); hosted batch pending** | Opik, Langfuse | L + C | P1 ✅L / P3 |
 | 5 | Native-vendor telemetry coalescing (`signal_source` precedence: native vs hook vs sdk) | OpenLIT, SigNoz | L | P2 |
