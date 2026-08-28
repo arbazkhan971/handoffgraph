@@ -162,7 +162,9 @@ func BenchmarkGraphHash10k(b *testing.B) {
 // appendP95MaxMS returns the p95 assertion threshold in milliseconds.
 // Default is the roadmap gate of 5ms. On slow or shared CI machines where
 // 5ms cannot be met reliably, set HG_APPEND_P95_MAX_MS=<float> to override
-// the threshold without editing the test.
+// the threshold without editing the test. Under the race detector the
+// default is scaled by raceDetectorMultiplier (instrumentation slows every
+// append by ~an order of magnitude; the uninstrumented gate stays strict).
 func appendP95MaxMS() (float64, error) {
 	if v := os.Getenv("HG_APPEND_P95_MAX_MS"); v != "" {
 		f, err := strconv.ParseFloat(v, 64)
@@ -171,7 +173,7 @@ func appendP95MaxMS() (float64, error) {
 		}
 		return f, nil
 	}
-	return 5, nil
+	return 5 * raceDetectorMultiplier, nil
 }
 
 func percentile(sorted []time.Duration, p float64) time.Duration {
