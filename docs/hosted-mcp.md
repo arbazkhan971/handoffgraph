@@ -159,7 +159,7 @@ silently processing only the first element).
 
 ```
 initialize   -> { protocolVersion, capabilities: { tools }, serverInfo, instructions }
-tools/list   -> { tools: [{ name, description, inputSchema }, ...] }
+tools/list   -> { tools: [{ name, description, inputSchema, write }, ...] }
 tools/call   -> { content, structuredContent, isError } | JSON-RPC error
 ```
 
@@ -173,14 +173,27 @@ even parsed.
 The local server (`internal/mcp`) exposes twelve tools over a local SQLite
 file. Six have a hosted counterpart where hosted data actually exists:
 
-| Tool | Hosted data source |
-| --- | --- |
-| `get_workstream_context` | `workstreams` + event-kind counts + `sessions` |
-| `get_trace_context` | `span_observations` (via `observations.ts`'s `buildObservationQuery`) |
-| `list_scores` | `events` where `kind = 'score.recorded'` |
-| `get_prompt` | **stub** — see below |
-| `record_score` | writes `events` directly (write tool) |
-| `accept_handoff` | writes `events` directly (write tool) |
+| Tool | `write` | Hosted data source |
+| --- | --- | --- |
+| `get_workstream_context` | `false` | `workstreams` + event-kind counts + `sessions` |
+| `get_trace_context` | `false` | `span_observations` (via `observations.ts`'s `buildObservationQuery`) |
+| `list_scores` | `false` | `events` where `kind = 'score.recorded'` |
+| `get_prompt` | `false` | **stub** — see below |
+| `record_score` | `true` | writes `events` directly (write tool) |
+| `accept_handoff` | `true` | writes `events` directly (write tool) |
+
+The `write` flag is published in `tools/list` and is **descriptive metadata, not
+authorization**: the two write tools still check `principalCanWrite()`
+themselves, and `tools/call` serves them to a properly-scoped `sk_`/device
+caller exactly as it always did. It exists so a consumer that must never offer
+write capability can filter the catalogue mechanically instead of matching
+names. The EE assistant (`platform/ee/src/assistant.ts`) is that consumer: its
+tool selection comes from **model output**, so it keeps only `write: false`
+tools, never names a write tool in its system prompt, and refuses a `tool_call`
+to one with `assistant_write_tool_refused`. A model must never be able to append
+an `OBSERVED` `score.recorded` / `handoff.accepted` event. `ToolDef.write` is a
+required field, so the compiler — not a reviewer — is what stops a seventh tool
+from landing without an answer to "can this write?".
 
 The other six (`create_checkpoint`, `record_decision`,
 `record_verification`, `claim_files`, `handoff_workstream`,

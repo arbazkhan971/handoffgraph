@@ -269,6 +269,55 @@ describe("tools/list", () => {
       }
     }
   });
+
+  it("publishes an explicit write flag on every tool", async () => {
+    const { db } = mockDb({ first: withDeviceAuth() });
+    const res = await handleMcpRoute(mcpRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" }, DEVICE_AUTH), { DB: db });
+    const body = await rpc(res);
+    expect("result" in body).toBe(true);
+    if ("result" in body) {
+      const tools = (body.result as { tools: { name: string; write: unknown }[] }).tools;
+      // Exactly the two spine-appending tools are flagged, and the flag is a
+      // real boolean on every tool — a consumer that must never offer write
+      // capability (platform/ee/src/assistant.ts) filters on this, so an
+      // absent or non-boolean value there would be a security-relevant gap.
+      for (const tool of tools) expect([tool.name, typeof tool.write]).toEqual([tool.name, "boolean"]);
+      expect(tools.filter((t) => t.write === true).map((t) => t.name)).toEqual([
+        "record_score",
+        "accept_handoff",
+      ]);
+      expect(tools.filter((t) => t.write === false).map((t) => t.name)).toEqual([
+        "get_workstream_context",
+        "get_trace_context",
+        "list_scores",
+        "get_prompt",
+      ]);
+    }
+  });
+
+  it("the write flag is metadata only — tools/call still serves a write-scoped caller", async () => {
+    // The flag describes tools; it authorizes nothing. A properly-scoped sk_
+    // key reaches record_score through JSON-RPC exactly as it did before the
+    // flag existed, and the event is still appended.
+    const { db, statements } = mockDb({
+      first: withApiKeyAuth(SK_WRITE_HASH, ["read", "write"], byMarker({ "mcp:workstream-lookup": workstreamRow() })),
+    });
+    const res = await handleMcpRoute(
+      mcpRequest(
+        callTool("record_score", {
+          workstream_id: WS,
+          name: "quality",
+          target_type: "workstream",
+          target_id: WS,
+          value: 0.9,
+        }),
+        SK_WRITE_AUTH,
+      ),
+      { DB: db },
+    );
+    expect("result" in (await rpc(res))).toBe(true);
+    expect(statements.some((s) => s.sql.includes("mcp:insert-event"))).toBe(true);
+  });
 });
 
 // -- tools/call: routing + unknown tool -------------------------------------------

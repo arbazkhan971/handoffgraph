@@ -479,10 +479,15 @@ const INSERT_CAPTURE_BODY_SQL = `
  *     is worse than no gate: it would keep answering, confidently, with
  *     evidence that has since been superseded. Callers re-sort ascending, so
  *     "the latest score" means the same thing at every scale.
+ *
+ *   - `provenance` is selected because a gate that cannot see it cannot tell an
+ *     OBSERVED evaluation from an LLM judge's INFERRED opinion, and would
+ *     record the latter inside an OBSERVED prompt.labeled audit as though a
+ *     measurement had happened. See evaluateEvalGate.
  */
 const SCAN_SCORES_SQL = `
   /* playground:scan-scores */
-  SELECT seq, event_id, occurred_at, raw_json
+  SELECT seq, event_id, occurred_at, provenance, raw_json
   FROM events
   WHERE workspace_id = ?1 AND kind = 'score.recorded'
   ORDER BY seq DESC
@@ -939,11 +944,26 @@ export async function buildVariantEvent(input: VariantEventInput): Promise<Built
   );
 }
 
+/**
+ * What the gate decided, and on what. This object is embedded verbatim in an
+ * OBSERVED prompt.labeled event, so it has to be self-describing: a reader six
+ * months later must be able to tell whether production was promoted on a
+ * measurement or on a model's opinion WITHOUT re-deriving anything.
+ *
+ * `latest_score_provenance` is therefore recorded unconditionally, not only
+ * when `require_observed` was set. An OBSERVED event that quotes a passing
+ * score while withholding where the score came from is precisely how an
+ * INFERRED number gets read as an observed one.
+ */
 export interface GateAudit {
   score_name: string;
   min_score: string;
   latest_score: string | null;
   latest_score_event_id: string | null;
+  /** OBSERVED / DECLARED / INFERRED / UNKNOWN, or null when no score existed. */
+  latest_score_provenance: ScoreProvenance | null;
+  /** Whether this gate demanded an OBSERVED score, so the rule is auditable too. */
+  require_observed: boolean;
   passed: boolean;
   forced: boolean;
 }
@@ -1114,6 +1134,28 @@ export function scoreTargetsPromptVersion(
   return false;
 }
 
+/** The three labels the spine recognises; anything else is UNKNOWN. */
+export type ScoreProvenance = "OBSERVED" | "DECLARED" | "INFERRED" | "UNKNOWN";
+
+/**
+ * The provenance of one score row, normalized.
+ *
+ * The `events.provenance` COLUMN is authoritative (it is what every read model
+ * on this platform filters on) with the envelope's own label as a fallback for
+ * a row whose column was never populated. An unrecognised or absent label
+ * becomes "UNKNOWN" rather than being optimistically read as OBSERVED: a gate
+ * must never treat "we do not know where this number came from" as "a human or
+ * a deterministic evaluator measured it".
+ */
+function normalizeProvenance(column: unknown, envelope: unknown): ScoreProvenance {
+  for (const candidate of [column, envelope]) {
+    if (typeof candidate !== "string") continue;
+    const upper = candidate.trim().toUpperCase();
+    if (upper === "OBSERVED" || upper === "DECLARED" || upper === "INFERRED") return upper;
+  }
+  return "UNKNOWN";
+}
+
 export interface LinkedScore {
   seq: number;
   event_id: string;
@@ -1122,12 +1164,19 @@ export interface LinkedScore {
   /** The canonical decimal STRING exactly as recorded. Never re-parsed. */
   value: string;
   comment: string;
+  /**
+   * OBSERVED / DECLARED / INFERRED / UNKNOWN, from the spine. An LLM-as-judge
+   * score is INFERRED (migration 0012); a deterministic evaluator's is
+   * OBSERVED. Carried so no consumer has to assume.
+   */
+  provenance: ScoreProvenance;
 }
 
 interface ScoreScanRow {
   seq: number;
   event_id: string;
   occurred_at: string;
+  provenance: string | null;
   raw_json: string;
 }
 
@@ -1161,10 +1210,12 @@ export async function loadLinkedScores(
   const items: LinkedScore[] = [];
   for (const row of result.results) {
     let payload: unknown;
+    let envelopeProvenance: unknown;
     try {
       const parsed: unknown = JSON.parse(row.raw_json);
       if (!isPlainObject(parsed)) continue;
       payload = parsed.payload;
+      envelopeProvenance = parsed.provenance;
     } catch {
       continue;
     }
@@ -1181,6 +1232,7 @@ export async function loadLinkedScores(
       name,
       value,
       comment: typeof payload.comment === "string" ? payload.comment : "",
+      provenance: normalizeProvenance(row.provenance, envelopeProvenance),
     });
   }
 
@@ -1193,10 +1245,21 @@ export async function loadLinkedScores(
   return items;
 }
 
+/** Why the gate decided what it decided. Reported; never inferred by a reader. */
+export type GateReason = "passed" | "no_score" | "below_threshold" | "provenance_not_observed";
+
 export interface GateVerdict {
   passed: boolean;
   latestScore: string | null;
   latestScoreEventId: string | null;
+  /**
+   * The provenance of the score the verdict rests on, or null when no score
+   * was found. ALWAYS reported, whatever `requireObserved` was set to — the
+   * audit's job is to say what the decision was made on, not merely whether a
+   * rule was satisfied.
+   */
+  latestScoreProvenance: ScoreProvenance | null;
+  reason: GateReason;
 }
 
 /**
@@ -1208,6 +1271,19 @@ export interface GateVerdict {
  * arithmetic (gateway.ts's compareDecimalStrings), because a promotion
  * threshold is precisely the number a reviewer will argue about and 0.1 + 0.2
  * is not 0.3 in binary floating point.
+ *
+ * PROVENANCE. A score.recorded event may be OBSERVED (a deterministic
+ * evaluator, a human review) or INFERRED (an LLM-as-judge — migration 0012 is
+ * explicit about this). Both are legitimate evidence; they are not the same
+ * evidence. The verdict therefore always carries the provenance of the score it
+ * rested on, so the prompt.labeled audit — an OBSERVED event — can never
+ * present a model's opinion as a measurement simply by omitting the label.
+ *
+ * `requireObserved` (default false, so existing pipelines keep their behavior)
+ * additionally refuses to pass on anything but an OBSERVED latest score. Note
+ * it gates the LATEST score, not "the latest OBSERVED score": scanning past a
+ * newer INFERRED result to find an older OBSERVED one would resurrect exactly
+ * the stale-evidence pass this function's ordering rules exist to prevent.
  */
 export async function evaluateEvalGate(
   db: D1DatabaseLike,
@@ -1216,15 +1292,31 @@ export async function evaluateEvalGate(
   version: number,
   scoreName: string,
   minScore: string,
+  requireObserved = false,
 ): Promise<GateVerdict> {
   const scores = await loadLinkedScores(db, workspaceId, promptName, version, scoreName);
   const latest = scores[scores.length - 1];
-  if (latest === undefined) return { passed: false, latestScore: null, latestScoreEventId: null };
-  return {
-    passed: compareDecimalStrings(latest.value, minScore) >= 0,
+  if (latest === undefined) {
+    return {
+      passed: false,
+      latestScore: null,
+      latestScoreEventId: null,
+      latestScoreProvenance: null,
+      reason: "no_score",
+    };
+  }
+  const base = {
     latestScore: latest.value,
     latestScoreEventId: latest.event_id,
+    latestScoreProvenance: latest.provenance,
   };
+  if (compareDecimalStrings(latest.value, minScore) < 0) {
+    return { ...base, passed: false, reason: "below_threshold" };
+  }
+  if (requireObserved && latest.provenance !== "OBSERVED") {
+    return { ...base, passed: false, reason: "provenance_not_observed" };
+  }
+  return { ...base, passed: true, reason: "passed" };
 }
 
 // -- validation ------------------------------------------------------------------------------
@@ -1319,6 +1411,7 @@ export interface LabelInput {
   version: number;
   minScore: string | null;
   scoreName: string | null;
+  requireObserved: boolean;
   force: boolean;
   dryRun: boolean;
 }
@@ -1372,6 +1465,18 @@ export function validateLabelBody(
     return { ok: false, error: "score_name is required when min_score is given" };
   }
 
+  const requireObservedRaw = body.require_observed;
+  if (requireObservedRaw !== undefined && typeof requireObservedRaw !== "boolean") {
+    return { ok: false, error: "require_observed must be a boolean" };
+  }
+  const requireObserved = requireObservedRaw === true;
+  if (requireObserved && minScore === null) {
+    // require_observed strengthens a gate; with no gate to strengthen it would
+    // read as protection that is not actually running. Say so rather than
+    // accept a request whose promise is empty.
+    return { ok: false, error: "require_observed requires min_score and score_name" };
+  }
+
   const force = body.force;
   if (force !== undefined && typeof force !== "boolean") {
     return { ok: false, error: "force must be a boolean" };
@@ -1389,6 +1494,7 @@ export function validateLabelBody(
       version: version as number,
       minScore,
       scoreName,
+      requireObserved,
       force: force === true,
       dryRun: dryRun === true,
     },
@@ -1817,19 +1923,32 @@ async function repointLabel(
       input.version,
       input.scoreName,
       input.minScore,
+      input.requireObserved,
     );
     gate = {
       score_name: input.scoreName,
       min_score: input.minScore,
       latest_score: verdict.latestScore,
       latest_score_event_id: verdict.latestScoreEventId,
+      // Recorded on every gated repoint, pass or fail, forced or not. A
+      // promotion audit that says "0.91 cleared 0.80" without saying an LLM
+      // judge produced the 0.91 is an OBSERVED event making an INFERRED claim.
+      latest_score_provenance: verdict.latestScoreProvenance,
+      require_observed: input.requireObserved,
       passed: verdict.passed,
       forced: !verdict.passed && input.force,
     };
     if (!verdict.passed && !input.force) {
       return json(409, {
         error: "eval_gate_failed",
+        // `reason` distinguishes "nothing ever scored this version" from "it
+        // scored too low" from "it cleared the bar, but on a score this gate
+        // does not accept as observed evidence" — three different things for
+        // a CI log to say, and three different fixes.
+        reason: verdict.reason,
         latest_score: verdict.latestScore,
+        latest_score_provenance: verdict.latestScoreProvenance,
+        require_observed: input.requireObserved,
         min_score: input.minScore,
         score_name: input.scoreName,
         prompt_name: promptName,

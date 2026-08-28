@@ -273,20 +273,31 @@ const INSERT_EVENT_SQL = `
      ingested_at, raw_json)
   VALUES (?, ?, 'test-key', ?, NULL, NULL, NULL, NULL, ?, ?, NULL, 0, ?)`;
 
-/** One event row with a fully-formed hfg.event.v1 envelope wrapping `payload`. */
+/**
+ * One event row with a fully-formed hfg.event.v1 envelope wrapping `payload`.
+ * `provenance` defaults to OBSERVED and is written into BOTH the column and the
+ * envelope, exactly as the ingest pipeline does.
+ */
 function insertEvent(
   db: DatabaseSync,
   workspaceId: string,
-  params: { kind: string; occurredAt: string; payload: unknown; eventId?: string },
+  params: {
+    kind: string;
+    occurredAt: string;
+    payload: unknown;
+    eventId?: string;
+    provenance?: string;
+  },
 ): string {
   const eventId = params.eventId ?? nextEventId();
+  const provenance = params.provenance ?? "OBSERVED";
   const envelope = {
     schema_version: "hfg.event.v1",
     event_id: eventId,
     kind: params.kind,
     occurred_at: params.occurredAt,
     observed_at: params.occurredAt,
-    provenance: "OBSERVED",
+    provenance,
     payload: params.payload,
   };
   db.prepare(INSERT_EVENT_SQL).run(
@@ -294,7 +305,7 @@ function insertEvent(
     eventId,
     params.occurredAt,
     params.kind,
-    "OBSERVED",
+    provenance,
     JSON.stringify(envelope),
   );
   return eventId;
@@ -1056,7 +1067,13 @@ describe("evaluateEvalGate", () => {
   it("fails closed when NO evaluation has ever scored the version", async () => {
     const db = gateDb();
     const verdict = await evaluateEvalGate(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", "0.80");
-    expect(verdict).toEqual({ passed: false, latestScore: null, latestScoreEventId: null });
+    expect(verdict).toEqual({
+      passed: false,
+      latestScore: null,
+      latestScoreEventId: null,
+      latestScoreProvenance: null,
+      reason: "no_score",
+    });
     db.close();
   });
 
@@ -1155,6 +1172,116 @@ describe("evaluateEvalGate", () => {
     // verdict forever once a workspace outgrows the cap.
     const bounded = await loadLinkedScores(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", 2);
     expect(bounded.map((score) => score.value)).toEqual(["0.20", "0.95"]);
+    db.close();
+  });
+
+  it("reports the provenance of the score it rested on — OBSERVED and INFERRED alike", async () => {
+    const db = gateDb();
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-02-01T00:00:00Z",
+      payload: promptScore({ name: "acc", value: "0.91", promptName: PROMPT, version: 2 }),
+    });
+    const observed = await evaluateEvalGate(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", "0.80");
+    expect(observed).toMatchObject({ passed: true, latestScoreProvenance: "OBSERVED", reason: "passed" });
+
+    // An LLM-as-judge score: migration 0012 records these INFERRED.
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-03-01T00:00:00Z",
+      provenance: "INFERRED",
+      payload: promptScore({ name: "acc", value: "0.95", promptName: PROMPT, version: 2 }),
+    });
+    const judged = await evaluateEvalGate(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", "0.80");
+    // Still passes by default — behavior is preserved — but the verdict now
+    // says out loud that the number came from a model.
+    expect(judged).toMatchObject({ passed: true, latestScore: "0.95", latestScoreProvenance: "INFERRED" });
+    db.close();
+  });
+
+  it("require_observed refuses an INFERRED pass, naming the reason", async () => {
+    const db = gateDb();
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-02-01T00:00:00Z",
+      provenance: "INFERRED",
+      payload: promptScore({ name: "acc", value: "0.95", promptName: PROMPT, version: 2 }),
+    });
+    const strict = await evaluateEvalGate(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", "0.80", true);
+    expect(strict).toMatchObject({
+      passed: false,
+      // The threshold was cleared; the EVIDENCE is what this gate rejects, and
+      // the reason says which of the two happened.
+      latestScore: "0.95",
+      latestScoreProvenance: "INFERRED",
+      reason: "provenance_not_observed",
+    });
+    // Below the threshold AND inferred still reports the threshold failure
+    // first: fixing provenance would not have helped.
+    const low = await evaluateEvalGate(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", "0.99", true);
+    expect(low.reason).toBe("below_threshold");
+    db.close();
+  });
+
+  it("require_observed gates the LATEST score, never an older observed one", async () => {
+    const db = gateDb();
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-02-01T00:00:00Z",
+      payload: promptScore({ name: "acc", value: "0.91", promptName: PROMPT, version: 2 }),
+    });
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-03-01T00:00:00Z",
+      provenance: "INFERRED",
+      payload: promptScore({ name: "acc", value: "0.99", promptName: PROMPT, version: 2 }),
+    });
+    // Reaching back past the newer INFERRED result to the older OBSERVED one
+    // would be exactly the stale-evidence pass the ordering rules forbid.
+    const strict = await evaluateEvalGate(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", "0.80", true);
+    expect(strict).toMatchObject({ passed: false, latestScore: "0.99", reason: "provenance_not_observed" });
+    db.close();
+  });
+
+  it("an unlabelled or unrecognised provenance is UNKNOWN, never assumed OBSERVED", async () => {
+    const db = gateDb();
+    const eventId = nextEventId();
+    const envelope = {
+      schema_version: "hfg.event.v1",
+      event_id: eventId,
+      kind: "score.recorded",
+      occurred_at: "2026-02-01T00:00:00Z",
+      observed_at: "2026-02-01T00:00:00Z",
+      payload: promptScore({ name: "acc", value: "0.95", promptName: PROMPT, version: 2 }),
+    };
+    // provenance NULL in the column and absent from the envelope.
+    db.prepare(INSERT_EVENT_SQL).run(
+      TOKEN_WORKSPACE, eventId, "2026-02-01T00:00:00Z", "score.recorded", null, JSON.stringify(envelope),
+    );
+    const linked = await loadLinkedScores(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc");
+    expect(linked[0].provenance).toBe("UNKNOWN");
+    const strict = await evaluateEvalGate(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc", "0.80", true);
+    expect(strict).toMatchObject({ passed: false, reason: "provenance_not_observed" });
+    db.close();
+  });
+
+  it("falls back to the envelope's provenance when the column was never populated", async () => {
+    const db = gateDb();
+    const eventId = nextEventId();
+    const envelope = {
+      schema_version: "hfg.event.v1",
+      event_id: eventId,
+      kind: "score.recorded",
+      occurred_at: "2026-02-01T00:00:00Z",
+      observed_at: "2026-02-01T00:00:00Z",
+      provenance: "INFERRED",
+      payload: promptScore({ name: "acc", value: "0.95", promptName: PROMPT, version: 2 }),
+    };
+    db.prepare(INSERT_EVENT_SQL).run(
+      TOKEN_WORKSPACE, eventId, "2026-02-01T00:00:00Z", "score.recorded", null, JSON.stringify(envelope),
+    );
+    const linked = await loadLinkedScores(sqliteDb(db), TOKEN_WORKSPACE, PROMPT, 2, "acc");
+    expect(linked[0].provenance).toBe("INFERRED");
     db.close();
   });
 
@@ -1670,6 +1797,141 @@ describe("POST /v1/prompts/{name}/labels", () => {
     // decoration.
     expect(await body(response)).toMatchObject({ error: "eval_gate_failed", latest_score: null });
     expect(storedEvents(db, EVENT_KIND_PROMPT_LABELED)).toHaveLength(0);
+    db.close();
+  });
+
+  it("RECORDS THE PASSING SCORE'S PROVENANCE, so an INFERRED pass cannot read as OBSERVED", async () => {
+    const db = migratedDatabase();
+    seedWorld(db);
+    // An LLM-as-judge score. It is legitimate evidence and it clears the bar,
+    // so it still promotes — but the OBSERVED prompt.labeled event it produces
+    // must say a model authored the number.
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-02-01T00:00:00Z",
+      provenance: "INFERRED",
+      payload: promptScore({ name: "acc", value: "0.91", promptName: PROMPT, version: 2 }),
+    });
+    const response = await repoint(db, {
+      label: "production",
+      version: 2,
+      score_name: "acc",
+      min_score: "0.80",
+    });
+    expect(response.status).toBe(201);
+    expect((await body(response)).gate).toMatchObject({
+      passed: true,
+      latest_score: "0.91",
+      latest_score_provenance: "INFERRED",
+      require_observed: false,
+    });
+
+    const gate = payloadOf(storedEvents(db, EVENT_KIND_PROMPT_LABELED)[0]).gate;
+    // On the spine, inside an OBSERVED event: the provenance travels with the
+    // score forever, not just in the HTTP response a caller may discard.
+    expect(gate.latest_score_provenance).toBe("INFERRED");
+    expect(gate.passed).toBe(true);
+    db.close();
+  });
+
+  it("records latest_score_provenance OBSERVED when a real evaluator produced the score", async () => {
+    const db = migratedDatabase();
+    seedWorld(db);
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-02-01T00:00:00Z",
+      payload: promptScore({ name: "acc", value: "0.91", promptName: PROMPT, version: 2 }),
+    });
+    const response = await repoint(db, {
+      label: "production",
+      version: 2,
+      score_name: "acc",
+      min_score: "0.80",
+      require_observed: true,
+    });
+    expect(response.status).toBe(201);
+    const gate = payloadOf(storedEvents(db, EVENT_KIND_PROMPT_LABELED)[0]).gate;
+    expect(gate).toMatchObject({
+      passed: true,
+      latest_score_provenance: "OBSERVED",
+      require_observed: true,
+      forced: false,
+    });
+    db.close();
+  });
+
+  it("require_observed:true 409s an INFERRED-only pass and does NOT move the label", async () => {
+    const db = migratedDatabase();
+    seedWorld(db);
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-02-01T00:00:00Z",
+      provenance: "INFERRED",
+      payload: promptScore({ name: "acc", value: "0.95", promptName: PROMPT, version: 2 }),
+    });
+    const response = await repoint(db, {
+      label: "production",
+      version: 2,
+      score_name: "acc",
+      min_score: "0.80",
+      require_observed: true,
+    });
+    expect(response.status).toBe(409);
+    expect(await body(response)).toMatchObject({
+      error: "eval_gate_failed",
+      // Not "you scored too low" — 0.95 cleared 0.80. The CI log has to say
+      // that the EVIDENCE was refused, or the operator chases the wrong fix.
+      reason: "provenance_not_observed",
+      latest_score: "0.95",
+      latest_score_provenance: "INFERRED",
+      require_observed: true,
+      min_score: "0.80",
+    });
+    expect(storedEvents(db, EVENT_KIND_PROMPT_LABELED)).toHaveLength(0);
+    db.close();
+  });
+
+  it("require_observed still records the provenance when force overrides it", async () => {
+    const db = migratedDatabase();
+    seedWorld(db);
+    insertEvent(db, TOKEN_WORKSPACE, {
+      kind: "score.recorded",
+      occurredAt: "2026-02-01T00:00:00Z",
+      provenance: "INFERRED",
+      payload: promptScore({ name: "acc", value: "0.95", promptName: PROMPT, version: 2 }),
+    });
+    const response = await repoint(db, {
+      label: "production",
+      version: 2,
+      score_name: "acc",
+      min_score: "0.80",
+      require_observed: true,
+      force: true,
+    });
+    expect(response.status).toBe(201);
+    expect(payloadOf(storedEvents(db, EVENT_KIND_PROMPT_LABELED)[0]).gate).toMatchObject({
+      passed: false,
+      forced: true,
+      require_observed: true,
+      latest_score_provenance: "INFERRED",
+    });
+    db.close();
+  });
+
+  it("400s require_observed without a gate, and a non-boolean require_observed", async () => {
+    const db = migratedDatabase();
+    seedWorld(db);
+    // Protection that is not actually running must not look like protection.
+    const noGate = await repoint(db, { label: "production", version: 2, require_observed: true });
+    expect(noGate.status).toBe(400);
+    const notBoolean = await repoint(db, {
+      label: "production",
+      version: 2,
+      score_name: "acc",
+      min_score: "0.80",
+      require_observed: "yes",
+    });
+    expect(notBoolean.status).toBe(400);
     db.close();
   });
 

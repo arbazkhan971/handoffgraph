@@ -25,6 +25,14 @@
 // -32602) so a caller sees an explicit "not available" rather than a
 // protocol failure.
 //
+// Every tool carries an explicit `write` flag, published in tools/list. Four
+// tools read; record_score and accept_handoff append to the spine. The flag
+// authorizes nothing — the write tools still check principalCanWrite()
+// themselves, and tools/call serves them to a properly-scoped sk_/device
+// caller exactly as before — but it lets a consumer that must never offer
+// write capability (platform/ee/src/assistant.ts, whose tool selection comes
+// from MODEL OUTPUT) filter the catalogue mechanically.
+//
 // record_score / accept_handoff write directly to the append-only `events`
 // table (INSERT OR IGNORE — never through the full event-batch pipeline in
 // index.ts, which also runs quota/idempotency-key bookkeeping and the
@@ -610,21 +618,39 @@ function toolSchema(properties: Record<string, unknown>, ...required: string[]):
   return s;
 }
 
+/**
+ * `write` is a REQUIRED field, not an optional hint.
+ *
+ * A tool that appends to the append-only `events` table is a fundamentally
+ * different capability from one that reads, and some callers of tools/list —
+ * platform/ee/src/assistant.ts most importantly — must be able to tell them
+ * apart mechanically rather than by recognising a name. Making the field
+ * required means the compiler, not a reviewer, is what stops a new tool from
+ * landing without an answer to "can this write?".
+ *
+ * The flag is descriptive metadata only. It does NOT authorize anything: each
+ * write tool still checks principalCanWrite() itself, and tools/call still
+ * serves write tools to a properly-scoped sk_/device caller exactly as before.
+ */
 interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** true when the tool APPENDS to the spine; false for read-only tools. */
+  write: boolean;
 }
 
 const TOOL_DEFS: readonly ToolDef[] = [
   {
     name: "get_workstream_context",
+    write: false,
     description:
       "Get the current hosted context of a workstream: title, derived status, event/decision/verification counts, and recent sessions. Read-only; scoped to workstreams in the authenticated workspace.",
     inputSchema: toolSchema({ workstream_id: strProp("workstream id (ws_...) as listed by GET /api/v1/workstreams") }, "workstream_id"),
   },
   {
     name: "get_trace_context",
+    write: false,
     description:
       "Get one trace's spans and summary from the hosted span_observations read model. Read-only; traces from other workstreams or workspaces are rejected.",
     inputSchema: toolSchema(
@@ -635,6 +661,7 @@ const TOOL_DEFS: readonly ToolDef[] = [
   },
   {
     name: "list_scores",
+    write: false,
     description: "List quality scores recorded for a workstream, optionally filtered by target type/id or score name. Read-only.",
     inputSchema: toolSchema(
       {
@@ -648,12 +675,14 @@ const TOOL_DEFS: readonly ToolDef[] = [
   },
   {
     name: "get_prompt",
+    write: false,
     description:
       "Get a managed prompt. NOT YET AVAILABLE on the hosted platform: the hosted prompt store has not landed, so this always returns a clean error. Use the local MCP server for prompts.",
     inputSchema: toolSchema({ name: strProp("prompt name to resolve") }, "name"),
   },
   {
     name: "record_score",
+    write: true,
     description:
       "Record a quality score (numeric, category, or boolean) attached to a trace, span, session, checkpoint, or the workstream itself. Exactly one of value/category/bool_value. Scores are source-tagged (default api) and appended as OBSERVED score.recorded events. Requires an API key with the 'write' scope, or a device token with 'ingest'.",
     inputSchema: toolSchema(
@@ -676,6 +705,7 @@ const TOOL_DEFS: readonly ToolDef[] = [
   },
   {
     name: "accept_handoff",
+    write: true,
     description:
       "Acknowledge a handoff for a workstream, recording an accepted/missing/unverifiable breakdown as a handoff.accepted event. Reads the latest handoff.created event for status context if one exists, but never requires one. Requires an API key with the 'write' scope, or a device token with 'ingest'.",
     inputSchema: toolSchema(
@@ -739,8 +769,24 @@ function handleInitialize(params: unknown): Record<string, unknown> {
   };
 }
 
+/**
+ * tools/list is PRINCIPAL-INDEPENDENT: every caller sees the same catalogue,
+ * and tools/call is where scope is enforced. `write` is published alongside
+ * each tool so a consumer that must not offer write capability at all — the
+ * EE assistant, which drives tool selection from MODEL OUTPUT — can filter on
+ * a field instead of on a hard-coded name list that would silently go stale
+ * the day a seventh tool lands. Additive: the field sits beside the three keys
+ * MCP clients already read, and no existing consumer has to change.
+ */
 function handleToolsList(): Record<string, unknown> {
-  return { tools: TOOL_DEFS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) };
+  return {
+    tools: TOOL_DEFS.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+      write: t.write,
+    })),
+  };
 }
 
 function toolCallResult(structured: Record<string, unknown>): Record<string, unknown> {

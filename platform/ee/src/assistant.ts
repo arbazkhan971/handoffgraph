@@ -19,9 +19,31 @@
 //    parallel here; it is fetched at request time by issuing a `tools/list`
 //    JSON-RPC message to handleMcpRoute through a synthetic Request. Same for
 //    execution: `tools/call` runs the real tool implementation. No HTTP hop, no
-//    duplicated tool logic, and a tool added to mcp.ts appears here with no
-//    change to this file. (The synthetic-Request idiom is the platform's:
-//    index.ts's OTLP handler replays the event-batch pipeline the same way.)
+//    duplicated tool logic, and a READ-ONLY tool added to mcp.ts appears here
+//    with no change to this file. (The synthetic-Request idiom is the
+//    platform's: index.ts's OTLP handler replays the event-batch pipeline the
+//    same way.)
+//
+// 2a. IT IS READ-ONLY, BY CONSTRUCTION.
+//    tools/list is principal-independent: it returns the whole catalogue,
+//    including record_score and accept_handoff, which APPEND OBSERVED
+//    score.recorded / handoff.accepted events to the spine. Handing those to a
+//    model would mean model output — steerable by prompt injection sitting in
+//    the very telemetry the assistant was asked to summarize — could mint
+//    OBSERVED evidence. That is exactly the INFERRED→OBSERVED laundering this
+//    product exists to make impossible, so the assistant keeps only tools
+//    flagged `write: false` (mcp.ts's ToolDef), and it does so twice over:
+//
+//      - the system prompt advertises the READ-ONLY catalogue, so a write tool
+//        is never even named to the model; and
+//      - a tool_call naming a write tool is REFUSED with
+//        `assistant_write_tool_refused` and ends the request. Not skipped, not
+//        answered around — a refusal the caller can see.
+//
+//    The filter is fail-closed on the flag itself: a tool is admitted only when
+//    tools/list said `write: false`. A future tool that forgets the flag is
+//    treated as write-capable and never offered, which is the safe direction to
+//    be wrong in.
 //
 // 3. BRING YOUR OWN MODEL.
 //    The caller supplies `gateway_key` and `model`. The model call goes through
@@ -161,6 +183,8 @@ interface McpToolDef {
   name: string;
   description: string;
   inputSchema: unknown;
+  /** true when the tool appends to the spine (mcp.ts's ToolDef.write). */
+  write: boolean;
 }
 
 type McpOutcome = { ok: true; result: Record<string, unknown> } | { ok: false; message: string };
@@ -236,6 +260,11 @@ function toolDefsFrom(result: Record<string, unknown>): McpToolDef[] {
       name: record.name,
       description: typeof record.description === "string" ? record.description : "",
       inputSchema: record.inputSchema ?? { type: "object" },
+      // FAIL CLOSED. Only an explicit `write: false` makes a tool read-only
+      // here; a missing, malformed, or true flag means "assume it writes". A
+      // tool that lands in mcp.ts without the flag therefore disappears from
+      // the assistant rather than quietly becoming reachable by model output.
+      write: record.write !== false,
     });
   }
   // Deterministic prompt bytes: the same workspace state always produces the
@@ -314,7 +343,9 @@ function systemPrompt(tools: McpToolDef[]): string {
     "calling the tools below. You have no knowledge of this workspace beyond what the",
     "tools return.",
     "",
-    "TOOLS (JSON):",
+    "TOOLS (JSON) — this list is COMPLETE, and every tool on it is READ-ONLY. You cannot",
+    "record scores, accept handoffs, or write anything; a tool_call naming any tool that",
+    "is not listed below is refused and ends the request.",
     canonicalJsonStringify(catalogue),
     "",
     "PROTOCOL — every reply you send must be EXACTLY ONE JSON object and nothing else.",
@@ -478,16 +509,23 @@ export async function handleAssistantRoute(
   const body = validateBody(parsed);
   if (!body.ok) return json(400, { error: body.error });
 
-  // The live tool catalogue, straight from src/mcp.ts.
+  // The live tool catalogue, straight from src/mcp.ts — then narrowed to the
+  // read-only half of it. tools/list is principal-independent and includes
+  // record_score and accept_handoff; those append OBSERVED events to the spine
+  // and must never be reachable from model output. See commitment 2a above.
   const list = await mcpCall(env, authorization, "tools/list", undefined, 1);
   if (!list.ok) {
     return json(502, { error: "assistant_tools_unavailable", detail: list.message });
   }
-  const tools = toolDefsFrom(list.result);
+  const catalogue = toolDefsFrom(list.result);
+  const tools = catalogue.filter((tool) => !tool.write);
   if (tools.length === 0) {
-    return json(502, { error: "assistant_tools_unavailable", detail: "no tools are available" });
+    return json(502, { error: "assistant_tools_unavailable", detail: "no read-only tools are available" });
   }
-  const toolNames = new Set(tools.map((tool) => tool.name));
+  const readOnlyNames = new Set(tools.map((tool) => tool.name));
+  // Kept only to tell "this tool exists but writes" apart from "this tool does
+  // not exist" in the refusal, so the caller sees which one actually happened.
+  const writeNames = new Set(catalogue.filter((tool) => tool.write).map((tool) => tool.name));
 
   const model = modelCall ?? gatewayModelCall(env, body.value.gatewayKey, body.value.model, fetcher);
 
@@ -538,7 +576,24 @@ export async function handleAssistantRoute(
     }
 
     const { name, args } = parsedTurn.turn;
-    if (!toolNames.has(name)) {
+    if (!readOnlyNames.has(name)) {
+      if (writeNames.has(name)) {
+        // The second half of the read-only guarantee. The write tools were
+        // never advertised, so a model asking for one is either confused or
+        // steered — most plausibly by injected text inside the very telemetry
+        // it was asked to summarize. Either way: refuse loudly and stop. A
+        // silent skip would let the model keep going and answer as though the
+        // write had happened; executing it would append an OBSERVED
+        // score.recorded / handoff.accepted event authored by a model.
+        return json(502, {
+          error: "assistant_write_tool_refused",
+          detail:
+            `the model requested a write tool, which the assistant never offers: ${JSON.stringify(name)}. ` +
+            "The assistant is read-only; nothing was written.",
+          tool: name,
+          tools_used: [...toolsUsed],
+        });
+      }
       return json(502, {
         error: "assistant_unknown_tool",
         detail: `the model requested a tool that does not exist: ${JSON.stringify(name)}`,

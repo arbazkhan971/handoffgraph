@@ -349,9 +349,28 @@ assistant cannot read either: not by policy, but because no code path exists.
 of `src/mcp.ts`'s `TOOL_DEFS` maintained in parallel. It is fetched per request
 by issuing a `tools/list` JSON-RPC message to `handleMcpRoute` through a
 synthetic `Request`; execution goes the same way via `tools/call`. No HTTP hop,
-no duplicated tool logic, and a tool added to `mcp.ts` appears here with no
-change to `assistant.ts`. (The synthetic-Request idiom is the platform's own —
-`index.ts`'s OTLP handler replays the event-batch pipeline the same way.)
+no duplicated tool logic, and a read-only tool added to `mcp.ts` appears here
+with no change to `assistant.ts`. (The synthetic-Request idiom is the platform's
+own — `index.ts`'s OTLP handler replays the event-batch pipeline the same way.)
+
+**2a. It is read-only, by construction.** `tools/list` is principal-independent
+and returns the whole catalogue, including `record_score` and `accept_handoff` —
+which append **OBSERVED** `score.recorded` / `handoff.accepted` events to the
+spine. Handing those to a model would mean model output, steerable by prompt
+injection sitting in the very telemetry the assistant was asked to summarize,
+could mint OBSERVED evidence: the `INFERRED → OBSERVED` laundering this product
+exists to make impossible. So the assistant keeps only tools `mcp.ts` flags
+`write: false`, and does it twice over:
+
+- the system prompt advertises the **read-only** catalogue, so a write tool is
+  never even named to the model; and
+- a `tool_call` naming a write tool is **refused** with
+  `502 assistant_write_tool_refused` and ends the request — not skipped, not
+  answered around.
+
+The filter is fail-closed on the flag itself: a tool is admitted only when
+`tools/list` said `write: false`, so a future tool that forgets the flag is
+treated as write-capable and simply never offered.
 
 **3. Bring your own model.** The caller supplies `gateway_key` and `model`. The
 call goes through this platform's gateway (`src/gateway.ts`), which resolves the
@@ -397,6 +416,7 @@ No error response contains an `answer` field. Each is asserted.
 | Model unreachable / gateway denial | `502 assistant_model_unavailable` |
 | Reply is not one valid JSON turn | `502 assistant_protocol_violation` |
 | Model requests a nonexistent tool | `502 assistant_unknown_tool` |
+| Model requests a **write** tool | `502 assistant_write_tool_refused` |
 | A tool call errors | `502 assistant_tool_failed` |
 | A 6th tool call is requested | `502 assistant_tool_budget_exhausted` |
 | `tools/list` unavailable | `502 assistant_tools_unavailable` |

@@ -267,6 +267,7 @@ HandoffGraph API whose callers already parse `{error}` everywhere else.
   "version": 4,
   "score_name": "answer_accuracy",  // required when min_score is given
   "min_score": "0.80",              // decimal STRING, never a float
+  "require_observed": false,        // demand an OBSERVED score, not an LLM judge's
   "force": false,                   // override a failing gate, audited
   "dry_run": false                  // run every check, append nothing
 }
@@ -293,6 +294,7 @@ this route rather than being handed a device token it should not have.
   "provenance": "OBSERVED",
   "gate": { "score_name": "answer_accuracy", "min_score": "0.80",
             "latest_score": "0.91", "latest_score_event_id": "evt_…",
+            "latest_score_provenance": "OBSERVED", "require_observed": false,
             "passed": true, "forced": false },
   "rollback_hint": "POST /v1/prompts/support-triage/labels with an earlier version"
 }
@@ -323,12 +325,40 @@ those **linked to that exact prompt version**, keeps the ones matching
   **newest** rows. Ascending would keep the oldest and the gate would go on
   answering confidently with superseded evidence — worse than no gate.
 
-Refusal is `409`:
+Refusal is `409`, with a `reason` naming which of the three failures happened
+(`no_score`, `below_threshold`, `provenance_not_observed`) — three different
+things for a CI log to say, and three different fixes:
 
 ```json
-{ "error": "eval_gate_failed", "latest_score": null, "min_score": "0.80",
+{ "error": "eval_gate_failed", "reason": "no_score",
+  "latest_score": null, "latest_score_provenance": null,
+  "require_observed": false, "min_score": "0.80",
   "score_name": "answer_accuracy", "prompt_name": "support-triage", "version": 4 }
 ```
+
+#### Provenance: which kind of evidence promoted this version
+
+A `score.recorded` event may be **OBSERVED** (a deterministic evaluator, a human
+review) or **INFERRED** (an LLM-as-judge — migration `0012_evals.sql` is explicit
+about this). Both are legitimate evidence; they are not the same evidence.
+
+The gate therefore always reads the provenance alongside the value and records
+it as `latest_score_provenance` in the `gate` audit — **unconditionally**, not
+only when `require_observed` is set. `prompt.labeled` is an OBSERVED event; one
+that quotes a passing score while withholding where the score came from is
+precisely how an INFERRED number gets read later as an observed one. An
+unrecognised or absent label is recorded as `UNKNOWN`, never optimistically as
+`OBSERVED`.
+
+`require_observed: true` additionally refuses to pass on anything but an
+OBSERVED latest score (`reason: "provenance_not_observed"`, `409`). It defaults
+to `false` so existing pipelines keep their behavior, and it is rejected with
+`400` when no `min_score` gate was requested — protection that is not actually
+running must not look like protection.
+
+It gates the **latest** score, not "the latest OBSERVED score": scanning past a
+newer INFERRED result to find an older OBSERVED one would resurrect exactly the
+stale-evidence pass the ordering rules above exist to prevent.
 
 #### Linkage: how a score attaches to a prompt version
 
@@ -355,6 +385,7 @@ Overrides a failing gate — and writes the whole verdict into the event payload
 ```jsonc
 "gate": { "score_name": "answer_accuracy", "min_score": "0.80",
           "latest_score": "0.40", "latest_score_event_id": "evt_…",
+          "latest_score_provenance": "INFERRED", "require_observed": true,
           "passed": false, "forced": true }
 ```
 

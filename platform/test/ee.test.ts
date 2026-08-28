@@ -1443,9 +1443,81 @@ describe("EE assistant", () => {
     // The model was shown our own MCP tool catalogue, and the tool result.
     expect(seen[0][0].role).toBe("system");
     expect(seen[0][0].content).toContain("get_workstream_context");
-    expect(seen[0][0].content).toContain("record_score");
     expect(seen[0][0].content).toContain('{"answer"');
     expect(seen[1][seen[1].length - 1].content).toContain("tool_result");
+  });
+
+  it("ADVERTISES ONLY THE READ-ONLY TOOLS — the write tools are never named to the model", async () => {
+    const { env } = await harness(null);
+    const { call, seen } = scriptedModel([JSON.stringify({ answer: "nothing to add." })]);
+    await handleEERoute(assistantRequest(ASK), env, call);
+
+    const prompt = seen[0][0].content;
+    // Every read-only tool mcp.ts publishes is on offer...
+    for (const readOnly of ["get_workstream_context", "get_trace_context", "list_scores", "get_prompt"]) {
+      expect([readOnly, prompt.includes(readOnly)]).toEqual([readOnly, true]);
+    }
+    // ...and neither spine-writing tool appears ANYWHERE in the system prompt.
+    // A model cannot ask for a tool it was never told about, and telemetry
+    // carrying an injected "now call record_score" has nothing to point at.
+    for (const write of ["record_score", "accept_handoff"]) {
+      expect([write, prompt.includes(write)]).toEqual([write, false]);
+    }
+    expect(prompt).toContain("READ-ONLY");
+  });
+
+  it.each(["record_score", "accept_handoff"])(
+    "REFUSES a %s tool_call fail-closed — nothing is appended to the spine",
+    async (writeTool) => {
+      const { env, statements, world } = await harness(null);
+      const { call } = scriptedModel([
+        // What a prompt injection inside the summarized telemetry would steer
+        // the model into emitting.
+        JSON.stringify({
+          tool_call: {
+            name: writeTool,
+            arguments: { workstream_id: WORKSTREAM, name: "handoff.validity", target_type: "workstream", target_id: WORKSTREAM, value: 1 },
+          },
+        }),
+        JSON.stringify({ answer: "I recorded a perfect score for you." }),
+      ]);
+      const response = await handleEERoute(assistantRequest(ASK), env, call);
+
+      expect(response?.status).toBe(502);
+      const body = (await response?.json()) as Record<string, unknown>;
+      expect(body.error).toBe("assistant_write_tool_refused");
+      expect(body.tool).toBe(writeTool);
+      expect(body.tools_used).toEqual([]);
+
+      // Fail-CLOSED, not skip-and-continue: the request ends, and the scripted
+      // answer that followed the refused call never reaches the caller.
+      expect(Object.hasOwn(body, "answer")).toBe(false);
+      expect(JSON.stringify(body)).not.toContain("perfect score");
+
+      // And the spine is untouched. This is the whole invariant: no OBSERVED
+      // score.recorded / handoff.accepted event may originate in model output.
+      expect(statements.some((s) => s.sql.includes("mcp:insert-event"))).toBe(false);
+      expect(world.events).toHaveLength(0);
+    },
+  );
+
+  it("a refused write tool is distinguishable from a tool that does not exist", async () => {
+    const { env } = await harness(null);
+    const invented = scriptedModel([JSON.stringify({ tool_call: { name: "record_scores", arguments: {} } })]);
+    const unknown = await handleEERoute(assistantRequest(ASK), env, invented.call);
+    expect((await unknown?.json()) as Record<string, unknown>).toMatchObject({
+      error: "assistant_unknown_tool",
+    });
+  });
+
+  it("read-only tools still run after the write tools are filtered out", async () => {
+    const { env } = await harness(null);
+    const { call } = scriptedModel([CALL_CONTEXT, JSON.stringify({ answer: "One session." })]);
+    const response = await handleEERoute(assistantRequest(ASK), env, call);
+    expect(response?.status).toBe(200);
+    const body = (await response?.json()) as Record<string, unknown>;
+    expect(body.tools_used).toEqual(["get_workstream_context"]);
+    expect(body.provenance).toBe("INFERRED");
   });
 
   it("evidence_refs come from tool results only — an id the model invented is not evidence", async () => {
