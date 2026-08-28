@@ -30,6 +30,7 @@ import {
   renderSignedOutPage,
   type AccountPageData,
 } from "./account_page";
+import { artifactsScheduled, handleArtifactsRoute, type ArtifactsEnv } from "./artifacts";
 import type {
   D1BoundStatement,
   D1DatabaseLike,
@@ -97,6 +98,8 @@ export default {
       if (accountResponse !== null) return accountResponse;
       const teamsResponse = await handleTeamsRoute(request, env);
       if (teamsResponse !== null) return teamsResponse;
+      const artifactsResponse = await handleArtifactsRoute(request, env);
+      if (artifactsResponse !== null) return artifactsResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
@@ -118,6 +121,26 @@ export default {
       }));
       // Never leak internals.
       return jsonResponse(500, { error: "internal error" });
+    }
+  },
+
+  // Cron dispatcher (see wrangler.toml [triggers]). Sweeps are derived-model
+  // maintenance only: compaction copies the spine into object storage and
+  // retention slims rebuildable read models. A failing sweep is logged
+  // content-free and never surfaces — hosted maintenance must not affect
+  // ingest or local capture.
+  async scheduled<E extends ArtifactsEnv>(
+    _controller: ScheduledController,
+    env: E,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    try {
+      await artifactsScheduled(env);
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "scheduled dispatch failed",
+        error_type: error instanceof Error ? error.name : "unknown",
+      }));
     }
   },
 } satisfies ExportedHandler<Env>;
