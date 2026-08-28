@@ -78,6 +78,7 @@ import {
 import { handleMcpRoute } from "./mcp";
 import { buildObservationStatements, handleObservationsRoute } from "./observations";
 import { PLAN_CATALOG } from "./plans";
+import { handleQualityRoute } from "./quality";
 import { prepareQuotaReservation } from "./quota";
 import { handleTeamsRoute } from "./teams";
 import { handleWebhooksRoute, webhooksQueue, webhooksScheduled } from "./webhooks";
@@ -143,6 +144,8 @@ export default {
       if (observationsResponse !== null) return observationsResponse;
       const analyticsResponse = await handleAnalyticsRoute(request, env);
       if (analyticsResponse !== null) return analyticsResponse;
+      const qualityResponse = await handleQualityRoute(request, env);
+      if (qualityResponse !== null) return qualityResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
