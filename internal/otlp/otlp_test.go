@@ -414,17 +414,21 @@ func TestHandlerBackpressure(t *testing.T) {
 		done <- resp.StatusCode
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	var second *http.Response
-	for {
-		resp, err := http.Post(srv.URL+"/v1/traces", "application/json", strings.NewReader(body))
-		if err == nil {
-			second = resp
-			break
+	// Deterministic saturation: wait until the first request has actually
+	// acquired the single in-flight slot (it is blocked inside Append)
+	// before attempting the second one. Waiting on the counter instead of
+	// racing the scheduler makes the 429 guaranteed.
+	satDeadline := time.Now().Add(5 * time.Second)
+	for h.inFlight.Load() != 1 {
+		if time.Now().After(satDeadline) {
+			t.Fatal("first request never acquired the in-flight slot")
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("second request never completed")
-		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	second, err := http.Post(srv.URL+"/v1/traces", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if second.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("saturated POST = %d, want 429", second.StatusCode)
