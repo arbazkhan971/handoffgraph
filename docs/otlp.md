@@ -17,12 +17,19 @@ own OTel SDK — can feed the spine without a HandoffGraph SDK.
 > local-first binary does not want. gRPC emitters should point at a collector
 > (`otlp` receiver, `otlphttp` exporter) and forward to `/v1/traces`.
 >
-> **Hosted protobuf is still pending** — the Worker (`POST /v1/otlp`) accepts
-> OTLP/JSON only; the binary flavor lands in the next hosted wave.
+> **Hosted protobuf shipped (2026-08-28)** — the Worker (`POST /v1/otlp`)
+> accepts `application/json` *and* `application/x-protobuf`, answering a
+> protobuf export with a protobuf response. Both flavors reach the one
+> converter, so ids match **four ways**: Go-protobuf == Go-JSON ==
+> TS-protobuf == TS-JSON, proven against a Go-authored golden fixture
+> (`testdata/fixtures/otlp/genai_session.pb`) in
+> `platform/test/otlp_proto.test.ts`.
 >
-> The protobuf decoder is hand-rolled (`internal/otlp/protowire.go`), with no
-> `google.golang.org/protobuf` or `go.opentelemetry.io/proto/otlp`
-> dependency, keeping the pure-Go CGO-free posture.
+> The protobuf decoder is hand-rolled in both languages
+> (`internal/otlp/protowire.go`, `platform/src/otlp_proto.ts`), with no
+> `google.golang.org/protobuf`, `go.opentelemetry.io/proto/otlp`, or npm
+> protobuf runtime — keeping the pure-Go CGO-free posture locally and a
+> dependency-free Worker hosted.
 
 ## CLI
 

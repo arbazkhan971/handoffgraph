@@ -12,14 +12,59 @@ Your agent stops. The work should not.
 
 **v0.6.0-level local product, pre-release** — test suite race-clean. Implemented: the crash-safe local event spine (append-only events, SQLite, deterministic graph/trace reducers, fail-closed redaction, checkpoints); **Codex, Claude, and Pi adapters** with merge-safe hook installers, native-rollout normalization with deterministic (idempotent) event IDs, and native resume; the **local MCP stdio server** (12 goal-oriented tools: workstream/trace context, checkpoints, decisions, verifications, prompts, scores, file claims, handoff lifecycle); the **deterministic detection pack**; the embedded **Session Debugger UI** (`handoffgraph open`); and **verified cross-agent continuation** (`continue --to`) with repository-drift checks and machine-readable acknowledgement.
 
-The repository now also contains an ahead-of-roadmap **private hosted Basic
-foundation** under `platform/`: AuthKit-compatible sign-up/sign-in, hashed
-browser sessions and device credentials, a D1 entitlement schema, atomic hard
-quotas including 2 active devices and 10 lifetime device-token issuances, a
-50-account beta ceiling, and an account/usage UI. It is not publicly deployed
-and no paid checkout exists. Production identity credentials, edge
-abuse controls, remote migration, domains, deletion/privacy operations, and
-explicit CLI sync policy remain release gates in [ROADMAP.md](ROADMAP.md).
+Since then the local core also gained OTLP/HTTP ingest in both wire flavors, a
+scores primitive, a wide observation index with `signal_source` coalescing and
+exception groups, the `verify` CI gate with result caching, datasets ×
+experiments, an immutable prompt store, and `reset` — 32 commands in all. It
+is still pre-release: no public tag, and installation is from source.
+
+The repository also contains an ahead-of-roadmap **private hosted tier** under
+`platform/` — a **Cloudflare-only** Worker (D1, R2, KV, Queues, Workflows,
+Durable Objects, Analytics Engine, Cron Triggers; no Go servers, no Docker).
+On top of the original Basic foundation (AuthKit-compatible sign-up/sign-in,
+hashed browser sessions and device credentials, a D1 entitlement schema,
+atomic hard quotas including 2 active devices and 10 lifetime device-token
+issuances, a 50-account beta ceiling, and an account/usage UI), it now
+implements:
+
+- **Ingest** — OTLP/HTTP in both wire flavors (JSON **and** protobuf), with
+  event ids byte-identical to the Go core's; idempotent batch events.
+- **Read models** — wide `span_observations`, first-class sessions, 30-minute
+  `ts_bucket` pruning, resource fingerprints, admin reindex.
+- **Teams & governance** — workspace roles (owner/admin/member/viewer),
+  invites with hash-only tokens, seats, last-owner protection, and a
+  hash-chained audit trail whose chain is enforced by D1 triggers.
+- **Storage lifecycle** — R2 artifact tiering with a D1 file-list index and
+  cron compaction; batch export to R2 with download; retention that sweeps
+  **derived models only** — the event spine is never TTL'd.
+- **Operations** — outbound webhooks over Queues (HMAC-signed, content-free);
+  dashboards-as-config (versioned immutable JSON, CI dry-run validate, share
+  links); scheduled alerts with webhook/Slack/email channels, each firing
+  appended to the spine as history; analytics series/summary and trace funnels.
+- **Capture & access** — an OpenAI-compatible gateway (virtual keys, budgets
+  as exact decimal strings, rate limits, opt-in response cache, provider
+  fallback); a hosted MCP endpoint mirroring the local tool contract; a
+  public REST API with `pk_`/`sk_` keys, edge-cached rejection, and an
+  OpenAPI 3.1 document.
+- **Quality loop** — evals (deterministic checks recorded OBSERVED, LLM judge
+  always recorded INFERRED, BYO sealed keys, cron + manual on a durable
+  contract); human annotation queues; datasets × experiments and prompt
+  reads; a prompt playground with eval-gated CI/CD label repoint and
+  rollback; agent simulations; content-addressed multimodal attachments.
+- **Enterprise line** — a real directory fence (`platform/ee/`, its own
+  LICENSE, an `EE_ENABLED` flag, and a test asserting the OSS baseline stays
+  intact) carrying SSO org binding, a SCIM subset, a masking rules engine,
+  audit export, and an in-product assistant that answers over our own MCP
+  tools with a BYO model and labels every answer INFERRED.
+
+**None of this is publicly deployed, and no paid checkout exists.** Known
+gaps are stated rather than implied: masking is not yet wired into the ingest
+path, SCIM provisioning is a subset, and hosted batch backpressure is
+outstanding. Production identity credentials, edge abuse controls, remote
+migration, domains, deletion/privacy operations, and explicit CLI sync policy
+remain release gates in [ROADMAP.md](ROADMAP.md). Feature status per
+competitor-parity row lives in
+[docs/competitor-analysis.md](docs/competitor-analysis.md) §3.
 
 ## Quickstart
 
@@ -124,11 +169,12 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | Command | Purpose |
 |---|---|
 | `handoffgraph init` | Initialize the local data directory |
-| `handoffgraph doctor` | Diagnose config and database health |
+| `handoffgraph doctor [--verify]` | Diagnose config and database health; `--verify` runs the deeper checks |
+| `handoffgraph reset [--hard --yes]` | Clear derived read models and caches; `--hard` wipes the whole data directory (event log included) and fails closed without `--yes` |
 | `handoffgraph status` | Show local capture status |
 | `handoffgraph workstream new <title>` | Create a workstream |
 | `handoffgraph event import <file>` | Import a JSONL event fixture |
-| `handoffgraph otlp import <file>` / `otlp serve` | Ingest OTLP/JSON telemetry into the spine (idempotent, localhost listener, `--capture full\|metadata\|minimal` fail-closed privacy tiers) |
+| `handoffgraph otlp import <file>` / `otlp serve` | Ingest OTLP/HTTP telemetry into the spine — **JSON and protobuf**, same ids either way (idempotent, localhost listener, `--capture full\|metadata\|minimal` fail-closed privacy tiers) |
 | `handoffgraph install --agent codex\|claude\|pi` | Install merge-safe capture hooks (`--dry-run` previews) |
 | `handoffgraph sessions [--agent <name>] [--json]` | List native sessions derived from captured events, or detect native sessions on disk (`--detect`) |
 | `handoffgraph resume <native-session-id>` | Print the native resume invocation; never execute it |
@@ -143,9 +189,10 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph mcp serve` | Run the local MCP stdio server (12 goal-oriented tools) |
 | `handoffgraph open` | Serve the local Session Debugger UI (localhost only) |
 | `handoffgraph score record ...` / `score list` | Record/list source-tagged quality scores (numeric, category, boolean) on any spine object |
-| `handoffgraph index rebuild` / `query spans ...` | Wide denormalized observation index: ts_bucket-pruned, fingerprint-filterable span queries (auto-rebuilds when stale) |
+| `handoffgraph index rebuild` / `query spans ...` | Wide denormalized observation index: ts_bucket-pruned, fingerprint-filterable span queries with `--signal-source` / `--include-shadowed` coalescing views (auto-rebuilds when stale) |
+| `handoffgraph query exceptions ...` | Derived exception groups (deterministic grouping hash) |
 | `handoffgraph query usage ...` / `outcomes ...` | Token/cost rollups per provider or session; per-workstream coding-agent outcomes (files, commands, tests, handoffs, scores) |
-| `handoffgraph verify --workstream <id> [--baseline <cp>]` | Deterministic evidence checks + baseline regression gate; exit 0/1 for CI; appends verification.recorded evidence |
+| `handoffgraph verify --workstream <id> [--baseline <cp>] [--no-cache]` | Deterministic evidence checks + baseline regression gate; exit 0/1 for CI; appends `verification.recorded` evidence; results are cached (`cached: true` in the report, `--no-cache` recomputes) |
 | `handoffgraph dataset create/list` / `experiment run/list/compare` | Immutable content-hash dataset versions; deterministic experiment runs (materialize + detections per example); regression comparison |
 | `handoffgraph prompt create/label/list/show` | Immutable prompt versions + mutable labels (production/latest/custom), content-hashed bodies, linkage view |
 | `handoffgraph redact --preview <file>` | Preview fail-closed redaction |
@@ -201,25 +248,44 @@ internal/
   checkpoint/              checkpoint builder + handoff score
   launch/                  continuation payload, drift, acknowledgement read model
   detection/               deterministic session-pathology rules
-  mcp/                     local MCP stdio server (11 tools incl. scores)
+  mcp/                     local MCP stdio server (12 tools incl. prompts + scores)
+  otlp/                    OTLP/HTTP ingest — JSON + hand-rolled protobuf decoder
   scores/                  score read model + validated payload builder
-  observations/            wide denormalized observation derivation (ts_bucket + fingerprints)
+  observations/            wide denormalized observation derivation (ts_bucket,
+                           fingerprints, signal_source coalescing, exception groups)
+  datasets/                content-hashed dataset versions
+  prompts/                 immutable prompt versions + mutable labels
   webui/                   embedded debugger API and static assets
   fixture/                 synthetic event generator
-  verify/                  fixture verification harness
+  verify/                  deterministic evidence checks + baseline regression gate
+                           (also the golden-fixture verification harness)
 protocol/schema/v1/        JSON Schemas
-platform/                  Private hosted-beta Worker, accounts, D1 quotas
-landing/                   Public landing Worker and waitlist
-docs/                      architecture, privacy, adapters, roadmap
+web/                       debugger UI source (traces, scores, datasets, prompts)
+platform/                  Private hosted-beta Worker (Cloudflare-only):
+  src/                       ingest, OTLP (JSON + protobuf), observations,
+                             analytics, dashboards, alerts, webhooks, gateway,
+                             evals, annotations, playground, simulations,
+                             attachments, quality, teams, apikeys, artifacts, mcp
+  ee/                        directory-fenced Enterprise line (own LICENSE)
+  migrations/                D1 schema, 0001–0017
+platform/ee/               EE line: separate LICENSE, EE_ENABLED-gated
+deploy/dashboards/         Dashboards-as-config examples (PR-reviewable JSON)
+landing/                   Public landing Worker
+docs/                      architecture, privacy, adapters, OTLP, hosted tier,
+                           parity plan, competitor analysis
 ```
 
 ## Development
 
 ```bash
-go test ./...
+go test ./...                                    # local Go core
 go test -race ./...
 go vet ./...
 gofmt -l .
+
+cd platform && npx tsc --noEmit && npx vitest run # hosted Worker
+cd web && npx vitest run                          # debugger UI
+node --test landing/*.test.mjs                    # landing Worker
 ```
 
 ## Agent skills

@@ -282,3 +282,62 @@ commands. Matrix status: ~34/55 rows.
 Open: P3 hosted platform (R2/AE/Workflows/dashboards/teams/gateway), P2 UI
 surfaces, protobuf/gRPC flavors. Launch gates unchanged (canonical repo,
 real sessions, first tag). Full takeover brief: HANDOVER.md §13.
+
+
+## Parity completion — ultracode waves — 2026-08-28
+
+27 commits after `9ed8dda` (head `9bbeede`), run as three parallel waves plus
+a review pass. All gates green per commit.
+
+- **Wave 1 — local tails + hosted foundation.** OTLP/protobuf locally
+  (hand-rolled wire decoder, no protobuf dependency) and then hosted, with
+  four-corner Go/TS × JSON/protobuf id parity proven against a Go-authored
+  golden fixture; GenAI semconv v1.37 refresh; `signal_source` coalescing
+  (native>hook>sdk>import, shadow rows kept) + promoted columns + exception
+  groups; verify result cache + `reset` + `doctor --verify`; debugger-UI
+  Scores/Datasets/Prompts views; hosted wide observations + sessions +
+  fingerprints; teams/RBAC + hash-chained audit; R2 artifact tiering +
+  export + retention; outbound webhooks. Vercel configs retired
+  (Cloudflare-only, as the plan requires).
+- **Wave 2 — analytics and access.** Analytics series/summary + trace
+  funnels; dashboards-as-config (versioned JSON, `/validate` CI dry-run,
+  in-repo example, share links); scheduled alerts + webhook/Slack/email
+  channels with `alert.fired` appended to the spine; gateway capture mode
+  (`vk_` keys, decimal-string budgets, rate limits, R2 response cache,
+  provider fallback, streaming rejected in v1); `pk_`/`sk_` keys + public
+  `/api/v1/*` + OpenAPI 3.1 + hosted MCP; hosted quality-loop reads.
+- **Wave 3 — quality loop and EE.** Agent simulations; hosted evals (5
+  deterministic checks OBSERVED, LLM judge always INFERRED, BYO sealed keys,
+  durable + resumable); annotation queues (DO live state, D1 fallback);
+  prompt playground + eval-gated CI/CD + optimizer that never auto-applies;
+  content-addressed attachments; the EE fence (own LICENSE, `EE_ENABLED`,
+  OSS-baseline-intact test) + SSO/SCIM/masking/audit-export + the in-product
+  assistant.
+- **Review pass.** Deduped a cross-wave index-name collision; then a
+  five-item hardening backlog: proto3 `arrayValue` cross-flavor divergence
+  (new `.json`/`.pb` fixture pair read by both suites), webhook delivery
+  reconciliation, registration-time SSRF guard, `deviceLookup` unification,
+  and a live `/api/version` in the local debugger (`internal/webui` + `web/`)
+  replacing a constant compiled into the bundle.
+
+Counts (measured from raw tool output, all green): Go **1038** tests (560
+top-level across 29 packages), clean with and without `-race`; platform
+**1381** vitest across 28 files + `tsc --noEmit` clean; web **129**; landing
+**10**. CLI **32** commands (pinned by `register_test.go`); MCP **12** tools;
+D1 migrations **0004–0017**; Go migrations **10–12**.
+
+Matrix status: **~54/55 rows** shipped or dated-re-scoped. Re-scopes
+recorded with rationale: gRPC (row 2), presigned direct-to-R2 (row 53),
+benchmark suites (row 32), embedding drift (row 54). Pending tails stated
+rather than checkmarked: hosted batch backpressure (4), acceptance/PR
+linkage awaiting adapter events (38), SCIM provisioning + masking-at-ingest
+(48).
+
+Also corrected the moat claim: "nobody models agent→agent handoff at all" is
+false since Codex CLI v0.147.0 (2026-08-07) shipped import + ongoing sync of
+Claude Code/Cursor conversations. `docs/competitor-analysis.md` §4.1 now
+carries the dated competitive update and the defensible wording — *nobody
+ships verified, evidence-provenance cross-agent continuity*.
+
+Launch gates unchanged (canonical repo, ~20 real sessions, first tag; hosted
+tier private and undeployed). Full takeover brief: HANDOVER.md §14.

@@ -473,3 +473,158 @@ go vet ./... && go build ./...
 go test ./... && go test -race ./...
 cd platform && npx tsc --noEmit && npx vitest run   # 176 green
 ```
+
+*(§13 is preserved as written. It describes the state at f1747c4 and its
+counts — 28 commands, 176 vitest, ~34/55 rows — are now historical. Read §14
+for the current state.)*
+
+---
+
+## 14. 2026-08-28 ultracode wave — takeover brief
+
+### Where we are now
+
+**27 commits after `9ed8dda` (head `9bbeede`).** The parity program is
+effectively complete: **~54 of 55 matrix rows are shipped behind a tested
+gate or carry a dated re-scope rationale**, with row 55 (browser session
+replay) the one deliberate out-of-scope. `docs/competitor-analysis.md` §3 is
+the authoritative per-row status; `docs/parity-plan.md` mirrors it inside the
+owning phase bullets.
+
+Four rows are re-scopes, not builds, and each carries its rationale in-doc:
+gRPC on row 2 (Workers cannot terminate inbound gRPC; locally it would cost
+the single binary's three-dependency posture — front a collector instead),
+presigned direct-to-R2 on row 53 (needs S3-compatible R2 *account* keys we do
+not hold), and rows 32 + 54 (both marked "(optional)" in the plan from day
+one; demand-gated, not built).
+
+Three **pending tails** live inside otherwise-shipped rows. Do not let a
+future edit quietly checkmark them:
+
+1. **Row 4** — hosted batch-endpoint backpressure (local 429/Retry-After ships).
+2. **Row 38** — edits accepted/rejected + commit/PR linkage, blocked on the
+   adapters emitting acceptance events. Do **not** synthesize them.
+3. **Row 48** — SCIM beyond the `Users` subset, and wiring the finished,
+   fail-closed masking engine into `platform/src/ingest.ts`.
+
+**The owner gates are unchanged** and still precede any public claim — see
+"Launch gates" below. Nothing in this wave moved them.
+
+### New surfaces
+
+**Local Go core.** `internal/otlp` gained a hand-rolled protobuf wire decoder
+(`protowire.go`) alongside the JSON path; `internal/observations` gained
+`signal_source` coalescing, shadow rows and exception groups;
+`internal/storage/verify_cache.go` backs the row-26 result cache.
+**Go migrations 10–12** landed (10–11: promoted columns / coalescing /
+exception groups; 12: verify result cache). Migrations are append-only and
+ordered — never renumber, never edit a shipped one.
+
+**CLI: 32 commands.** Verified from `internal/commands/register_test.go`,
+which pins the exact list and asserts the count matches:
+
+```
+checkpoint claude codex continue detect doctor event fixture graph handoff
+init install mcp dataset experiment index open otlp outcomes pi prompt query
+redact reset resume score sessions status traces verify version workstream
+```
+
+New since §13: `reset` (and `doctor --verify`). MCP stays at **12 tools**
+(`internal/mcp/server_test.go` `wantToolOrder` pins them).
+
+**Debugger UI (`web/`).** `ScoresView`, `DatasetsView` (with the compare
+panel) and `PromptsView` shipped — these were the P2 "UI pending" tails on
+rows 24, 27, 33/34.
+
+**Hosted Worker (`platform/`).** Nineteen source modules, each owning one
+parity area and each with a header comment stating its rows and its design
+provenance — read that header before editing a module:
+
+```
+src/ingest.ts        src/otlp.ts        src/otlp_proto.ts   src/observations.ts
+src/analytics.ts     src/dashboards.ts  src/alerts.ts       src/webhooks.ts
+src/gateway.ts       src/apikeys.ts     src/mcp.ts          src/evals.ts
+src/annotations.ts   src/playground.ts  src/simulations.ts  src/quality.ts
+src/artifacts.ts     src/attachments.ts src/teams.ts
+ee/src/ee.ts         ee/src/assistant.ts        (fenced, own LICENSE)
+```
+
+**D1 migrations 0004–0017**: teams/RBAC, observations+sessions,
+artifacts+exports, webhooks, dashboards, alerts, gateway, api_keys, evals,
+annotations, playground, simulations, ee, attachments. One cron
+(`*/5 * * * *`) drives every sweep through the `scheduled` dispatcher in
+`src/index.ts`.
+
+### Suite counts (measured 2026-08-28, all green)
+
+| Suite | Command | Result |
+|---|---|---|
+| Go core | `go test ./...` | **1038 passed** (560 top-level across 29 packages); `-race` clean |
+| Hosted Worker | `cd platform && npx vitest run` | **1381 passed**, 28 files |
+| Debugger UI | `cd web && npx vitest run` | **129 passed**, 4 files |
+| Landing | `node --test landing/*.test.mjs` | **10 passed** |
+| Types | `cd platform && npx tsc --noEmit` | clean |
+
+Count these from raw tool output. A summarizing wrapper in the loop will
+happily invent a plausible number (it reported 1039/33 and 1387 for the first
+two rows above); `go test ./... -json` and vitest's own footer are the truth.
+
+### Wave-merge integration gotchas (earned the hard way)
+
+The waves ran parallel agents against the same tree. These are the failure
+modes that actually bit, and the resolutions that stuck:
+
+1. **Index-name collisions across parallel migrations.** Two agents each
+   wrote a migration creating `idx_events_score_recorded`; both were correct
+   in isolation and the pair failed on apply (fixed in `3a0757c`).
+   **Rule:** namespace every new index by its migration's subject
+   (`idx_<table>_<cols>` is not enough when two waves touch `events`), and
+   apply the full migration chain from scratch before committing — not just
+   the new file.
+2. **Merging the route delegation chain: keep BOTH sides, never pick one.**
+   `platform/src/index.ts` dispatches by trying `handleXRoute(request, env)`
+   in order, each returning `null` when it does not own the path. Parallel
+   waves each append their own line, so a conflict there is *always* a
+   keep-both, and a "resolve by taking theirs" silently deletes a whole
+   feature's routing. The same applies to the `scheduled` dispatcher's sweep
+   list.
+3. **Worker type regeneration is centralized, not per-wave.** Each wave adds
+   bindings to `wrangler.toml`; regenerating `worker-configuration.d.ts` per
+   wave produces a 568 KB file with conflicting hunks in every merge. Do it
+   **once**, after the wave's bindings have all landed (that is what
+   `b85eeea` is).
+4. **Cross-flavor divergence hides in the decoders, not the converter.**
+   Row 2's proto3 `arrayValue` bug (fixed in `9bbeede`) had the *same*
+   telemetry decode correctly as protobuf and wrongly as JSON, in both
+   languages, because the JSON decoders read a non-spec field name. The
+   converter was innocent. **Any decoder change needs a fixture pair
+   (`.json` + `.pb`) read by BOTH suites** — see
+   `testdata/fixtures/otlp/array_values.*`.
+5. **Duplicated adapters drift.** An identical ~20-line D1 device lookup had
+   been copy-pasted into two modules; it is now one `deviceLookup(db)` in
+   `src/auth.ts`. When two waves need the same helper, promote it rather than
+   letting each keep a copy.
+6. Everything in §13's gotcha list still applies — especially #1 (Go `flag`
+   stops at the first positional), #2/#3 (BigInt nanosecond epochs; the
+   hand-rolled ULID), and #6 (never commit until `go test ./...` **and**
+   `go test -race ./...` both exit 0, plus the platform suite when
+   `platform/` changed).
+
+### Launch gates (owner: Arbaz, not the agent) — unchanged
+
+- Transfer/mirror repo to `github.com/handoffgraph/handoffgraph` (module path).
+- Run ~20 real sessions through the hooks; import as acceptance + golden
+  cassettes (`docs/releasing.md` for the tag process after that).
+- Then tag `v0.7.0-beta.1` (release workflow is already wired).
+- Hosted tier stays **private and undeployed**: production identity
+  credentials, edge abuse controls, remote D1 migration, domains, and
+  deletion/privacy operations are still open (`ROADMAP.md`).
+
+### One competitive fact worth carrying into any launch copy
+
+`docs/competitor-analysis.md` §4.1 (dated 2026-08-28) retires the old line
+"nobody models agent→agent handoff at all" — OpenAI's Codex CLI has shipped
+one-directional import **plus ongoing sync** of Claude Code/Cursor
+conversations since v0.147.0 (2026-08-07), with no verification or evidence
+semantics. The defensible claim is now **"nobody ships verified,
+evidence-provenance cross-agent continuity."** Use that wording.
