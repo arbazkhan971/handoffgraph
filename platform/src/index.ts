@@ -41,6 +41,13 @@ import type {
 export type { D1BoundStatement, D1DatabaseLike, D1Statement } from "./db";
 import { convertOtlpExport, type CaptureTier } from "./otlp";
 import {
+  OtlpProtoError,
+  decodeExportRequest,
+  isProtobufMediaType,
+  protobufExportResponse,
+  readProtobufBody,
+} from "./otlp_proto";
+import {
   BATCH_SCHEMA_VERSION,
   MAX_BODY_BYTES,
   buildReceipt,
@@ -301,7 +308,8 @@ function deviceLookup(db: D1DatabaseLike): DeviceLookup {
 // -- POST /v1/otlp -------------------------------------------------------------
 
 /**
- * OTLP/JSON trace ingest (parity row 2, hosted). Converts an
+ * OTLP trace ingest (parity row 2, hosted), both wire flavors:
+ * application/json and application/x-protobuf. Converts an
  * ExportTraceServiceRequest into canonical events with the same
  * deterministic ids as the local CLI (golden-tested parity), then replays
  * the exact tested event-batch pipeline (auth, quota, idempotency,
@@ -330,18 +338,43 @@ async function handleOtlpExport(request: Request, env: { DB: D1DatabaseLike }): 
   }
   const captureTier: CaptureTier = tierRaw;
 
-  const bodyRead = await readRequestBody(request, MAX_BODY_BYTES);
-  if (!bodyRead.ok) {
-    const error = bodyRead.status === 413
-      ? "request body exceeds 1 MiB"
-      : "request body is not readable UTF-8";
-    return jsonResponse(bodyRead.status, { error });
-  }
+  // Wire-flavor switch. OTLP/HTTP defines both an application/json and an
+  // application/x-protobuf ExportTraceServiceRequest; both decode into the
+  // same body shape and reach the one deterministic converter below, so the
+  // same telemetry yields byte-identical event ids either way. Anything that
+  // is not a protobuf media type stays on the JSON path unchanged.
+  const wantsProtobuf = isProtobufMediaType(request.headers.get("content-type") ?? "");
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(bodyRead.text);
-  } catch {
-    return jsonResponse(400, { error: "request body is not valid JSON" });
+  if (wantsProtobuf) {
+    const bodyRead = await readProtobufBody(request, MAX_BODY_BYTES);
+    if (!bodyRead.ok) {
+      const error = bodyRead.status === 413
+        ? "request body exceeds 1 MiB"
+        : "request body is not readable";
+      return jsonResponse(bodyRead.status, { error });
+    }
+    try {
+      parsed = decodeExportRequest(bodyRead.bytes);
+    } catch (error) {
+      return jsonResponse(400, {
+        error: error instanceof OtlpProtoError
+          ? error.message
+          : "request body is not valid OTLP/protobuf",
+      });
+    }
+  } else {
+    const bodyRead = await readRequestBody(request, MAX_BODY_BYTES);
+    if (!bodyRead.ok) {
+      const error = bodyRead.status === 413
+        ? "request body exceeds 1 MiB"
+        : "request body is not readable UTF-8";
+      return jsonResponse(bodyRead.status, { error });
+    }
+    try {
+      parsed = JSON.parse(bodyRead.text);
+    } catch {
+      return jsonResponse(400, { error: "request body is not valid JSON" });
+    }
   }
 
   // Replay idempotency: observed_at must be a pure function of the input
@@ -391,17 +424,21 @@ async function handleOtlpExport(request: Request, env: { DB: D1DatabaseLike }): 
     }),
   });
   const response = await handleEventBatches(synthetic, env);
-  if (response.status === 200) {
-    // Attach converter diagnostics without disturbing the receipt body.
-    const receipt = await response.json<Record<string, unknown>>();
-    receipt["otlp"] = {
-      rejected_spans: converted.rejectedSpans.length,
-      dropped_attribute_keys: converted.droppedAttributeKeys,
-      capture_tier: captureTier,
-    };
-    return jsonResponse(200, receipt);
+  if (response.status !== 200) return response;
+  if (wantsProtobuf) {
+    // The response flavor mirrors the request flavor, as OTLP/HTTP requires:
+    // a protobuf export is answered with a protobuf
+    // ExportTraceServiceResponse (the empty message = every span accepted).
+    return protobufExportResponse(converted.rejectedSpans);
   }
-  return response;
+  // Attach converter diagnostics without disturbing the receipt body.
+  const receipt = await response.json<Record<string, unknown>>();
+  receipt["otlp"] = {
+    rejected_spans: converted.rejectedSpans.length,
+    dropped_attribute_keys: converted.droppedAttributeKeys,
+    capture_tier: captureTier,
+  };
+  return jsonResponse(200, receipt);
 }
 
 /** Latest endTimeUnixNano across the export, as ISO-3339 (epoch on none). */
