@@ -1,7 +1,9 @@
-# HANDOVER.md — HandoffGraph (for OpenCode takeover)
+# HANDOVER.md — HandoffGraph (takeover doc; updated for the parity era)
 
-> Written for a fresh AI coding agent (OpenCode) taking over this repository.
-> Read this first, then `docs/architecture.md` and `ROADMAP.md`.
+> Written for a fresh AI coding agent (originally OpenCode; refreshed
+> 2026-08-28 for the competitor-parity program). Read this first, then
+> `docs/architecture.md`, `docs/parity-plan.md`, and
+> `docs/competitor-analysis.md`.
 
 ---
 
@@ -26,7 +28,7 @@ Source documents that drive everything (full product + 300-day plan):
 
 ## 2. Current state (what exists, what works)
 
-**Version: v0.6.0-level local product (as of 2026-08-23): event spine + Codex/Claude/Pi adapters + MCP server + detection pack + Session Debugger UI + verified cross-agent continuation. Release packaging is wired; real-session acceptance and the canonical public repository remain release gates.**
+**Version: v0.6.0 local core + parity program ~34/55 rows (as of 2026-08-28, commit f1747c4).** v0.6 core: event spine + Codex/Claude/Pi adapters + detection pack + Session Debugger UI + verified cross-agent continuation. Parity program (driven by `docs/parity-plan.md`): OTLP ingest local AND hosted (Worker route `POST /v1/otlp` with Go-parity ids), wide observations read model (ts_bucket + fingerprints), scores primitive, `verify` CI gate, datasets × experiments, prompt store, usage/outcome analytics, capture tiers, agent skills, ingest backpressure. Launch gates unchanged: canonical public repo, 20-real-session acceptance, first tag.
 
 ### Verified green
 
@@ -385,3 +387,89 @@ go test -race ./...                 # all pass
 ```
 
 And manually smoke-test the CLI flow in §7.
+
+
+---
+
+## 13. Parity-program takeover brief (2026-08-28) — for the next agent
+
+### Where we are
+
+The competitor-parity program (`docs/parity-plan.md`, matrix in
+`docs/competitor-analysis.md`) has shipped **~34 of 55 rows** in 15 commits
+(5b8a98c → f1747c4). Everything is property-tested; `go test ./...`,
+`go test -race ./...`, `gofmt`, `go vet` green at every commit; platform
+(TypeScript Worker) suite is 176 vitest tests green + `tsc --noEmit` clean.
+
+Shipped parity rows (see matrix for the authoritative list): 2 (OTLP local +
+hosted), 3, 4 (local), 8–11, 16–23, 24, 25, 26 (local), 27 (local), 33, 34
+(local), 37, 38, 50.
+
+### Key surfaces added since the v0.6 handover above
+
+- CLI (28 commands): new `otlp import|serve`, `score record|list`,
+  `index rebuild`, `query spans|usage`, `outcomes`, `verify`, `dataset
+  create|list`, `experiment run|list|compare`, `prompt create|label|list|show`.
+- MCP: 12 tools (added `record_score`, `list_scores`, `get_prompt`).
+- New packages: `internal/otlp`, `internal/scores`, `internal/observations`,
+  `internal/datasets`, `internal/prompts`.
+- Migrations: #9 (`span_observations` wide table + `span_fingerprints` +
+  `observations_meta`); migrations are append-only and ordered.
+- Hosted: `platform/src/otlp.ts` (TypeScript port of the OTLP converter with
+  **cross-language id parity** — golden tests in `platform/test/otlp.test.ts`
+  pin ids generated from the Go `internal/ids.Deterministic`) and worker
+  route `POST /v1/otlp` (auth + quota + idempotency via the existing
+  event-batch pipeline).
+- Agent packaging: `skills/handoffgraph/SKILL.md` + `.claude-plugin/plugin.json`.
+
+### Non-obvious gotchas (learned the hard way — read before editing)
+
+1. **Go `flag` stops at the first positional.** Subcommand-style commands
+   must call `consumePositionals(fs)` (`internal/commands/flags.go`).
+2. **JS/TS nanosecond epochs exceed `Number.MAX_SAFE_INTEGER`.** The TS
+   converter uses BigInt internally; naive `Number()` silently corrupts ids.
+3. **The `ulid` npm package cannot reproduce Go's byte-exact entropy.**
+   `platform/src/otlp.ts` hand-rolls the canonical Crockford ULID encoding;
+   golden-test any change against Go outputs.
+4. **OTLP replay idempotency requires a deterministic `observed_at`** —
+   hosted derives it from the latest span end, never wall clock
+   (`latestSpanEndISO` in `platform/src/index.ts`).
+5. **The append p95 latency gate flakes under parallel-suite load.** It is
+   race-scaled (`race_multiplier*.go`) and re-measures once on breach; real
+   regressions fail both measures.
+6. **Commit discipline:** never commit until `go test ./...` AND
+   `go test -race ./...` BOTH exit 0 (learned twice), plus the platform
+   suite when `platform/` changed.
+7. **Test count pins exist:** `register_test.go` pins the CLI command list
+   (28); `internal/mcp/server_test.go` `wantToolOrder` pins the 12 tools;
+   `internal/commands/mcp_cmd_test.go` pins 12. Update them together.
+8. **proto3 JSON quirks:** enums may be numbers or names; int64 values may
+   be decimal strings or numbers. Handle both (see `internal/otlp/types.go`).
+
+### Work queue (priority order)
+
+1. **P3 hosted platform** (Cloudflare-only, per `docs/parity-plan.md` §P3):
+   R2 artifact store + D1 file-list index for compacted batches; Analytics
+   Engine rollups for dashboards; Workflows eval runs (LLM-judge = INFERRED
+   BYO-key); Cron alerts + webhook channels; dashboards-as-config; gateway
+   capture mode; teams/RBAC; batch export; webhooks.
+2. **P2 tails:** evaluator caching for `verify`; debugger-UI surfaces for
+   scores/datasets/prompts (web/ React app).
+3. **P4:** playground, simulations, funnels, EE line (directory-fenced).
+4. **Protobuf + gRPC OTLP flavors** (both local and hosted) — JSON only today.
+
+### Launch gates (owner: Arbaz, not the agent)
+
+- Transfer/mirror repo to `github.com/handoffgraph/handoffgraph` (module path).
+- Run ~20 real sessions through the hooks; import as acceptance + golden
+  cassettes (`docs/releasing.md` for the tag process after that).
+- Then tag `v0.7.0-beta.1` (release workflow is already wired).
+
+### Verification checklist (same as §12, plus platform)
+
+```bash
+gofmt -l .                          # empty
+go vet ./... && go build ./...
+go test ./... && go test -race ./...
+cd platform && npx tsc --noEmit && npx vitest run   # 176 green
+```

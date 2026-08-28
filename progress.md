@@ -258,3 +258,27 @@ collaboration, and other later features remain explicitly gated.
 - [ ] The Cloudflare authentication backend still requires WorkOS secrets,
       remote D1 migrations, signup abuse controls, and a Worker deployment
       before the direct account actions can complete successfully.
+
+
+## Competitor-parity program — 2026-08-28
+
+Research (5 GLM-5.3-flash researcher agents) → docs/research/01..05 →
+docs/competitor-analysis.md (55-row union matrix) → docs/parity-plan.md
+(P1–P4, acceptance gates). Constraint locked: Cloudflare-only hosted tier,
+full feature parity mandatory.
+
+Shipped in 15 commits (5b8a98c→f1747c4), all gates green per commit:
+OTLP/JSON ingest local (`otlp import|serve`, --capture tiers, 429
+backpressure) + hosted (`platform/src/otlp.ts` + `POST /v1/otlp`, Go-parity
+deterministic ids via golden tests, 176 vitest); scores primitive (CLI+MCP);
+wide span_observations read model (migration 9: ts_bucket prune, exact
+predicates, fingerprints, stale auto-rebuild); `verify` CI gate (6 checks +
+baseline regression, exit codes, self-recording evidence); datasets ×
+experiments (content-hash versions, object-store replay, compare);
+prompt store (immutable versions + labels, get_prompt); `query usage` +
+`outcomes`; agent skills + .claude-plugin. MCP now 12 tools, CLI 28
+commands. Matrix status: ~34/55 rows.
+
+Open: P3 hosted platform (R2/AE/Workflows/dashboards/teams/gateway), P2 UI
+surfaces, protobuf/gRPC flavors. Launch gates unchanged (canonical repo,
+real sessions, first tag). Full takeover brief: HANDOVER.md §13.
