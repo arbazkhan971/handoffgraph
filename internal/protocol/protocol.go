@@ -151,6 +151,7 @@ const (
 	ProviderClaude = "claude"
 	ProviderCodex  = "codex"
 	ProviderPi     = "pi"
+	ProviderOTLP   = "otlp"
 )
 
 // ValidProviders returns the set of providers the local core recognizes.
@@ -159,5 +160,6 @@ func ValidProviders() map[string]bool {
 		ProviderClaude: true,
 		ProviderCodex:  true,
 		ProviderPi:     true,
+		ProviderOTLP:   true,
 	}
 }

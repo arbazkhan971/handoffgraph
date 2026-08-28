@@ -64,6 +64,7 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | CLI framework + subcommands (flag helpers, JSONL redact preview) | `internal/cli`, `internal/commands` | ✅ tested |
 | Codex CLI wiring (`install`, `sessions`, `resume`; resume prints the shell-quoted `codex resume <id>` invocation) | `internal/commands` | ✅ tested |
 | Cross-agent continuation (bounded payload, drift, append-only status + MCP acknowledgement) | `internal/launch`, `internal/commands`, `internal/mcp` | ✅ tested |
+| OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending) |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -94,6 +95,9 @@ continue      --to codex|claude|pi --workstream <id> [--preview]
               resolve the handoff and print (never execute) the native invocation
 handoff       status [--json]  derive created/accepted acknowledgement state
 detect        run deterministic detections over materialized traces
+otlp          import <file> | serve [--addr 127.0.0.1:4318]
+              ingest OTLP/JSON telemetry into the event spine (idempotent;
+              serve listens on localhost only)
 mcp           serve  run the local nine-tool MCP stdio server
 open          serve the embedded debugger UI on localhost
 version
@@ -118,7 +122,8 @@ internal/
   storage/                 db.go (migrations+events), workstream.go, bench_test.go
   ingest/                  spool + JSONL import
   graph/                   graph.go (model) + reduce.go (reducer)
-  trace/                   trace.go (materializer)
+  trace/                   trace.go (materializer; token/cost usage from trace.completed)
+  otlp/                    OTLP/JSON ingest: types + deterministic convert + HTTP listener
   redact/                  redact.go + patterns.go
   checkpoint/              checkpoint.go (builder) + render.go (Markdown)
   launch/                  bounded continuation + drift + handoff read model

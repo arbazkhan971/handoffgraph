@@ -133,3 +133,26 @@ func TestEventDeterministicEmptyKey(t *testing.T) {
 	}
 	deterministicULID(t, id)
 }
+
+// TestDeterministicPrefixGuard pins the prefix contract: known prefixes pass
+// through, unknown prefixes fall back to evt_ so an identifier is never
+// emitted without a known shape, and derivation stays content-sensitive
+// across prefixes (session and event ids for the same key differ).
+func TestDeterministicPrefixGuard(t *testing.T) {
+	got := Deterministic(PrefixSession, "otlp|agent-77", 1000)
+	if !strings.HasPrefix(got, PrefixSession) {
+		t.Fatalf("session derivation = %q", got)
+	}
+	if again := Deterministic(PrefixSession, "otlp|agent-77", 1000); again != got {
+		t.Fatalf("derivation not stable: %q vs %q", got, again)
+	}
+	if other := Deterministic(PrefixSession, "otlp|agent-77", 1001); other == got {
+		t.Fatal("timestamp must participate in derivation")
+	}
+	if fallback := Deterministic("bogus_", "k", 1000); !strings.HasPrefix(fallback, PrefixEvent) {
+		t.Fatalf("unknown prefix = %q, want evt_ fallback", fallback)
+	}
+	if evt := EventDeterministic("k", 1000); evt != Deterministic(PrefixEvent, "k", 1000) {
+		t.Fatal("EventDeterministic and Deterministic(evt) must agree")
+	}
+}

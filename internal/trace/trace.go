@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
@@ -65,6 +66,7 @@ func Materialize(events []*protocol.Event) *MaterializeResult {
 				tr.Status = protocol.TraceOK
 				tr.EndedAtNS = ev.OccurredAt.UnixNano()
 				tr.DurationNS = tr.EndedAtNS - tr.StartedAtNS
+				applyUsage(tr, ev)
 			}
 		case protocol.EventTraceInterrupted:
 			if tr := traceFor(ev, traces); tr != nil {
@@ -310,6 +312,52 @@ func firstParent(ev *protocol.Event) string {
 		return ev.ParentEventIDs[0]
 	}
 	return ""
+}
+
+// applyUsage populates the trace token/cost read-model fields from a
+// trace.completed payload when the provider emitted them. Discipline: token
+// fields are set only when present; cost fields are set only when BOTH a
+// decimal-string amount and a known provenance label are present. A cost
+// without provenance is never recorded (invariant: cost is a recorded fact
+// with a source, never an unlabelled estimate).
+func applyUsage(tr *protocol.Trace, ev *protocol.Event) {
+	if len(ev.Payload) == 0 {
+		return
+	}
+	var m map[string]any
+	if err := json.Unmarshal(ev.Payload, &m); err != nil {
+		return
+	}
+	tr.TokenInput = payloadInt64(m, "token_input")
+	tr.TokenOutput = payloadInt64(m, "token_output")
+	tr.TokenCacheRead = payloadInt64(m, "token_cache_read")
+	tr.TokenCacheWrite = payloadInt64(m, "token_cache_write")
+
+	amount, _ := m["cost_amount"].(string)
+	provenance, _ := m["cost_provenance"].(string)
+	currency, _ := m["cost_currency"].(string)
+	if amount == "" || provenance == "" {
+		return
+	}
+	switch protocol.CostProvenance(provenance) {
+	case protocol.CostProviderReported, protocol.CostCatalogEstimate, protocol.CostUserSupplied:
+		tr.CostAmount = amount
+		tr.CostProvenance = protocol.CostProvenance(provenance)
+		tr.CostCurrency = currency
+	}
+}
+
+func payloadInt64(m map[string]any, key string) *int64 {
+	switch v := m[key].(type) {
+	case float64:
+		i := int64(v)
+		return &i
+	case string:
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return &i
+		}
+	}
+	return nil
 }
 
 func fallbackID(ev *protocol.Event) string {

@@ -58,6 +58,11 @@ Matrix rows: 2, 3, 4, 9, 10, 11, 24, 37, 38.
 - OTLP/HTTP ingest listener in the Go core (accept spans from OpenLLMetry,
   OpenLIT SDK, Phoenix exporters, Claude Code native OTel) with deterministic
   event-ID derivation (idempotent replay), reserved-key sanitizer, capture tiers.
+  **Shipped (2026-08-28): OTLP/JSON flavor** — `otlp import` + localhost
+  `otlp serve`, GenAI/OpenInference/OpenLIT/Langfuse attribute mapping,
+  deterministic ids with idempotent replay, fail-closed sanitizer,
+  `partialSuccess` reporting (`docs/otlp.md`). Remaining: protobuf + gRPC
+  flavors, capture tiers.
 - `handoffgraph.*` attribute namespace mapped over `gen_ai.*` /
   `coding_agent.*`; interop docs for OpenInference/OpenLLMetry/Langfuse attrs.
 - Read-model upgrade: wide `span_observations` (trace attrs denormalized),

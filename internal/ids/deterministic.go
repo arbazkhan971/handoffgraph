@@ -17,12 +17,28 @@ import (
 // Use this for re-import idempotency (e.g. adapter normalization), never for
 // genuinely fresh durable records.
 func EventDeterministic(key string, timestampMS uint64) string {
+	return Deterministic(PrefixEvent, key, timestampMS)
+}
+
+// Deterministic returns prefix_<ulid> derived exactly like
+// EventDeterministic but for any self-describing prefix, so normalizers can
+// mint stable session/trace/span identifiers alongside stable event ids.
+// The prefix must be one of the package Prefix* constants (or ""); other
+// values fall back to PrefixEvent so an id is never emitted without a known
+// shape.
+func Deterministic(prefix, key string, timestampMS uint64) string {
+	switch prefix {
+	case "", PrefixEvent, PrefixWorkstream, PrefixSession, PrefixTrace,
+		PrefixSpan, PrefixCheckpoint, PrefixRepo, PrefixHandoff:
+	default:
+		prefix = PrefixEvent
+	}
 	if timestampMS > ulid.MaxTime() {
 		// A timestamp beyond the ULID-representable range would fail
 		// construction; clamp to epoch so derivation stays total.
 		timestampMS = 0
 	}
-	hash := sha256.Sum256([]byte(key))
+	hash := sha256.Sum256([]byte(prefix + "|" + key))
 	id, err := ulid.New(timestampMS, bytes.NewReader(hash[:10]))
 	if err != nil {
 		// Unreachable given the clamps above (the entropy reader always
@@ -30,7 +46,7 @@ func EventDeterministic(key string, timestampMS uint64) string {
 		// panic: fall back to an all-zero-entropy ULID at the clamped time.
 		var fallback ulid.ULID
 		_ = fallback.SetTime(timestampMS)
-		return PrefixEvent + fallback.String()
+		return prefix + fallback.String()
 	}
-	return PrefixEvent + id.String()
+	return prefix + id.String()
 }

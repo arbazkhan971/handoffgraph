@@ -128,6 +128,7 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph status` | Show local capture status |
 | `handoffgraph workstream new <title>` | Create a workstream |
 | `handoffgraph event import <file>` | Import a JSONL event fixture |
+| `handoffgraph otlp import <file>` / `otlp serve` | Ingest OTLP/JSON telemetry into the spine (idempotent, localhost listener) |
 | `handoffgraph install --agent codex\|claude\|pi` | Install merge-safe capture hooks (`--dry-run` previews) |
 | `handoffgraph sessions [--agent <name>] [--json]` | List native sessions derived from captured events, or detect native sessions on disk (`--detect`) |
 | `handoffgraph resume <native-session-id>` | Print the native resume invocation; never execute it |
