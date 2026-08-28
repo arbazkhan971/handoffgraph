@@ -60,6 +60,18 @@ migrations_dir = "migrations"
 binding = "BODIES"
 bucket_name = "handoffgraph-bodies"
 
+# Analytics Engine (parity row 39 substrate): recordIngestDataPoints
+# (src/analytics.ts) mirrors a sampled, lossy rollup of each accepted ingest
+# batch here for AE-native dashboards. Deterministic totals are always read
+# from D1 (GET /v1/analytics/series|summary, POST /v1/analytics/funnel) —
+# this dataset is never the source of truth and ingest never depends on it
+# (fire-and-forget; absence or failure of this binding is a silent no-op).
+# No provisioning step: unlike D1/R2/Queues, an Analytics Engine dataset is
+# created automatically on first write.
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "handoffgraph_ingest"
+
 # Outbound webhooks (parity row 47): a cron sweep reads new events past each
 # workspace's cursor and enqueues one delivery message per (endpoint, event)
 # match; the consumer signs and POSTs it to the workspace's endpoint.

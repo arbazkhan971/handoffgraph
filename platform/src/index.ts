@@ -32,6 +32,11 @@ import {
   renderSignedOutPage,
   type AccountPageData,
 } from "./account_page";
+import {
+  handleAnalyticsRoute,
+  recordIngestDataPoints,
+  type AnalyticsEngineDatasetLike,
+} from "./analytics";
 import { artifactsScheduled, handleArtifactsRoute, type ArtifactsEnv } from "./artifacts";
 import type {
   D1BoundStatement,
@@ -115,6 +120,8 @@ export default {
       if (webhooksResponse !== null) return webhooksResponse;
       const observationsResponse = await handleObservationsRoute(request, env);
       if (observationsResponse !== null) return observationsResponse;
+      const analyticsResponse = await handleAnalyticsRoute(request, env);
+      if (analyticsResponse !== null) return analyticsResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
@@ -602,7 +609,7 @@ const UPSERT_WORKSTREAM_SQL = `
 
 async function handleEventBatches(
   request: Request,
-  env: { DB: D1DatabaseLike },
+  env: { DB: D1DatabaseLike; ANALYTICS?: AnalyticsEngineDatasetLike },
 ): Promise<Response> {
   const auth = await authenticate(request.headers.get("authorization"), deviceLookup(env.DB));
   if (!auth.ok) return jsonResponse(auth.status, { error: auth.error });
@@ -770,6 +777,12 @@ async function handleEventBatches(
     if (!afterFailure.ok) return jsonResponse(afterFailure.status, afterFailure.body);
     return jsonResponse(500, { error: "internal error" });
   }
+
+  // Sampled Analytics Engine mirror for dashboards, after the D1 write has
+  // already committed. recordIngestDataPoints never throws (absence of the
+  // binding, or a throwing one, are both handled internally) and is not a
+  // D1 statement, so it cannot affect the batch above or its receipt.
+  recordIngestDataPoints(env, device.workspaceId, envelope.events);
 
   return canonicalResponse(200, receiptJson);
 }
