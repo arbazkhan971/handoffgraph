@@ -760,6 +760,93 @@ function retentionDb(
 const TRACES_DDL = "CREATE TABLE traces (trace_id TEXT, workspace_id TEXT, started_at_ns INTEGER)";
 const SPANS_DDL = "CREATE TABLE spans (span_id TEXT, workspace_id TEXT, started_at_ns INTEGER)";
 
+/** A D1 seam that actually executes SQL, so schema drift cannot hide. */
+function sqliteBackedDb(sqlite: DatabaseSync) {
+  const statements: RecordedStatement[] = [];
+  const db: D1DatabaseLike = {
+    prepare(sql: string): D1Statement & D1BoundStatement & RecordedStatement {
+      const binds = () => record.binds as Array<string | number | bigint | null>;
+      const record: D1Statement & D1BoundStatement & RecordedStatement = {
+        sql,
+        binds: [],
+        bind(...values: unknown[]) {
+          record.binds = values;
+          return record;
+        },
+        async first<T = unknown>() {
+          return (sqlite.prepare(sql).get(...binds()) ?? null) as T | null;
+        },
+        async all<T = unknown>() {
+          return { results: sqlite.prepare(sql).all(...binds()) as T[] };
+        },
+        async run() {
+          const info = sqlite.prepare(sql).run(...binds());
+          return { success: true, meta: { changes: Number(info.changes) } };
+        },
+      };
+      statements.push(record);
+      return record;
+    },
+    async batch() {
+      return [];
+    },
+  };
+  return { db, statements };
+}
+
+/** migration 0005: started_at_ns is unix NANOSECONDS, past the safe-integer range. */
+function insertObservation(
+  db: DatabaseSync,
+  suffix: string,
+  seconds: number,
+  workspaceId: string = TOKEN_WORKSPACE,
+): void {
+  db.prepare(`
+    INSERT INTO span_observations
+      (workspace_id, span_id, trace_id, kind, name, status, status_rank,
+       started_at_ns, start_event_id, fingerprint)
+    VALUES (?, ?, ?, 'tool', 'bash', 'ok', 2, ?, ?, ?)
+  `).run(
+    workspaceId,
+    `spn_${suffix}`,
+    `trc_${suffix}`,
+    BigInt(seconds) * 1_000_000_000n,
+    eventId(1),
+    "a".repeat(24),
+  );
+}
+
+/** migration 0005: first_seen/last_seen are unix MILLISECONDS. */
+function insertFingerprint(db: DatabaseSync, fingerprint: string, seconds: number): void {
+  db.prepare(`
+    INSERT INTO span_fingerprints (workspace_id, fingerprint, first_seen, last_seen)
+    VALUES (?, ?, ?, ?)
+  `).run(TOKEN_WORKSPACE, fingerprint, 0, seconds * 1000);
+}
+
+function spanIds(db: DatabaseSync): string[] {
+  return (
+    db.prepare("SELECT span_id FROM span_observations ORDER BY span_id").all() as Array<{
+      span_id: string;
+    }>
+  ).map((row) => row.span_id);
+}
+
+function fingerprintIds(db: DatabaseSync): string[] {
+  return (
+    db.prepare("SELECT fingerprint FROM span_fingerprints ORDER BY fingerprint").all() as Array<{
+      fingerprint: string;
+    }>
+  ).map((row) => row.fingerprint);
+}
+
+/** Canonical bytes of a whole table, for an exact before/after comparison. */
+function snapshot(db: DatabaseSync, sql: string): string {
+  return (db.prepare(sql).all() as Array<Record<string, unknown>>)
+    .map((row) => canonicalJsonStringify({ ...row }))
+    .join("\n");
+}
+
 describe("retentionSweep", () => {
   it("deletes only derived read models, never the spine or the artifact index", async () => {
     const { db, statements } = retentionDb(
@@ -773,7 +860,7 @@ describe("retentionSweep", () => {
 
     expect(summary.workspaces).toBe(1);
     expect(summary.swept_tables).toEqual(["spans", "traces"]);
-    expect(summary.skipped_tables).toEqual(["fingerprints", "span_observations"]);
+    expect(summary.skipped_tables).toEqual(["span_fingerprints", "span_observations"]);
     expect(summary.deleted).toBe(4);
 
     const deletes = statements.filter((statement) => firstKeyword(statement.sql) === "DELETE");
@@ -803,7 +890,7 @@ describe("retentionSweep", () => {
     );
     const summary = await retentionSweep({ DB: db }, { nowSeconds: NOW });
     expect(summary.swept_tables).toEqual(["traces"]);
-    expect(summary.skipped_tables).toEqual(["fingerprints", "span_observations", "spans"]);
+    expect(summary.skipped_tables).toEqual(["span_fingerprints", "span_observations", "spans"]);
     expect(statements.filter((statement) => firstKeyword(statement.sql) === "DELETE")).toHaveLength(1);
   });
 
@@ -835,6 +922,82 @@ describe("retentionSweep", () => {
     const summary = await retentionSweep({ DB: db }, { nowSeconds: NOW });
     expect(summary.workspaces).toBe(0);
     expect(statements.filter((statement) => firstKeyword(statement.sql) === "DELETE")).toHaveLength(0);
+  });
+
+  it("names a real column of the live schema for every declared target", () => {
+    // The existence probe cannot tell a typo from "a sibling slice has not
+    // shipped this yet": both are skipped silently. So the target list is
+    // checked against the migrated schema directly — a wrong table or column
+    // name here is a no-op sweep, not a failure anyone would notice.
+    const db = migratedDatabase();
+    const declared = db
+      .prepare(
+        `SELECT name, sql FROM sqlite_master WHERE type = 'table'
+           AND name IN ('traces', 'spans', 'span_observations', 'span_fingerprints')`,
+      )
+      .all() as Array<{ name: string; sql: string }>;
+    expect(declared.map((row) => row.name).sort()).toEqual([...RETENTION_TARGET_TABLES].sort());
+
+    for (const { name, sql } of declared) {
+      const columns = (
+        db.prepare(`SELECT name FROM pragma_table_info(?)`).all(name) as Array<{ name: string }>
+      ).map((row) => row.name);
+      // Every target is workspace-scoped, and its cutoff column exists.
+      expect(columns).toContain("workspace_id");
+      const cutoff = /span_fingerprints/.test(name) ? "last_seen" : "started_at_ns";
+      expect(columns).toContain(cutoff);
+      expect(sql).toContain(cutoff);
+    }
+    db.close();
+  });
+
+  it("prunes derived rows past the TTL against the real migrations, sparing the spine", async () => {
+    // The mocked D1 never executes SQL, so this drives the real sweep over a
+    // really-migrated database: it is the only thing that catches a target
+    // naming a table or column the schema does not have.
+    const sqlite = migratedDatabase();
+    const ttlDays = 30;
+    const cutoffSeconds = NOW - ttlDays * 86_400;
+    const oldSeconds = cutoffSeconds - 86_400;
+    const newSeconds = cutoffSeconds + 86_400;
+
+    sqlite
+      .prepare(
+        `INSERT INTO retention_policies (workspace_id, derived_ttl_days, created_at, updated_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(TOKEN_WORKSPACE, ttlDays, NOW, NOW);
+    insertEvent(sqlite, 1);
+    insertEvent(sqlite, 2);
+    insertArtifact(sqlite);
+    insertObservation(sqlite, "old", oldSeconds);
+    insertObservation(sqlite, "new", newSeconds);
+    insertFingerprint(sqlite, "a".repeat(24), oldSeconds);
+    insertFingerprint(sqlite, "b".repeat(24), newSeconds);
+    // A row from another workspace, older than any cutoff: never in scope.
+    insertObservation(sqlite, "other", oldSeconds, OTHER_WORKSPACE);
+
+    const spineBefore = snapshot(sqlite, "SELECT * FROM events ORDER BY seq");
+    const indexBefore = snapshot(sqlite, "SELECT * FROM artifact_file_list ORDER BY object_key");
+
+    const { db, statements } = sqliteBackedDb(sqlite);
+    const summary = await retentionSweep({ DB: db }, { nowSeconds: NOW });
+
+    expect(summary.workspaces).toBe(1);
+    expect(summary.swept_tables).toEqual([...RETENTION_TARGET_TABLES].sort());
+    expect(summary.skipped_tables).toEqual([]);
+    expect(summary.deleted).toBe(2); // one observation, one fingerprint
+
+    expect(spanIds(sqlite)).toEqual([`spn_new`, `spn_other`]);
+    expect(fingerprintIds(sqlite)).toEqual(["b".repeat(24)]);
+
+    // The spine and the artifact index are byte-identical across the sweep.
+    expect(snapshot(sqlite, "SELECT * FROM events ORDER BY seq")).toBe(spineBefore);
+    expect(snapshot(sqlite, "SELECT * FROM artifact_file_list ORDER BY object_key")).toBe(
+      indexBefore,
+    );
+    assertSpineUntouched(statements);
+    sqlite.close();
   });
 
   it("sweeps workspaces in a stable order", async () => {

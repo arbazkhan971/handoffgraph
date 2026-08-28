@@ -269,12 +269,12 @@ const DERIVED_TABLE_PROBE_SQL = `
   SELECT name, sql
   FROM sqlite_master
   WHERE type = 'table'
-    AND name IN ('traces', 'spans', 'span_observations', 'fingerprints')
+    AND name IN ('traces', 'spans', 'span_observations', 'span_fingerprints')
   ORDER BY name`;
 
-// Cutoffs are bound as unix SECONDS and scaled inside SQL. SQLite does exact
-// 64-bit integer arithmetic; multiplying to nanoseconds in JavaScript would
-// leave the safe-integer range.
+// Cutoffs are bound as unix SECONDS and scaled inside SQL, in each table's OWN
+// native unit. SQLite does exact 64-bit integer arithmetic; multiplying to
+// nanoseconds in JavaScript would leave the safe-integer range.
 const DELETE_TRACES_SQL = `
   /* artifacts:retention-delete-traces */
   DELETE FROM traces
@@ -285,15 +285,21 @@ const DELETE_SPANS_SQL = `
   DELETE FROM spans
   WHERE workspace_id = ?1 AND started_at_ns < ?2 * 1000000000`;
 
+// migration 0005: span_observations keeps int64 unix NANOSECONDS in
+// started_at_ns, and ts_bucket is a STORED generated column derived from it —
+// so pruning on started_at_ns prunes the bucket index with it.
 const DELETE_SPAN_OBSERVATIONS_SQL = `
   /* artifacts:retention-delete-span-observations */
   DELETE FROM span_observations
-  WHERE workspace_id = ?1 AND observed_at_ms < ?2 * 1000`;
+  WHERE workspace_id = ?1 AND started_at_ns < ?2 * 1000000000`;
 
-const DELETE_FINGERPRINTS_SQL = `
-  /* artifacts:retention-delete-fingerprints */
-  DELETE FROM fingerprints
-  WHERE workspace_id = ?1 AND created_at < ?2`;
+// migration 0005: span_fingerprints bounds an identity with first_seen/
+// last_seen in unix MILLISECONDS. last_seen is the correct cutoff — an
+// identity is retained for as long as it was still being observed.
+const DELETE_SPAN_FINGERPRINTS_SQL = `
+  /* artifacts:retention-delete-span-fingerprints */
+  DELETE FROM span_fingerprints
+  WHERE workspace_id = ?1 AND last_seen < ?2 * 1000`;
 
 // -- retention target registry ------------------------------------------------
 
@@ -309,12 +315,19 @@ interface DerivedTarget {
  * Retention only ever touches these. Everything here is a projection that can
  * be rebuilt by replaying `events`. Tables that a sibling slice may not have
  * created yet are probed and skipped rather than assumed.
+ *
+ * Every (table, column) pair here MUST name a real column of the live schema:
+ * the existence probe treats an unknown name as "a sibling slice has not
+ * shipped this yet" and skips it silently, so a typo does not fail loudly —
+ * it turns retention into a no-op for that table. The pairs below are the ones
+ * migrations 0001 (traces, spans) and 0005 (span_observations,
+ * span_fingerprints) actually declare.
  */
 const DERIVED_RETENTION_TARGETS: readonly DerivedTarget[] = Object.freeze([
   { table: "traces", column: "started_at_ns", sql: DELETE_TRACES_SQL },
   { table: "spans", column: "started_at_ns", sql: DELETE_SPANS_SQL },
-  { table: "span_observations", column: "observed_at_ms", sql: DELETE_SPAN_OBSERVATIONS_SQL },
-  { table: "fingerprints", column: "created_at", sql: DELETE_FINGERPRINTS_SQL },
+  { table: "span_observations", column: "started_at_ns", sql: DELETE_SPAN_OBSERVATIONS_SQL },
+  { table: "span_fingerprints", column: "last_seen", sql: DELETE_SPAN_FINGERPRINTS_SQL },
 ]);
 
 /**

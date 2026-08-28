@@ -21,6 +21,7 @@ import {
   EVENT_KIND_FAILED,
   GATEWAY_CACHE_TTL_SECONDS,
   RATE_LIMIT_WINDOW_SECONDS,
+  UPDATE_BUDGET_SQL,
   addDecimalStrings,
   buildCaptureEvent,
   cacheKeyMaterial,
@@ -28,6 +29,7 @@ import {
   handleGatewayRoute,
   isDecimalString,
   providerReportedCost,
+  recordCapture,
   sealUpstreamKey,
   unsealUpstreamKey,
   validateUpstreamBaseUrl,
@@ -207,12 +209,24 @@ function gatewayKeyRow(overrides: Record<string, unknown> = {}): Record<string, 
   };
 }
 
-/** Resolves the virtual key from D1 (KV miss path) and nothing else. */
+/**
+ * Resolves the virtual key from D1 (KV miss path), and answers the
+ * read-after-write recordCapture uses to mirror the COMMITTED counter into KV.
+ * `spentAfterCharge` stands in for the value D1 actually holds once the batch
+ * ran; it defaults to the row's own value, i.e. "the charge did not apply".
+ */
 function keyLookupFirst(
   row: Record<string, unknown> | null = gatewayKeyRow(),
+  spentAfterCharge: string | null = null,
 ): (statement: RecordedStatement) => unknown {
-  return (statement) =>
-    statement.sql.includes("gateway:key-by-token-hash") ? row : null;
+  return (statement) => {
+    if (statement.sql.includes("gateway:key-by-token-hash")) return row;
+    if (statement.sql.includes("gateway:budget-spent-after-charge")) {
+      const committed = spentAfterCharge ?? (row?.budget_spent as string | undefined);
+      return committed === undefined ? null : { budget_spent: committed };
+    }
+    return null;
+  };
 }
 
 function request(path: string, init: RequestInit = {}): Request {
@@ -295,6 +309,65 @@ function chatRequest(
 
 function findStatement(batch: RecordedStatement[], marker: string): RecordedStatement | undefined {
   return batch.find((statement) => statement.sql.includes(marker));
+}
+
+// -- recordCapture fixtures ------------------------------------------------------
+
+const NOW_SECONDS = 1_700_000_000;
+
+/** The record shape KV caches and recordCapture is handed. */
+function keyRecord(overrides: Partial<GatewayKeyRecord> = {}): GatewayKeyRecord {
+  return {
+    id: GWK_ONE,
+    workspace_id: TOKEN_WORKSPACE,
+    name: "prod",
+    budget_amount: null,
+    budget_spent: "0",
+    rate_limit_per_min: 60,
+    upstream: { base_url: PRIMARY_BASE, provider: "openai", api_key_ciphertext: null },
+    fallbacks: [],
+    capture: "metadata",
+    disabled: false,
+    ...overrides,
+  };
+}
+
+function captureInput(
+  record: GatewayKeyRecord,
+  costAmount: string | null,
+  requestId: string = GWR_ONE,
+): CaptureInput {
+  return {
+    record,
+    tokenHash: VK_HASH,
+    requestId,
+    eventId: `evt_01J${"D".repeat(23)}`,
+    requestHash: `sha256:${"a".repeat(64)}`,
+    responseHash: null,
+    workstreamId: null,
+    model: "gpt-4o-mini",
+    status: 200,
+    latencyMs: 42,
+    tokensIn: 3,
+    tokensOut: 4,
+    costAmount,
+    cached: false,
+    fallbackIndex: 0,
+    startedAtMs: NOW_SECONDS * 1000,
+    finishedAtMs: NOW_SECONDS * 1000 + 42,
+  };
+}
+
+/** A D1 whose read-after-write reports exactly what the charge committed. */
+function committedEnv(kv: KVNamespaceLike, committed: string): GatewayEnv {
+  const { db } = mockDb({
+    first: (statement) =>
+      statement.sql.includes("gateway:budget-spent-after-charge")
+        ? { budget_spent: committed }
+        : null,
+    batch: () => undefined,
+  });
+  return { DB: db, GATEWAY_KV: kv, GATEWAY_SEALING_KEY: SEALING_KEY };
 }
 
 // -- decimal money ------------------------------------------------------------------
@@ -810,8 +883,11 @@ describe("budget enforcement", () => {
   });
 
   it("accumulates provider-reported spend exactly, in D1 and then KV", async () => {
-    const { db, batches } = mockDb({
-      first: keyLookupFirst(gatewayKeyRow({ budget_amount: "1.00", budget_spent: "0.0021" })),
+    const { db, batches, statements } = mockDb({
+      first: keyLookupFirst(
+        gatewayKeyRow({ budget_amount: "1.00", budget_spent: "0.0021" }),
+        "0.0042", // what D1 commits once the charge runs
+      ),
       batch: () => undefined,
     });
     const { kv, store } = makeKV();
@@ -831,9 +907,14 @@ describe("budget enforcement", () => {
 
     const update = findStatement(batches[0], "gateway:advance-budget-spent");
     expect(update).toBeDefined();
-    // Compare-and-set: new value, guarded on the exact value we read.
-    expect(update!.binds[2]).toBe("0.0042");
-    expect(update!.binds[3]).toBe("0.0021");
+    // The charge carries the COST, not a precomputed sum: the new value is
+    // derived from whatever budget_spent holds when the statement runs, so a
+    // concurrent charge composes with it instead of being clobbered. The value
+    // read at request start is not a bind at all.
+    expect(update!.binds[2]).toBe("00021"); // 0.0021 with the '.' removed
+    expect(update!.binds[3]).toBe(4);
+    expect(update!.binds).not.toContain("0.0021");
+    expect(update!.sql).not.toMatch(/budget_spent\s*=\s*\?/);
     // The charge is guarded on this request's ledger row not existing yet,
     // which is only sound if it runs BEFORE the insert that creates it.
     expect(update!.binds[4]).toBe(findStatement(batches[0], "gateway:insert-request")!.binds[0]);
@@ -841,8 +922,89 @@ describe("budget enforcement", () => {
       batches[0].indexOf(findStatement(batches[0], "gateway:insert-request")!),
     );
 
+    // ... and the KV mirror is a read-after-write of D1, never the arithmetic
+    // the worker did on the value it read at request start.
+    expect(
+      statements.filter((s) => s.sql.includes("gateway:budget-spent-after-charge")),
+    ).toHaveLength(1);
     const cached = JSON.parse(store.get(`vk:${VK_HASH}`)!) as GatewayKeyRecord;
     expect(cached.budget_spent).toBe("0.0042");
+  });
+
+  it("mirrors what D1 committed, not read-at-start plus cost", async () => {
+    // A concurrent proxied call already advanced the counter to 0.90 and this
+    // request's charge took it to 0.95. The old code mirrored
+    // 0.10 (read at request start) + 0.05 = 0.15, walking the edge counter
+    // backwards past its own cap.
+    const { db } = mockDb({
+      first: keyLookupFirst(
+        gatewayKeyRow({ budget_amount: "1.00", budget_spent: "0.10" }),
+        "0.95",
+      ),
+      batch: () => undefined,
+    });
+    const { kv, store } = makeKV();
+    const { fetcher } = scriptedFetcher([
+      { status: 200, body: completionBody({ prompt_tokens: 1, completion_tokens: 1, cost: "0.05" }) },
+    ]);
+
+    expect(
+      (await handleGatewayRoute(chatRequest(), makeEnv(db, { GATEWAY_KV: kv }), fetcher))?.status,
+    ).toBe(200);
+
+    const cached = JSON.parse(store.get(`vk:${VK_HASH}`)!) as GatewayKeyRecord;
+    expect(cached.budget_spent).toBe("0.95");
+  });
+
+  it("never walks the KV mirror backward, and stays enforceable at the cap", async () => {
+    // Two overlapping charges, both authorized against budget_spent = "0.90".
+    // D1 composes them, so one commits 0.95 and the other 1.00 — but their KV
+    // mirror writes race. Whatever the arrival order, the enforced counter
+    // must end at D1's highest committed value, never the lower one.
+    const record = keyRecord({ budget_amount: "1.00", budget_spent: "0.90" });
+    const { kv, store } = makeKV({ [`vk:${VK_HASH}`]: JSON.stringify(record) });
+    const spentMirror = () =>
+      (JSON.parse(store.get(`vk:${VK_HASH}`)!) as GatewayKeyRecord).budget_spent;
+
+    // The fast request commits 1.00 and mirrors it.
+    await recordCapture(committedEnv(kv, "1.00"), captureInput(record, "0.05"), NOW_SECONDS);
+    expect(spentMirror()).toBe("1.00");
+
+    // The slow one charged FIRST in D1 (0.95) but lands in KV last. Mirroring
+    // it would reopen a budget D1 already considers exhausted.
+    await recordCapture(
+      committedEnv(kv, "0.95"),
+      captureInput(record, "0.05", `gwr_01J${"E".repeat(23)}`),
+      NOW_SECONDS,
+    );
+    expect(spentMirror()).toBe("1.00");
+
+    // The edge gate now refuses at the boundary, without reaching an upstream
+    // and without a registry read: the mirror alone is what enforces the cap.
+    const { db: gated, statements } = mockDb({ first: keyLookupFirst(null) });
+    const refused = await handleGatewayRoute(
+      chatRequest(),
+      makeEnv(gated, { GATEWAY_KV: kv }),
+      neverFetch,
+    );
+    expect(refused?.status).toBe(429);
+    expect(((await refused!.json()) as { error: { code: string } }).error.code).toBe(
+      "budget_exhausted",
+    );
+    expect(statements.some((s) => s.sql.includes("gateway:key-by-token-hash"))).toBe(false);
+  });
+
+  it("leaves the mirror alone when the committed counter cannot be read", async () => {
+    // No read-after-write answer: a stale-HIGH mirror over-enforces and heals
+    // on TTL, a stale-LOW one is a paid-for bypass. So write nothing.
+    const record = keyRecord({ budget_amount: "1.00", budget_spent: "0.10" });
+    const { kv, store } = makeKV({
+      [`vk:${VK_HASH}`]: JSON.stringify({ ...record, budget_spent: "0.99" }),
+    });
+    const { db } = mockDb({ batch: () => undefined }); // `first` answers null
+    await recordCapture({ DB: db, GATEWAY_KV: kv }, captureInput(record, "0.05"), NOW_SECONDS);
+    const cached = JSON.parse(store.get(`vk:${VK_HASH}`)!) as GatewayKeyRecord;
+    expect(cached.budget_spent).toBe("0.99");
   });
 
   it("does not advance the budget when the upstream reported no cost", async () => {
@@ -1733,29 +1895,35 @@ describe("0010 gateway migration (node:sqlite)", () => {
   });
 
   it("keeps budget_spent derivable from the ledger across a replay", () => {
-    // The real statements from src/gateway.ts, run against real SQLite in
-    // the order the batch emits them: charge (guarded on the ledger row's
+    // The REAL charge statement from src/gateway.ts, run against real SQLite
+    // in the order the batch emits it: charge (guarded on the ledger row's
     // absence) then append the ledger row.
     const db = migratedDatabase();
     insertKey(db, { budget_amount: "1.00", budget_spent: "0" });
 
-    const charge = db.prepare(`
-      UPDATE gateway_keys SET budget_spent = ?
-      WHERE id = ? AND workspace_id = ? AND budget_spent = ?
-        AND NOT EXISTS (SELECT 1 FROM gateway_requests WHERE workspace_id = ? AND id = ?)
-    `);
+    const charge = db.prepare(UPDATE_BUDGET_SQL);
+    const chargeOnce = (cost: string, requestId: string) => {
+      const dot = cost.indexOf(".");
+      charge.run(
+        GWK_ONE,
+        TOKEN_WORKSPACE,
+        cost.replace(".", ""),
+        dot === -1 ? 0 : cost.length - dot - 1,
+        requestId,
+      );
+    };
     const spent = () =>
       (db.prepare("SELECT budget_spent FROM gateway_keys WHERE id = ?").get(GWK_ONE) as {
         budget_spent: string;
       }).budget_spent;
 
-    charge.run("0.25", GWK_ONE, TOKEN_WORKSPACE, "0", TOKEN_WORKSPACE, GWR_ONE);
+    chargeOnce("0.25", GWR_ONE);
     insertRequest(db, { cost_amount: "0.25" });
     expect(spent()).toBe("0.25");
 
     // Replay of the exact same request: the deterministic id already has a
     // ledger row, so the charge must not apply a second time.
-    charge.run("0.50", GWK_ONE, TOKEN_WORKSPACE, "0.25", TOKEN_WORKSPACE, GWR_ONE);
+    chargeOnce("0.25", GWR_ONE);
     db.prepare(`
       INSERT OR IGNORE INTO gateway_requests
         (id, workspace_id, key_id, model, upstream_status, latency_ms, tokens_in, tokens_out,
@@ -1768,6 +1936,76 @@ describe("0010 gateway migration (node:sqlite)", () => {
       .prepare("SELECT COUNT(*) AS n FROM gateway_requests WHERE key_id = ?")
       .get(GWK_ONE) as { n: number };
     expect(rows.n).toBe(1);
+    db.close();
+  });
+
+  it("composes two overlapping charges instead of dropping the later one", () => {
+    // Both callers read budget_spent = "0" at request start. The old
+    // compare-and-set made the second a silent no-op, so the cap could be
+    // exceeded and the KV mirror regressed to the first caller's sum.
+    const db = migratedDatabase();
+    insertKey(db, { budget_amount: "1.00", budget_spent: "0" });
+    const charge = db.prepare(UPDATE_BUDGET_SQL);
+    const spent = () =>
+      (db.prepare("SELECT budget_spent FROM gateway_keys WHERE id = ?").get(GWK_ONE) as {
+        budget_spent: string;
+      }).budget_spent;
+
+    charge.run(GWK_ONE, TOKEN_WORKSPACE, "6", 1, GWR_ONE);
+    expect(spent()).toBe("0.6");
+    charge.run(GWK_ONE, TOKEN_WORKSPACE, "6", 1, `gwr_01J${"D".repeat(23)}`);
+    expect(spent()).toBe("1.2"); // both landed; the cap is now provably exceeded
+    db.close();
+  });
+
+  it("adds exactly, at max(scale) and with carry, never as a float", () => {
+    const db = migratedDatabase();
+    insertKey(db, { budget_spent: "0" });
+    const charge = db.prepare(UPDATE_BUDGET_SQL);
+    const cases: Array<[string, string, string]> = [
+      ["0", "0.25", "0.25"], // 0.1 + 0.2 in binary floating point is not 0.3
+      ["0.1", "0.2", "0.3"],
+      ["0.0021", "0.0021", "0.0042"],
+      ["10.00", "0.5", "10.50"], // result scale is max(2, 1)
+      ["0.25", "1", "1.25"], // carry out of the fraction
+      ["0.999", "0.001", "1.000"],
+      ["1", "0", "1"], // scale 0 on both sides stays scale 0
+      ["123456789", "0.000001", "123456789.000001"],
+    ];
+    for (const [before, cost, after] of cases) {
+      db.prepare("UPDATE gateway_keys SET budget_spent = ? WHERE id = ?").run(before, GWK_ONE);
+      const dot = cost.indexOf(".");
+      charge.run(
+        GWK_ONE,
+        TOKEN_WORKSPACE,
+        cost.replace(".", ""),
+        dot === -1 ? 0 : cost.length - dot - 1,
+        GWR_ONE,
+      );
+      const spent = (
+        db.prepare("SELECT budget_spent FROM gateway_keys WHERE id = ?").get(GWK_ONE) as {
+          budget_spent: string;
+        }
+      ).budget_spent;
+      expect([before, cost, spent]).toEqual([before, cost, after]);
+      expect(spent).toBe(addDecimalStrings(before, cost)); // same rule as the worker
+    }
+    db.close();
+  });
+
+  it("aborts rather than commit a sum the 64-bit integer path cannot hold", () => {
+    // Fail closed: a rolled-back batch loses one request's evidence, a
+    // silently rounded counter loses the ledger's meaning.
+    const db = migratedDatabase();
+    insertKey(db, { budget_spent: "1234567890123456789" });
+    expect(() =>
+      db.prepare(UPDATE_BUDGET_SQL).run(GWK_ONE, TOKEN_WORKSPACE, "5", 1, GWR_ONE),
+    ).toThrow(/NOT NULL/i);
+    expect(
+      (db.prepare("SELECT budget_spent FROM gateway_keys WHERE id = ?").get(GWK_ONE) as {
+        budget_spent: string;
+      }).budget_spent,
+    ).toBe("1234567890123456789");
     db.close();
   });
 

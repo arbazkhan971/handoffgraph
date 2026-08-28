@@ -206,19 +206,37 @@ spend must still be recorded.
 enforced *before* forwarding. `gateway_requests` is the ledger of record, and
 `budget_spent` is always reconstructible from it.
 
-Two guards keep them consistent:
+Two properties keep them consistent:
 
-- The advance is a **compare-and-set** on the value actually read, so a
-  concurrent call that already moved the counter makes this a no-op instead of
-  a clobber.
-- It additionally requires that **this request's ledger row does not exist
-  yet**, so a replay of a deterministic request id cannot charge twice. That
+- The advance is **derived inside SQL from the stored counter**, not from the
+  value the worker read at request start, so two overlapping charges compose
+  instead of one clobbering (or silently dropping) the other. SQLite has no
+  decimal type, so both operands are scaled to a common power of ten and added
+  as 64-bit integers — the same exact rule as `addDecimalStrings()`, result
+  scale `max(scale(stored), scale(cost))`, nothing rounded. A sum that would
+  need more than 18 digits at that scale evaluates to `NULL`, which the
+  `NOT NULL` column rejects: the batch rolls back rather than committing a
+  wrong amount.
+- The single guard is that **this request's ledger row does not exist yet**,
+  so a replay of a deterministic request id cannot charge twice. That
   statement is ordered *before* the ledger insert in the batch — D1 runs a
   batch sequentially in one transaction, so checking afterwards would always
   see the row just written and never charge at all.
 
-A lost CAS is therefore recoverable accounting drift (re-derive from the
-ledger), never lost evidence.
+### The KV mirror is a read-after-write, never a local sum
+
+The edge budget gate reads `vk:<sha256(token)>` from KV, so that entry is what
+actually enforces the hard cap. After the batch commits, the worker re-reads
+`budget_spent` from D1 and mirrors **that** value. Deriving the mirror locally
+(`value read at request start + cost`) is unsafe: under a concurrent charge or
+a replay it is lower than what D1 holds, and writing it walks the enforced
+counter *backwards*, letting further requests through past an exhausted budget.
+
+The two failure directions are deliberately asymmetric. A mirror that is too
+high over-enforces for at most the 300 s KV TTL and then self-heals from D1; a
+mirror that is too low is a paid-for bypass. So the mirror is left untouched
+when the committed value cannot be read, or when the cached entry already holds
+a value at least as large.
 
 ## Budgets and rate limits
 

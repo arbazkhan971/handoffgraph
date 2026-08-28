@@ -71,15 +71,24 @@ manage one number per workspace: `derived_ttl_days`.
 rows older than `now - ttl_days` from the declared derived targets only:
 
 ```
-traces             (started_at_ns)
-spans              (started_at_ns)
-span_observations  (observed_at_ms)   — swept only if the table exists
-fingerprints       (created_at)       — swept only if the table exists
+traces             (started_at_ns, unix ns)  — migration 0001
+spans              (started_at_ns, unix ns)  — migration 0001
+span_observations  (started_at_ns, unix ns)  — migration 0005
+span_fingerprints  (last_seen,     unix ms)  — migration 0005
 ```
 
+The cutoff is bound once as unix **seconds** and scaled inside SQL into each
+table's own native unit, so the multiplication stays in SQLite's exact 64-bit
+integer arithmetic instead of leaving JavaScript's safe-integer range.
+`span_observations.ts_bucket` is a STORED generated column derived from
+`started_at_ns`, so pruning on `started_at_ns` prunes the bucket index with it.
+
 Targets that a sibling slice has not created yet are probed via `sqlite_master`
-and skipped gracefully. `NEVER_RETAINED_TABLES` is a second, in-code guard: even
-if a future edit adds `events`, `artifact_file_list`, or `exports` to the target
+and skipped gracefully — which is exactly why every declared `(table, column)`
+pair has to name a real column: an unknown name is indistinguishable from "not
+shipped yet", so a typo silently turns retention into a no-op rather than
+failing loudly. `NEVER_RETAINED_TABLES` is a second, in-code guard: even if a
+future edit adds `events`, `artifact_file_list`, or `exports` to the target
 list, the sweep refuses to touch them.
 
 **What retention never does:** it never deletes an event, never deletes an

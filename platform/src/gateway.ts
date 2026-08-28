@@ -1036,25 +1036,82 @@ const INSERT_REQUEST_SQL = `
      tokens_out, cost_amount, cached, created_at)
   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`;
 
-// Compare-and-set on the value we actually read, PLUS a guard that the
-// ledger row for this exact request does not exist yet.
+// The charge, expressed as exact decimal arithmetic ON THE STORED VALUE.
+// ---------------------------------------------------------------------------
+// This used to be a compare-and-set against the counter read at request start
+// (`budget_spent = <stale>` in the WHERE, `SET budget_spent = <stale + cost>`).
+// That silently DROPPED the charge whenever a concurrent proxied call had
+// already advanced the counter — and, worse, the caller then mirrored the
+// stale sum into the KV edge cache, walking the enforced counter BACKWARDS and
+// opening the hard cap. So the CAS is gone: the new value is now derived from
+// whatever `budget_spent` actually holds at the moment the statement runs, and
+// two overlapping charges compose instead of clobbering.
 //
-// The CAS makes a concurrent proxied call that already moved the counter a
-// no-op here rather than a clobber. The NOT EXISTS guard is what keeps
+// The only remaining guard is NOT EXISTS(ledger row), which is what keeps
 // `budget_spent` derivable from the ledger: request ids are deterministic, so
 // a replay finds its row already present and must not charge a second time.
-// This statement is ordered BEFORE the ledger insert in the batch — D1 runs a
-// batch sequentially in one transaction, so checking after the insert would
+// This statement stays ordered BEFORE the ledger insert in the batch — D1 runs
+// a batch sequentially in one transaction, so checking after the insert would
 // always see the row we just wrote and never charge at all.
-const UPDATE_BUDGET_SQL = `
+//
+// Money stays exact. SQLite has no decimal type and a float would round, so
+// both operands are scaled to a common power of ten and added as 64-bit
+// INTEGERS, exactly mirroring addDecimalStrings(): the result scale is
+// max(scale(stored), scale(cost)) and nothing is rounded. The one thing the
+// integer path cannot represent is an operand needing more than 18 digits at
+// the common scale; that case yields NULL, which the NOT NULL column rejects,
+// so the whole batch rolls back rather than committing a wrong amount.
+//
+// Binds: ?1 key id, ?2 workspace id, ?3 cost digits (the cost with its '.'
+// removed, i.e. cost * 10^?4), ?4 cost scale, ?5 request id.
+
+/** Widest pad the 64-bit integer path below is allowed to use. */
+const DECIMAL_SQL_PAD = "'000000000000000000'";
+/** Fractional digit count of the stored counter: "1.25" -> 2, "1" -> 0. */
+const STORED_SCALE_SQL = `(CASE WHEN instr(budget_spent, '.') = 0 THEN 0
+        ELSE length(budget_spent) - instr(budget_spent, '.') END)`;
+/** Every digit of the stored counter, i.e. the counter scaled by its own scale. */
+const STORED_DIGITS_SQL = "replace(budget_spent, '.', '')";
+/** Common scale — exactly addDecimalStrings()' max(scale(a), scale(b)). */
+const RESULT_SCALE_SQL = `max(${STORED_SCALE_SQL}, ?4)`;
+const pow10Sql = (exponent: string): string =>
+  `CAST('1' || substr(${DECIMAL_SQL_PAD}, 1, ${exponent}) AS INTEGER)`;
+/** Both operands scaled to RESULT_SCALE_SQL and added in 64-bit integers. */
+const TOTAL_UNITS_SQL = `(CAST(${STORED_DIGITS_SQL} AS INTEGER)
+          * ${pow10Sql(`${RESULT_SCALE_SQL} - ${STORED_SCALE_SQL}`)}
+        + CAST(?3 AS INTEGER) * ${pow10Sql(`${RESULT_SCALE_SQL} - ?4`)})`;
+// Zero-padding without a second pass over the remainder: 10^scale + remainder
+// is always exactly scale+1 digits starting with '1', so dropping that leading
+// '1' leaves the fraction padded to width `scale`.
+const PADDED_FRACTION_SQL = `substr(CAST(${pow10Sql(RESULT_SCALE_SQL)}
+          + ${TOTAL_UNITS_SQL} % ${pow10Sql(RESULT_SCALE_SQL)} AS TEXT), 2)`;
+const CHARGED_SPENT_SQL = `CASE
+        WHEN length(${STORED_DIGITS_SQL}) - ${STORED_SCALE_SQL} + ${RESULT_SCALE_SQL} > 18
+          OR length(?3) - ?4 + ${RESULT_SCALE_SQL} > 18 THEN NULL
+        WHEN ${RESULT_SCALE_SQL} = 0 THEN CAST(${TOTAL_UNITS_SQL} AS TEXT)
+        ELSE CAST(${TOTAL_UNITS_SQL} / ${pow10Sql(RESULT_SCALE_SQL)} AS TEXT)
+             || '.' || ${PADDED_FRACTION_SQL}
+      END`;
+
+export const UPDATE_BUDGET_SQL = `
   /* gateway:advance-budget-spent */
   UPDATE gateway_keys
-  SET budget_spent = ?3
-  WHERE id = ?1 AND workspace_id = ?2 AND budget_spent = ?4
+  SET budget_spent = (${CHARGED_SPENT_SQL})
+  WHERE id = ?1 AND workspace_id = ?2
     AND NOT EXISTS (
       SELECT 1 FROM gateway_requests
       WHERE workspace_id = ?2 AND id = ?5
     )`;
+
+/**
+ * Read-after-write of the counter D1 actually committed. The KV edge mirror is
+ * written from THIS, never from the value read at request start.
+ */
+const SPENT_AFTER_CHARGE_SQL = `
+  /* gateway:budget-spent-after-charge */
+  SELECT budget_spent
+  FROM gateway_keys
+  WHERE id = ?1 AND workspace_id = ?2`;
 
 const INSERT_EVENT_SQL = `
   /* gateway:insert-capture-event */
@@ -1157,8 +1214,11 @@ function captureStatements(
       db.prepare(UPDATE_BUDGET_SQL).bind(
         input.record.id,
         workspaceId,
-        addDecimalStrings(input.record.budget_spent, input.costAmount),
-        input.record.budget_spent,
+        // The cost as an integer number of units at its own scale, plus that
+        // scale: the statement re-derives the sum from the STORED counter, so
+        // the value read at request start is never an input to the amount.
+        input.costAmount.replace(".", ""),
+        decimalScale(input.costAmount),
         input.requestId,
       ),
     );
@@ -1215,6 +1275,52 @@ function captureStatements(
 }
 
 /**
+ * Mirror the counter D1 ACTUALLY holds into the edge cache.
+ *
+ * The gate in authorizeVirtualKey() enforces the hard cap against this KV
+ * entry, so the only safe source for it is a read-after-write of D1 — never
+ * `value read at request start + cost`. That derived figure is stale the
+ * moment a concurrent proxied call advances the counter or the charge turns
+ * out to be a replay, and writing it would move the enforced counter
+ * BACKWARDS, letting further requests through past an exhausted budget.
+ *
+ * Two directions, deliberately asymmetric: a mirror that is too HIGH
+ * over-enforces for at most GATEWAY_KEY_KV_TTL_SECONDS and then self-heals
+ * from D1; a mirror that is too LOW is a paid-for bypass. So when the
+ * committed value cannot be read, or the cache already holds a value at least
+ * as large, this leaves the existing entry alone.
+ */
+async function mirrorCommittedSpend(env: GatewayEnv, input: CaptureInput): Promise<void> {
+  const row = await env.DB.prepare(SPENT_AFTER_CHARGE_SQL)
+    .bind(input.record.id, input.record.workspace_id)
+    .first<{ budget_spent: string }>();
+  const committed = row?.budget_spent;
+  if (!isDecimalString(committed)) return;
+
+  const cacheKey = kvKeyForTokenHash(input.tokenHash);
+  const cached = await kvGet(env.GATEWAY_KV, cacheKey);
+  if (cached !== null) {
+    try {
+      const parsed: unknown = JSON.parse(cached);
+      if (
+        isGatewayKeyRecord(parsed) &&
+        isDecimalString(parsed.budget_spent) &&
+        compareDecimalStrings(parsed.budget_spent, committed) >= 0
+      ) {
+        return; // Never move the edge counter backward.
+      }
+    } catch {
+      // Corrupt entry: fall through and overwrite it with the committed value.
+    }
+  }
+
+  const updated: GatewayKeyRecord = { ...input.record, budget_spent: committed };
+  await kvPut(env.GATEWAY_KV, cacheKey, JSON.stringify(updated), {
+    expirationTtl: GATEWAY_KEY_KV_TTL_SECONDS,
+  });
+}
+
+/**
  * Commit the ledger row, the budget advance and the capture event as one D1
  * batch, then mirror the new spend into KV.
  *
@@ -1245,19 +1351,12 @@ export async function recordCapture(
       await env.DB.batch(captureStatements(env.DB, input, nowSeconds, false));
     }
 
-    if (input.costAmount !== null) {
-      // Mirror the new counter into the edge cache so the very next request
-      // enforces the budget against the value D1 just accepted.
-      const updated: GatewayKeyRecord = {
-        ...input.record,
-        budget_spent: addDecimalStrings(input.record.budget_spent, input.costAmount),
-      };
-      await kvPut(
-        env.GATEWAY_KV,
-        kvKeyForTokenHash(input.tokenHash),
-        JSON.stringify(updated),
-        { expirationTtl: GATEWAY_KEY_KV_TTL_SECONDS },
-      );
+    // Mirror the counter D1 just committed into the edge cache so the very
+    // next request enforces the budget against a value D1 actually holds.
+    // Skipped entirely without a cache: there would be nothing to mirror into,
+    // and the read-after-write would be a pointless round trip.
+    if (input.costAmount !== null && env.GATEWAY_KV !== undefined) {
+      await mirrorCommittedSpend(env, input);
     }
   } catch (error) {
     console.error(JSON.stringify({
