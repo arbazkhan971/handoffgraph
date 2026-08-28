@@ -141,8 +141,8 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 ### 3.6 Analytics, dashboards, alerts
 | # | Feature | Provenance | Target | Phase |
 |---|---|---|---|---|
-| 37 | Cost/token/latency analytics — **decimal-string money, recorded facts** (vs their float estimates) | all; ours is stricter | L + C | P1 |
-| 38 | Coding-agent outcome analytics: code-impact (edits accepted/rejected), commits, PRs, DORA-style session outcomes | OpenLIT, SigNoz (Claude Code metrics) | L + C | P2 — we already own the events |
+| 37 | Cost/token/latency analytics — **decimal-string money, recorded facts** (vs their float estimates) — **local rollups ✅ (2026-08-28)** | all; ours is stricter | L + C | P1 ✅L / C P3 |
+| 38 | Coding-agent outcome analytics: code-impact (edits accepted/rejected), commits, PRs, DORA-style session outcomes — **core ✅ (2026-08-28); acceptance/PR linkage pending adapter events** | OpenLIT, SigNoz (Claude Code metrics) | L + C | P2 |
 | 39 | Custom dashboards (widgets, variables, JSON import/export, share links) | SigNoz, Langfuse, OpenObserve | C | P3 |
 | 40 | Dashboards/alerts-as-config (versioned JSON in-repo; PR-reviewable) + CI dry-run | SigNoz (Terraform) | L + C | P3 |
 | 41 | Alerts: scheduled-query/threshold/anomaly over read models; channels: webhook, Slack, email | SigNoz, OpenObserve, Langfuse | C (Cron + Workflows + Queues) | P3 |

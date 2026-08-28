@@ -50,6 +50,7 @@ func RegisterIndexCmd(app *cli.App) {
 			fs.String("to", "", "window end (RFC3339 or unix nanoseconds)")
 			fs.Int("limit", 100, "max rows")
 			fs.Bool("json", false, "emit JSON")
+			fs.String("group-by", "provider", "usage rollup key: provider | session")
 		},
 		Run: queryCmd,
 	})
@@ -110,8 +111,11 @@ func queryCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	if err != nil {
 		return err
 	}
+	if len(args) >= 1 && args[0] == "usage" {
+		return queryUsageCmd(ctx, c, fs)
+	}
 	if len(args) != 1 || args[0] != "spans" {
-		return fmt.Errorf("usage: query spans [...]")
+		return fmt.Errorf("usage: query spans [...] | query usage [...]")
 	}
 	_, db, err := loadConfigAndDB()
 	if err != nil {

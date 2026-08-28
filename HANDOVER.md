@@ -67,6 +67,7 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending; capture tiers shipped) |
 | Scores primitive — `score record`/`list` + MCP `record_score`/`list_scores` (NUMERIC/CATEGORY/BOOLEAN on trace/span/session/checkpoint/workstream, source-tagged, deterministic derived read model, prefix-validated targets) | `internal/scores`, `internal/protocol`, `internal/commands`, `internal/mcp` | ✅ tested |
 | Wide observations read model — `index rebuild` + `query spans` (denormalized trace attrs on every row, 5-minute ts_bucket prune + exact time predicates, identity fingerprints, stale auto-rebuild; Langfuse-V4/SigNoz patterns re-implemented ideas-only) | `internal/observations`, `internal/storage`, `internal/commands` | ✅ tested (migration 9) |
+| Usage + outcome analytics — `query usage` (token/cost rollups per provider/session, decimal-string costs with provenance) and `outcomes` (per-workstream files/commands/tests/handoffs/scores) | `internal/commands` | ✅ tested |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -98,8 +99,10 @@ continue      --to codex|claude|pi --workstream <id> [--preview]
 handoff       status [--json]  derive created/accepted acknowledgement state
 detect        run deterministic detections over materialized traces
 index         rebuild the derived wide observation index
-query         spans [--workstream|--trace|--session|--agent|--kind|--failed|--from|--to]
-              ts_bucket-pruned queries over the wide read model (auto-rebuilds)
+query         spans [...]| usage [--workstream] [--group-by provider|session]
+              ts_bucket-pruned span queries (auto-rebuilds) + usage rollups
+outcomes      per-workstream coding-agent outcomes (files/commands/tests/
+              handoffs/scores), derived from the event log
 otlp          import <file> | serve [--addr 127.0.0.1:4318] [--capture tier]
               ingest OTLP/JSON telemetry into the event spine (idempotent;
               capture tiers full/metadata/minimal gate attribute content at

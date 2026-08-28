@@ -13,7 +13,7 @@ func TestRegisterExposesAllShippedCommands(t *testing.T) {
 	want := []string{
 		"checkpoint", "claude", "codex", "continue", "detect", "doctor",
 		"event", "fixture", "graph", "handoff", "init", "install", "mcp",
-		"index", "open", "otlp", "pi", "query", "redact", "resume", "score",
+		"index", "open", "otlp", "outcomes", "pi", "query", "redact", "resume", "score",
 		"sessions", "status", "traces", "version", "workstream",
 	}
 	for _, name := range want {

@@ -83,6 +83,11 @@ Matrix rows: 2, 3, 4, 9, 10, 11, 24, 37, 38.
   enforced; the UI list view and an llm_judge INFERRED source remain open.
 - Coding-agent outcome analytics read models (edits accepted/rejected, commits,
   PRs, session outcomes) — we already capture the events.
+  **Shipped (2026-08-28):** `query usage` (per provider/session token+cost
+  rollups; cost always provenance-labelled) + `outcomes` (files touched,
+  commands run/failed, tests passed/failed, handoffs created/acked, scores).
+  Remaining: edits accepted/rejected + commit/PR linkage once adapters emit
+  acceptance events; hosted dashboards (P3).
 - Batch import API with backpressure semantics + ingest-side dedup.
 - **Acceptance gate:** golden fixtures for OTLP paths; re-import idempotency
   (duplicate batch = zero new events); deterministic rebuild hash stable across
