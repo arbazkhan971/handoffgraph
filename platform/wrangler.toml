@@ -280,3 +280,25 @@ crons = ["*/5 * * * *"]
 # [[migrations]]
 # tag = "v1"
 # new_sqlite_classes = ["WorkstreamRoom"]
+
+# Annotation queues (parity row 28): human annotation queues at
+# /v1/annotation-queues (src/annotations.ts, migration 0013). D1 stays
+# authoritative for queue/item state; ANNOTATION_ROOMS is the optional
+# live-view accelerator below.
+#
+# AnnotationQueueRoom holds an in-memory {pending, claimed, done} snapshot for
+# one queue (one room per queue, idFromName(queue_id)); every claim/submit/
+# skip/refill best-effort notifies it. GET /v1/annotation-queues/{id}/live
+# proxies to it when bound and falls back to a D1 COUNT query (identical
+# response shape) when it is not, so the feature is fully functional — just
+# slower to reflect the very latest mutation — with no binding at all.
+# WebSockets / push-to-viewer are out of scope for this slice; a viewer polls
+# the live endpoint. Uncomment both blocks together to enable:
+#
+# [[durable_objects.bindings]]
+# name = "ANNOTATION_ROOMS"
+# class_name = "AnnotationQueueRoom"
+#
+# [[migrations]]
+# tag = "v2"
+# new_sqlite_classes = ["AnnotationQueueRoom"]

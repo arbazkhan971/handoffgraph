@@ -44,6 +44,14 @@ import {
   recordIngestDataPoints,
   type AnalyticsEngineDatasetLike,
 } from "./analytics";
+import { handleAnnotationsRoute } from "./annotations";
+// The Durable Object class for annotation queues' live-state half (parity row
+// 28) must be exported from the Worker's main module for the (currently
+// commented) [[durable_objects.bindings]] binding in wrangler.toml to
+// resolve it. Re-exported here rather than defined here so annotations.ts
+// stays the single home of the room's logic — same convention as
+// SimulationWorkflow below.
+export { AnnotationQueueRoom } from "./annotations";
 import { artifactsScheduled, handleArtifactsRoute, type ArtifactsEnv } from "./artifacts";
 import { handleDashboardsRoute } from "./dashboards";
 import { handleApiKeysRoute } from "./apikeys";
@@ -162,6 +170,8 @@ export default {
       if (simulationsResponse !== null) return simulationsResponse;
       const evalsResponse = await handleEvalsRoute(request, env);
       if (evalsResponse !== null) return evalsResponse;
+      const annotationsResponse = await handleAnnotationsRoute(request, env);
+      if (annotationsResponse !== null) return annotationsResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
