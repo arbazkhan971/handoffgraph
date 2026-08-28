@@ -354,10 +354,15 @@ func applyBaseline(ctx context.Context, db *storage.DB, wsEvents []*protocol.Eve
 	report.BaselineID = baseline.CheckpointID
 	report.BaselineScore = baseline.Integrity.Score
 
-	// Current deterministic score over the same evidence rules.
+	// Current deterministic score over the same evidence rules. The baseline's
+	// objective is carried into the comparison build: Score() awards points for
+	// a non-empty objective, so scoring the current state without one would
+	// report a spurious regression against any baseline recorded with
+	// `checkpoint --objective`.
 	repoState, _ := repository.State(ctx, ".")
 	current, err := checkpointcore.Build(ctx, checkpointcore.BuildOptions{
 		WorkstreamID: report.WorkstreamID,
+		Objective:    baseline.Objective,
 		Repo:         repoState,
 		Events:       wsEvents,
 		Redaction:    redaction,

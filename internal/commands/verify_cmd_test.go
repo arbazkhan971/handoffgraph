@@ -282,6 +282,12 @@ func TestVerifyBaselinePathStaysExactAcrossCache(t *testing.T) {
 	if r1.NewFailures != 0 {
 		t.Fatalf("no events landed after the baseline yet: new_failures = %d", r1.NewFailures)
 	}
+	if r1.ScoreDelta != 0 {
+		// applyBaseline carries the baseline's objective into the comparison
+		// build; a baseline recorded with --objective must not register a
+		// spurious objective-point regression against an unchanged log.
+		t.Fatalf("unchanged log vs objective-bearing baseline: score_delta = %d, want 0", r1.ScoreDelta)
+	}
 
 	// A new failing command lands strictly after the baseline checkpoint was
 	// recorded.
@@ -315,11 +321,9 @@ func TestVerifyBaselinePathStaysExactAcrossCache(t *testing.T) {
 // first Materialize result into applyBaseline" fix, and it must keep
 // working once checks start coming from cache.
 //
-// The baseline checkpoint is built with no --objective on purpose:
-// applyBaseline's "current" checkpoint never sets Objective (a pre-existing
-// property of the baseline comparison, unrelated to caching), so giving the
-// baseline one would cost it 10 score points for no reason and fail the
-// gate on a spurious regression this test does not intend to exercise.
+// The baseline checkpoint is built with no --objective here so the test
+// exercises the objective-free comparison path too (the objective-bearing
+// path is pinned by TestVerifyBaselinePathStaysExactAcrossCache).
 func TestVerifyBaselineStaysCorrectOnCacheHit(t *testing.T) {
 	seedEvents(t, func(db *storage.DB) {
 		seedVerifyTrace(t, db, "ws_base_cache", "trc_1", 0, time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC))
