@@ -8,23 +8,15 @@
 //   GET  /index.html     → same
 //   GET  /og.png         → social preview card (one-day cache)
 //   GET  /favicon.png    → site icon (one-day cache)
-//   OPTIONS /api/waitlist → CORS preflight
-//   POST /api/waitlist   → validate JSON body → persist to KV → 202
 //   anything else        → 404 (JSON)
 //
-// The WAITLIST KV binding is required for successful submissions. When it is
-// absent the route fails closed with 503, allowing the browser's existing
-// localStorage/mail fallback to preserve the answers. To enable persistence,
-// add to wrangler.toml:
-//
-//   [[kv_namespaces]]
-//   binding = "WAITLIST"
-//   id = "<kv-namespace-id>"
+// The page's calls to action link straight to the hosted signup/signin flow
+// on api.handoffgraph.dev; there is no request-access/waitlist surface
+// (landing/index.test.mjs enforces that).
 
 import indexHTML from "./index.html";
 import faviconImage from "./favicon.png";
 import ogImage from "./og.png";
-import { CORS_HEADERS, handleWaitlist } from "./waitlist.mjs";
 
 const SECURITY_HEADERS = {
   "content-security-policy": "default-src 'none'; script-src 'sha256-5r0ceAi77ofyhKluuUBJUzdOIMc4aEZR9Xlgif5W6zg=' 'sha256-KeVIeV/k9Jk0Yq+Cu12nXqK2pUwCy3DTPBRhjXhOTxA='; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -82,19 +74,6 @@ export default {
     if (request.method === "GET" || request.method === "HEAD") {
       if (path === "/og.png") return servePNG(request.method, ogImage);
       if (path === "/favicon.png") return servePNG(request.method, faviconImage);
-    }
-
-    if (path === "/api/waitlist") {
-      if (request.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: { ...CORS_HEADERS, ...SECURITY_HEADERS } });
-      }
-      if (request.method === "POST") {
-        return handleWaitlist(request, env, jsonResponse);
-      }
-      return jsonResponse({ ok: false, error: "method not allowed" }, 405, {
-        ...CORS_HEADERS,
-        allow: "POST, OPTIONS",
-      });
     }
 
     return jsonResponse({ ok: false, error: "not found" }, 404);

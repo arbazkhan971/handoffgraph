@@ -40,13 +40,3 @@ fallthrough = true
 type = "Data"
 globs = ["**/*.png"]
 fallthrough = false
-
-# Required before enabling the waitlist in production. Without this binding
-# POST /api/waitlist fails closed with 503 so the page uses its
-# localStorage/mail fallback; it never acknowledges a discarded submission.
-# Each normalized email maps to one pseudonymous `email:<sha256>` key; the
-# Worker applies a 90-day TTL to every accepted record.
-#
-# [[kv_namespaces]]
-# binding = "WAITLIST"
-# id = "<kv-namespace-id>"
