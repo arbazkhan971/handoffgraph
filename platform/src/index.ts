@@ -5,7 +5,7 @@
 //   POST /v1/event-batches  authenticated, idempotent event ingestion
 //   GET  /v1/workstreams    cursor-paginated, workspace-scoped listing
 //   (see observations.ts for /v1/sessions, /v1/observations, /v1/fingerprints
-//    and POST /v1/admin/reindex)
+//    and POST /v1/admin/reindex; alerts.ts for /v1/alerts)
 //   (see dashboards.ts for /v1/dashboards and the one unauthenticated route
 //    on this Worker, GET /v1/shared/dashboards/{token}, which serves a
 //    dashboard config document and no workspace data — docs/dashboards.md)
@@ -35,6 +35,7 @@ import {
   renderSignedOutPage,
   type AccountPageData,
 } from "./account_page";
+import { alertsScheduled, handleAlertsRoute } from "./alerts";
 import {
   handleAnalyticsRoute,
   recordIngestDataPoints,
@@ -124,6 +125,8 @@ export default {
       if (webhooksResponse !== null) return webhooksResponse;
       const dashboardsResponse = await handleDashboardsRoute(request, env);
       if (dashboardsResponse !== null) return dashboardsResponse;
+      const alertsResponse = await handleAlertsRoute(request, env);
+      if (alertsResponse !== null) return alertsResponse;
       const observationsResponse = await handleObservationsRoute(request, env);
       if (observationsResponse !== null) return observationsResponse;
       const analyticsResponse = await handleAnalyticsRoute(request, env);
@@ -153,11 +156,13 @@ export default {
   },
 
   // Cron dispatcher (see wrangler.toml [triggers]). Sweeps are derived-model
-  // maintenance only: compaction copies the spine into object storage,
-  // retention slims rebuildable read models, and the webhook sweep fans out
-  // deliveries. Each sweep runs in its own try/catch with content-free
-  // logging — hosted maintenance must never affect ingest or local capture,
-  // and one failing sweep must never starve the others.
+  // maintenance and platform-observation only: compaction copies the spine
+  // into object storage, retention slims rebuildable read models, the webhook
+  // sweep fans out deliveries, and the alerts sweep evaluates threshold rules
+  // and APPENDS alert.fired events (the only sweep that writes to the spine,
+  // and it does so by INSERT alone). Each sweep runs in its own try/catch with
+  // content-free logging — hosted maintenance must never affect ingest or
+  // local capture, and one failing sweep must never starve the others.
   async scheduled<E extends ArtifactsEnv>(
     controller: ScheduledController,
     env: E,
@@ -179,6 +184,16 @@ export default {
       console.error(JSON.stringify({
         message: "scheduled dispatch failed",
         sweep: "webhooks",
+        cron: controller.cron,
+        error_type: error instanceof Error ? error.name : "unknown",
+      }));
+    }
+    try {
+      await alertsScheduled(env);
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "scheduled dispatch failed",
+        sweep: "alerts",
         cron: controller.cron,
         error_type: error instanceof Error ? error.name : "unknown",
       }));

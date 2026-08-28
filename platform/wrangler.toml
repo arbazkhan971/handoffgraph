@@ -119,8 +119,10 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 
 # One cron drives every sweep (index.ts scheduled dispatcher): artifact
 # compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
-# never touches the events table) and the webhook cursor sweep
-# (src/webhooks.ts). Each sweep is isolated in its own try/catch.
+# never touches the events table), the webhook cursor sweep (src/webhooks.ts),
+# and the scheduled-alert evaluator (src/alerts.ts — the only sweep that writes
+# to the spine, and only ever by appending an alert.fired event). Each sweep is
+# isolated in its own try/catch.
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -150,6 +152,17 @@ crons = ["*/5 * * * *"]
 # [[send_email]]
 # name = "INVITE_EMAIL"
 # destination_address = "invites@handoffgraph.dev"
+
+# Scheduled alerts (parity row 41): email notification channels. Same
+# convention as INVITE_EMAIL above — enable it after verifying a sender address
+# in Cloudflare Email Routing for the zone, then add ALERT_SENDER = "<that
+# verified address>" to [vars]. Alerting does not depend on it: an alert.fired
+# event is still appended to the spine (that IS the alert history, parity row
+# 43) and webhook/Slack channels still deliver, so an email channel simply
+# fails closed and is logged content-free while this stays commented out.
+# [[send_email]]
+# name = "ALERT_EMAIL"
+# destination_address = "alerts@handoffgraph.dev"
 
 # v0.10.x: Durable Object for live workstream rooms (presence, subscriptions).
 # [[durable_objects.bindings]]
