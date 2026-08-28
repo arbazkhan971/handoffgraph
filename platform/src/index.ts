@@ -36,7 +36,9 @@ import type {
   D1Statement,
 } from "./db";
 export type { D1BoundStatement, D1DatabaseLike, D1Statement } from "./db";
+import { convertOtlpExport, type CaptureTier } from "./otlp";
 import {
+  BATCH_SCHEMA_VERSION,
   MAX_BODY_BYTES,
   buildReceipt,
   buildWorkstreamListResponse,
@@ -92,6 +94,9 @@ export default {
       }
       const accountResponse = await handleAccountRoute(request, env);
       if (accountResponse !== null) return accountResponse;
+      if (request.method === "POST" && pathname === "/v1/otlp") {
+        return await handleOtlpExport(request, env);
+      }
       if (request.method === "POST" && pathname === "/v1/event-batches") {
         return await handleEventBatches(request, env);
       }
@@ -214,6 +219,136 @@ function deviceLookup(db: D1DatabaseLike): DeviceLookup {
       return binding;
     },
   };
+}
+
+// -- POST /v1/otlp -------------------------------------------------------------
+
+/**
+ * OTLP/JSON trace ingest (parity row 2, hosted). Converts an
+ * ExportTraceServiceRequest into canonical events with the same
+ * deterministic ids as the local CLI (golden-tested parity), then replays
+ * the exact tested event-batch pipeline (auth, quota, idempotency,
+ * projections) via a synthetic request. The hosted capture tier defaults to
+ * metadata (prompt/completion bodies never leave the emitter unasked);
+ * opt up with X-HFG-Capture: full.
+ */
+async function handleOtlpExport(request: Request, env: { DB: D1DatabaseLike }): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonResponse(405, { error: "OTLP export requires POST" });
+  }
+  const auth = await authenticate(request.headers.get("authorization"), deviceLookup(env.DB));
+  if (!auth.ok) return jsonResponse(auth.status, { error: auth.error });
+
+  const capabilityDenial = scopeDenial({
+    tokenWorkspaceId: auth.device.workspaceId,
+    allowed: hasCapability(auth.device, "ingest"),
+  });
+  if (capabilityDenial !== null) {
+    return jsonResponse(capabilityDenial.status, { error: capabilityDenial.error });
+  }
+
+  const tierRaw = (request.headers.get("x-hfg-capture") ?? "metadata").trim().toLowerCase();
+  if (tierRaw !== "full" && tierRaw !== "minimal" && tierRaw !== "metadata") {
+    return jsonResponse(400, { error: "X-HFG-Capture must be full, metadata, or minimal" });
+  }
+  const captureTier: CaptureTier = tierRaw;
+
+  const bodyRead = await readRequestBody(request, MAX_BODY_BYTES);
+  if (!bodyRead.ok) {
+    const error = bodyRead.status === 413
+      ? "request body exceeds 1 MiB"
+      : "request body is not readable UTF-8";
+    return jsonResponse(bodyRead.status, { error });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyRead.text);
+  } catch {
+    return jsonResponse(400, { error: "request body is not valid JSON" });
+  }
+
+  // Replay idempotency: observed_at must be a pure function of the input
+  // telemetry (the latest span end), never wall-clock receipt time —
+  // otherwise the same export re-sent produces a different envelope hash
+  // and the derived idempotency key collides with 409 instead of replaying.
+  const observedAt = latestSpanEndISO(parsed);
+  const converted = await convertOtlpExport(parsed, {
+    workstreamID: undefined,
+    captureTier,
+    observedAt,
+  });
+  if (converted.events.length === 0) {
+    return jsonResponse(400, {
+      error: "no convertible spans",
+      rejected_spans: converted.rejectedSpans.length,
+    });
+  }
+
+  // The converter is idempotent by construction; drop intra-batch duplicates
+  // (identical spans re-sent in one export) so batch validation never trips.
+  const seen = new Set<string>();
+  const events = converted.events.filter((e) => {
+    const id = e["event_id"] as string;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+
+  // Deterministic derived idempotency key: replays of the same telemetry
+  // under the same tier map to one key, so receipts are stable and quota is
+  // charged once.
+  const requestHash = await sha256Hex(
+    `${captureTier}\n${canonicalJsonStringify(events)}`,
+  );
+  const synthetic = new Request(request.url, {
+    method: "POST",
+    headers: {
+      authorization: request.headers.get("authorization") ?? "",
+      "content-type": "application/json",
+      "idempotency-key": `otlp-${requestHash.slice(0, 56)}`,
+    },
+    body: JSON.stringify({
+      schema_version: BATCH_SCHEMA_VERSION,
+      workspace_id: auth.device.workspaceId,
+      events,
+    }),
+  });
+  const response = await handleEventBatches(synthetic, env);
+  if (response.status === 200) {
+    // Attach converter diagnostics without disturbing the receipt body.
+    const receipt = await response.json<Record<string, unknown>>();
+    receipt["otlp"] = {
+      rejected_spans: converted.rejectedSpans.length,
+      dropped_attribute_keys: converted.droppedAttributeKeys,
+      capture_tier: captureTier,
+    };
+    return jsonResponse(200, receipt);
+  }
+  return response;
+}
+
+/** Latest endTimeUnixNano across the export, as ISO-3339 (epoch on none). */
+function latestSpanEndISO(body: unknown): string {
+  try {
+    let max = 0n;
+    const spans =
+      (body as { resourceSpans?: { scopeSpans?: { spans?: { endTimeUnixNano?: unknown }[] }[] }[] })
+        ?.resourceSpans ?? [];
+    for (const rs of spans) {
+      for (const ss of rs.scopeSpans ?? []) {
+        for (const sp of ss.spans ?? []) {
+          const raw = sp.endTimeUnixNano;
+          if (typeof raw === "string" && /^\d+$/.test(raw)) {
+            const ns = BigInt(raw);
+            if (ns > max) max = ns;
+          }
+        }
+      }
+    }
+    return new Date(Number(max / 1_000_000n)).toISOString();
+  } catch {
+    return new Date(0).toISOString();
+  }
 }
 
 // -- POST /v1/event-batches ---------------------------------------------------

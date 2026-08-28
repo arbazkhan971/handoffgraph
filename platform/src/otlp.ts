@@ -129,6 +129,16 @@ export type ConvertResult = {
   rejectedSpans: { traceId: string; spanId: string; error: string }[];
 };
 
+type TraceAccum = {
+  sessionKey: string;
+  minStartNS: bigint;
+  maxEndNS: bigint;
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  hasUsage: boolean;
+};
+
+type SessionAccum = { minStartNS: bigint; agent: string };
+
 /** Convert one OTLP/JSON export request into canonical events. */
 export async function convertOtlpExport(
   body: unknown,
@@ -160,15 +170,8 @@ export async function convertOtlpExport(
     }
   }
 
-  type TraceAccum = {
-    sessionKey: string;
-    minStartNS: number;
-    maxEndNS: number;
-    tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
-    hasUsage: boolean;
-  };
   const traces = new Map<string, TraceAccum>();
-  const sessions = new Map<string, { minStartNS: bigint; agent: string }>();
+  const sessions = new Map<string, SessionAccum>();
   const emit = (
     id: string,
     atNS: bigint,

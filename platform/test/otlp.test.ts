@@ -198,3 +198,190 @@ describe("convertOtlpExport", () => {
     expect((payload?.["attributes"] as Record<string, unknown>)["gen_ai.input.messages"]).toBeUndefined();
   });
 });
+
+// ---- worker route -----------------------------------------------------------
+
+import { default as worker } from "../src/index";
+import { sha256Hex } from "../src/auth";
+
+const CTX = {} as never;
+
+function mockDb(handlers: {
+  first?: (sql: string, binds: unknown[]) => unknown;
+  batch?: (statements: unknown[]) => void;
+} = {}) {
+  const batches: unknown[][] = [];
+  const db = {
+    prepare(sql: string): unknown {
+      const record: Record<string, unknown> = { sql, binds: [] as unknown[] };
+      return {
+        sql,
+        get binds() { return record.binds as unknown[]; },
+        bind(...values: unknown[]) {
+          (record.binds as unknown[]) = values;
+          return this;
+        },
+        async first<T = unknown>(): Promise<T | null> {
+          const result = await handlers.first?.(sql, record.binds as unknown[]);
+          return (result ?? null) as T | null;
+        },
+        async all<T = unknown>() {
+          return { results: [] as T[] };
+        },
+        async run() {
+          return { success: true };
+        },
+      };
+    },
+    async batch(statements: unknown[]) {
+      batches.push(statements);
+      handlers.batch?.(statements);
+      return [];
+    },
+  };
+  return { db, batches };
+}
+
+const DEVICE_TOKEN = "hfgd_test_token";
+const TOKEN_WORKSPACE = "wsp_01TESTWORKSPACE0000000000000";
+const DEVICE_ID = "dev_01TESTDEVICE000000000000000000";
+const TOKEN_HASH = await sha256Hex(DEVICE_TOKEN);
+
+function deviceRegistry() {
+  return async (sql: string): Promise<unknown> => {
+    if (sql.includes("FROM devices")) {
+      return {
+        id: DEVICE_ID,
+        workspace_id: TOKEN_WORKSPACE,
+        token_hash: TOKEN_HASH,
+        capabilities: "ingest,read",
+        revoked_at: null,
+      };
+    }
+    if (sql.includes("quota:read-policy")) {
+      return {
+        workspace_id: TOKEN_WORKSPACE,
+        plan_id: "basic",
+        status: "active",
+        max_batch_events: 100,
+        max_batch_bytes: 262_144,
+        max_monthly_events: 5_000,
+        max_monthly_bytes: 10_485_760,
+        max_lifetime_events: 25_000,
+        max_lifetime_bytes: 67_108_864,
+        used_monthly_events: 0,
+        used_monthly_bytes: 0,
+        used_lifetime_events: 0,
+        used_lifetime_bytes: 0,
+        period_start: 1_700_000_000,
+        period_end: 1_900_000_000,
+      };
+    }
+    return null;
+  };
+}
+
+function otlpRequest(body: unknown, headers: Record<string, string> = {}): Request {
+  return new Request("https://api.handoffgraph.dev/v1/otlp", {
+    method: "POST",
+    headers: { authorization: `Bearer ${DEVICE_TOKEN}`, "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("worker: POST /v1/otlp", () => {
+  it("rejects unauthenticated requests fail-closed", async () => {
+    const { db } = mockDb();
+    const response = await worker.fetch(
+      new Request("https://api.handoffgraph.dev/v1/otlp", { method: "POST", body: "{}" }),
+      { DB: db as never },
+      CTX,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects a bad capture tier header", async () => {
+    const { db } = mockDb({ first: deviceRegistry() });
+    const response = await worker.fetch(
+      otlpRequest(GENAI_EXPORT, { "x-hfg-capture": "yolo" }),
+      { DB: db as never },
+      CTX,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("converts and stores an export through the event-batch pipeline", async () => {
+    const { db, batches } = mockDb({ first: deviceRegistry() });
+    const response = await worker.fetch(
+      otlpRequest(GENAI_EXPORT, { "x-hfg-capture": "full" }),
+      { DB: db as never },
+      CTX,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["schema_version"]).toBe("hfg.event-batch.receipt.v1");
+    expect((body["otlp"] as Record<string, unknown>)["capture_tier"]).toBe("full");
+    // The full pipeline ran: one atomic D1 batch.
+    expect(batches).toHaveLength(1);
+    const eventInsert = (batches[0] as Array<Record<string, unknown>>).find((s) =>
+      String(s["sql"]).includes("INSERT OR IGNORE INTO events"),
+    );
+    expect(eventInsert).toBeDefined();
+    const stored = JSON.parse(String(((eventInsert!["binds"] ?? []) as unknown[])[3])) as Array<Record<string, unknown>>;
+    // 7 converted events (2 spans × 2 + trace pair + session).
+    expect(stored).toHaveLength(7);
+    expect(stored.every((e) => e["schema_version"] === "hfg.event.v1")).toBe(true);
+    // Deterministic Go-parity session id flowed into storage.
+    expect(new Set(stored.map((e) => e["session_id"]))).toEqual(
+      new Set(["ses_0000000000Z3NG62MJJ8C9XSQT"]),
+    );
+  });
+
+  it("replays idempotently: same export, same derived key, one stored batch", async () => {
+    const { db, batches } = mockDb({ first: deviceRegistry() });
+    const env = { DB: db as never };
+    const first = await worker.fetch(otlpRequest(GENAI_EXPORT, { "x-hfg-capture": "full" }), env, CTX);
+    expect(first.status).toBe(200);
+    const storedCount = batches.length;
+
+    // Replay: the idempotency read returns an existing receipt (simulate the
+    // committed key) and no second write batch is expected.
+    let receipt: Record<string, unknown> | null = null;
+    const replayDb = mockDb({
+      first: async (sql, binds) => {
+        if (sql.includes("FROM devices")) return (await deviceRegistry()(sql))!;
+        if (sql.includes("quota:read-policy")) return (await deviceRegistry()(sql))!;
+        if (sql.includes("FROM idempotency_keys")) {
+          return receipt
+            ? { workspace_id: TOKEN_WORKSPACE, request_hash: (receipt as Record<string, unknown>)["request_hash"], receipt_json: JSON.stringify(receipt) }
+            : null;
+        }
+        return null;
+      },
+    });
+    // Capture the derived idempotency key AND the committed request hash
+    // from the first run's insert binds so the replay receipt verifies.
+    const firstInsert = (batches[0] as Array<Record<string, unknown>>).find((s) =>
+      String(s["sql"]).includes("INSERT INTO idempotency_keys"),
+    );
+    const firstBinds = (firstInsert!["binds"] ?? []) as unknown[];
+    const derivedKey = String(firstBinds[0]);
+    expect(derivedKey.startsWith("otlp-")).toBe(true);
+    const committedHash = String(firstBinds[3]);
+    expect(committedHash).toMatch(/^[0-9a-f]{64}$/);
+
+    receipt = {
+      request_hash: committedHash,
+      accepted: 7,
+      schema_version: "hfg.event-batch.receipt.v1",
+    };
+    const replay = await worker.fetch(
+      otlpRequest(GENAI_EXPORT, { "x-hfg-capture": "full" }),
+      { DB: replayDb.db as never },
+      CTX,
+    );
+    expect(replay.status).toBe(200);
+    expect(replayDb.batches).toHaveLength(0);
+    expect(storedCount).toBe(1);
+  });
+});
