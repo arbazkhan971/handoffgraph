@@ -68,6 +68,7 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Scores primitive — `score record`/`list` + MCP `record_score`/`list_scores` (NUMERIC/CATEGORY/BOOLEAN on trace/span/session/checkpoint/workstream, source-tagged, deterministic derived read model, prefix-validated targets) | `internal/scores`, `internal/protocol`, `internal/commands`, `internal/mcp` | ✅ tested |
 | Wide observations read model — `index rebuild` + `query spans` (denormalized trace attrs on every row, 5-minute ts_bucket prune + exact time predicates, identity fingerprints, stale auto-rebuild; Langfuse-V4/SigNoz patterns re-implemented ideas-only) | `internal/observations`, `internal/storage`, `internal/commands` | ✅ tested (migration 9) |
 | Usage + outcome analytics — `query usage` (token/cost rollups per provider/session, decimal-string costs with provenance) and `outcomes` (per-workstream files/commands/tests/handoffs/scores) | `internal/commands` | ✅ tested |
+| Verify gate — `verify --workstream <id> [--baseline <cp>]`: deterministic checks (traces closed, commands ok, tests pass, handoffs acknowledged, score rubric, P0 detections) + baseline score/new-failure regression; CI exit codes; every run appends verification.recorded evidence | `internal/commands` | ✅ tested |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -103,6 +104,8 @@ query         spans [...]| usage [--workstream] [--group-by provider|session]
               ts_bucket-pruned span queries (auto-rebuilds) + usage rollups
 outcomes      per-workstream coding-agent outcomes (files/commands/tests/
               handoffs/scores), derived from the event log
+verify        --workstream <id> [--baseline <cp>]  deterministic evidence
+              checks + regression gate; exit 0/1; CI-ready
 otlp          import <file> | serve [--addr 127.0.0.1:4318] [--capture tier]
               ingest OTLP/JSON telemetry into the event spine (idempotent;
               capture tiers full/metadata/minimal gate attribute content at

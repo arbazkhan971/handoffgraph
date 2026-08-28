@@ -145,6 +145,7 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph score record ...` / `score list` | Record/list source-tagged quality scores (numeric, category, boolean) on any spine object |
 | `handoffgraph index rebuild` / `query spans ...` | Wide denormalized observation index: ts_bucket-pruned, fingerprint-filterable span queries (auto-rebuilds when stale) |
 | `handoffgraph query usage ...` / `outcomes ...` | Token/cost rollups per provider or session; per-workstream coding-agent outcomes (files, commands, tests, handoffs, scores) |
+| `handoffgraph verify --workstream <id> [--baseline <cp>]` | Deterministic evidence checks + baseline regression gate; exit 0/1 for CI; appends verification.recorded evidence |
 | `handoffgraph redact --preview <file>` | Preview fail-closed redaction |
 | `handoffgraph fixture verify <dir>` | Verify golden fixtures |
 | `handoffgraph version` | Print the HandoffGraph version |

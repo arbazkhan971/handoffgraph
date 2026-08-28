@@ -132,6 +132,19 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 	return err
 }
 
+// CheckpointCreatedAt returns the wall-clock creation time (unix nanos) of
+// one checkpoint, for baseline comparisons. Not found → ok=false.
+func (d *DB) CheckpointCreatedAt(ctx context.Context, workstreamID, checkpointID string) (int64, bool, error) {
+	var createdAt int64
+	err := d.sql.QueryRowContext(ctx, `
+SELECT created_at FROM checkpoints WHERE workstream_id = ? AND id = ?`,
+		workstreamID, checkpointID).Scan(&createdAt)
+	if err == nil {
+		return createdAt, true, nil
+	}
+	return 0, false, nil
+}
+
 // ListCheckpoints returns checkpoints for a workstream.
 func (d *DB) ListCheckpoints(ctx context.Context, workstreamID string) ([]*protocol.Checkpoint, error) {
 	rows, err := d.sql.QueryContext(ctx, `

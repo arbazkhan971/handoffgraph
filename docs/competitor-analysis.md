@@ -121,8 +121,8 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 | # | Feature | Provenance | Target | Phase |
 |---|---|---|---|---|
 | 24 | Universal **scores** primitive (numeric/categorical/bool; attach to trace/span/session; source-tagged) — **local ✅ (CLI + MCP, 2026-08-28)** | Langfuse, Phoenix | L + C | P1 ✅L / C P3 |
-| 25 | Deterministic code evaluators (no-LLM checks, verdicts as evidence) | Phoenix, DeepEval | L | P2 |
-| 26 | CI regression gate: pinned baseline, cached results, exit-code semantics (`handoffgraph verify`) | DeepEval `--official`, Phoenix pytest | L | P2 |
+| 25 | Deterministic code evaluators (no-LLM checks, verdicts as evidence) — **✅ via verify checks + detection pack (2026-08-28)** | Phoenix, DeepEval | L | P2 ✅ |
+| 26 | CI regression gate: pinned baseline, cached results, exit-code semantics (`handoffgraph verify`) — **✅ baseline+exit codes (2026-08-28); caching pending** | DeepEval `--official`, Phoenix pytest | L | P2 ✅/partial |
 | 27 | Versioned datasets (hash-pinned) × experiments + run comparison UI | Langfuse, Phoenix, Opik | L + C | P2–P3 |
 | 28 | Human annotation queues + scores via UI/MCP/API | Langfuse, LangWatch, Phoenix | C | P3 |
 | 29 | LLM-as-judge + online/cron evals (BYO keys; results always INFERRED-labelled) | Langfuse, Opik, Phoenix, DeepEval | C (Workflows + AI Gateway) | P3 |

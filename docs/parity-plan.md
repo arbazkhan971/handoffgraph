@@ -99,6 +99,11 @@ Matrix rows: 5, 12, 13, 23(tiers), 25, 26, 27(local), 33, 34, 44(start), 50, 52.
 - Deterministic evaluators (code checks over traces/spans/checkpoints) emitting
   verdict events with evidence refs; `handoffgraph verify --baseline <cp>` CI
   gate (exit code, cached results, regression report).
+  **Shipped (2026-08-28):** `verify` command — six deterministic checks
+  (traces_closed, commands_ok, tests_pass, handoffs_acknowledged,
+  scores_pass rubric, detections_clean) + baseline score/new-failure
+  regression, exit codes, verification.recorded evidence per run.
+  Remaining: custom evaluator registration, cached results.
 - Datasets & experiments v1: content-addressed dataset versions (hash-pinned),
   experiment runs as derived read models, comparison table in the debugger UI.
 - Prompt store: immutable versions + mutable labels + prompt↔trace linkage;
