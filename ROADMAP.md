@@ -5,6 +5,17 @@ its acceptance gate passes. The repository now contains the **v0.6.0-level
 local product**; real-session acceptance and the v0.7.0 public-release gate
 remain (updated 2026-08-23).
 
+Two companion tracks ride alongside this release train (2026-08-28):
+
+- [`docs/competitor-analysis.md`](docs/competitor-analysis.md) — verified
+  study of 12 LLM/agent observability platforms (Langfuse, Phoenix, Opik,
+  SigNoz, OpenObserve, Helicone, DeepEval, OpenLLMetry, OpenLIT, Lunary,
+  Agenta, LangWatch) with the union **feature-parity matrix** (55 rows).
+- [`docs/parity-plan.md`](docs/parity-plan.md) — phased P1–P4 parity program:
+  Cloudflare-only hosted tier (Workers/D1/R2/Queues/Workflows/DO/Analytics
+  Engine), Go local core, acceptance gates per phase, non-negotiable
+  invariants. Parity rule: if any competitor ships it, we ship it.
+
 | Version | Window | Channel | Primary outcome |
 |---|---:|---|---|
 | v0.0.1 | 1–7 | Internal | Problem proof + product shell |
