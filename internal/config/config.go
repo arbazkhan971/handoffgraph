@@ -39,18 +39,50 @@ type Config struct {
 	TelemetryEnabled bool `toml:"telemetry_enabled"`
 }
 
+// derivedPaths is the single table describing every store path that hangs
+// off data_dir: its TOML key (so a scope can pin it explicitly), its
+// basename inside the data directory, and the field it lands in. Default()
+// and every config scope that overrides data_dir both derive through this
+// table, so the two can never drift into describing separate locations.
+var derivedPaths = []struct {
+	Key      string
+	Basename string
+	Field    func(*Config) *string
+}{
+	{"db_path", "handoffgraph.db", func(c *Config) *string { return &c.DBPath }},
+	{"object_dir", "objects", func(c *Config) *string { return &c.ObjectDir }},
+	{"log_dir", "logs", func(c *Config) *string { return &c.LogDir }},
+	{"cache_dir", "cache", func(c *Config) *string { return &c.CacheDir }},
+}
+
+// deriveFromDataDir re-points every store path at c.DataDir, skipping the
+// ones pinned reports as explicitly set by the scope doing the deriving. A
+// nil pinned derives all of them.
+//
+// This is what makes an overridden data_dir mean what it says. Without it a
+// scope that set only data_dir moved the directory while db_path and
+// friends kept pointing into the *previous* scope's tree, so one Config
+// described two unrelated locations at once — the split that let
+// `reset --hard` wipe a directory that did not hold the store it claimed to
+// be clearing, and report success while the real event log survived.
+func (c *Config) deriveFromDataDir(pinned func(key string) bool) {
+	for _, d := range derivedPaths {
+		if pinned != nil && pinned(d.Key) {
+			continue
+		}
+		*d.Field(c) = filepath.Join(c.DataDir, d.Basename)
+	}
+}
+
 // Default returns the default configuration.
 func Default() Config {
-	home := UserDataDir()
-	return Config{
-		DataDir:         home,
-		DBPath:          filepath.Join(home, "handoffgraph.db"),
-		ObjectDir:       filepath.Join(home, "objects"),
-		LogDir:          filepath.Join(home, "logs"),
-		CacheDir:        filepath.Join(home, "cache"),
+	c := Config{
+		DataDir:         UserDataDir(),
 		CapturePolicy:   "full_local",
 		RedactDenyPaths: defaultDenyPaths(),
 	}
+	c.deriveFromDataDir(nil)
+	return c
 }
 
 // UserDataDir returns the platform default data directory (~/.handoffgraph),
@@ -72,12 +104,17 @@ const RepoConfigName = ".handoffgraph.toml"
 // Load merges the default config with the user config and any repository
 // config found by walking up from dir. Repository scope wins over user scope,
 // which wins over defaults. Missing files are not errors.
+//
+// A scope that overrides data_dir also re-derives the store paths it left
+// implicit (see deriveFromDataDir), so the returned Config always describes
+// one location rather than a directory from one scope and a database from
+// another.
 func Load(dir string) (*Config, error) {
 	cfg := Default()
 
 	userPath := filepath.Join(UserDataDir(), "config.toml")
 	if _, err := os.Stat(userPath); err == nil {
-		if err := loadFile(userPath, &cfg); err != nil {
+		if err := mergeFile(userPath, &cfg); err != nil {
 			return nil, fmt.Errorf("load user config %s: %w", userPath, err)
 		}
 	}
@@ -87,7 +124,7 @@ func Load(dir string) (*Config, error) {
 		return nil, err
 	}
 	if repoPath != "" {
-		if err := loadFile(repoPath, &cfg); err != nil {
+		if err := mergeFile(repoPath, &cfg); err != nil {
 			return nil, fmt.Errorf("load repo config %s: %w", repoPath, err)
 		}
 	}

@@ -8,13 +8,27 @@ import (
 
 // loadFile merges a TOML config file into cfg. Unknown keys are ignored so
 // forward-compatible files do not break older binaries.
+//
+// It merges the file's keys and nothing more: use mergeFile for the scope
+// semantics Load wants, where overriding data_dir also moves the store paths
+// the file left implicit.
 func loadFile(path string, cfg *Config) error {
-	var raw map[string]any
-	if _, err := toml.DecodeFile(path, &raw); err != nil {
+	_, err := toml.DecodeFile(path, cfg)
+	return err
+}
+
+// mergeFile merges one config scope into cfg. On top of loadFile it applies
+// the rule that makes data_dir authoritative: if this scope set data_dir,
+// every store path it did *not* pin explicitly is re-derived under the new
+// directory. Pinning db_path/object_dir/log_dir/cache_dir in the same file
+// still wins, so a deliberately split layout stays expressible.
+func mergeFile(path string, cfg *Config) error {
+	md, err := toml.DecodeFile(path, cfg)
+	if err != nil {
 		return err
 	}
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
-		return err
+	if md.IsDefined("data_dir") {
+		cfg.deriveFromDataDir(func(key string) bool { return md.IsDefined(key) })
 	}
 	return nil
 }

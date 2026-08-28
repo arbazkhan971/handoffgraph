@@ -3,10 +3,13 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/handoffgraph/handoffgraph/internal/cli"
 	"github.com/handoffgraph/handoffgraph/internal/config"
@@ -111,41 +114,121 @@ func resetDerivedOnly(ctx context.Context, c *cli.Context, asJSON bool) error {
 	return nil
 }
 
-// resetHard wipes the local data directory: it only ever removes paths it
-// has joined under cfg.DataDir itself, never cfg.ObjectDir/LogDir/CacheDir
-// as independently configured paths, so a config that points one of those
-// outside the data directory is never reached — the safe, narrower
-// behavior when there is any doubt about a path's boundary.
+// hardResetTarget resolves the one directory `reset --hard` is allowed to
+// wipe, or refuses.
+//
+// The rule it enforces is that the directory must demonstrably *be* the
+// store this config points at: an absolute path that actually holds
+// cfg.DBPath. That is what makes the command's "events and all derived data
+// removed" claim true. A config whose data_dir and db_path describe
+// different places used to make the claim a lie in the most expensive
+// direction — the recursive delete landed on data_dir while the event log
+// sat safely at db_path — so the two must agree before anything is removed.
+//
+// Every check fails closed: on any doubt it returns an error naming the
+// absolute resolved path, never a wider delete. The returned path is
+// absolute but symlink-preserving (the form the user configured); the
+// symlink-resolved form is used only for the boundary comparisons, so a
+// data_dir that is a symlink is judged by where it actually lands.
+func hardResetTarget(cfg *config.Config) (string, error) {
+	if cfg.DataDir == "" {
+		return "", fmt.Errorf("reset --hard: refusing to act, data_dir is empty")
+	}
+
+	abs, err := filepath.Abs(cfg.DataDir)
+	if err != nil {
+		return "", fmt.Errorf("reset --hard: refusing to act, cannot resolve data_dir %q: %w", cfg.DataDir, err)
+	}
+	if !filepath.IsAbs(cfg.DataDir) {
+		return "", fmt.Errorf("reset --hard: refusing to wipe %s — data_dir %q is a relative path, so it means whatever directory the command happens to run from; set an absolute data_dir", abs, cfg.DataDir)
+	}
+
+	realDataDir, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("reset --hard: refusing to wipe %s — cannot resolve it on disk: %w", abs, err)
+	}
+	if parent := filepath.Dir(realDataDir); parent == realDataDir {
+		return "", fmt.Errorf("reset --hard: refusing to wipe %s — that is a filesystem root", abs)
+	}
+	// A cwd that cannot be resolved is one that no longer exists, so it
+	// cannot be the directory about to be emptied either.
+	if cwd, err := os.Getwd(); err == nil {
+		if realCwd, err := filepath.EvalSymlinks(cwd); err == nil && realCwd == realDataDir {
+			return "", fmt.Errorf("reset --hard: refusing to wipe %s — that is the current working directory, not a dedicated data directory", abs)
+		}
+	}
+	// .git may be a directory (normal clone) or a file (worktree/submodule);
+	// Lstat catches both, and anything other than a clean "not there" is
+	// treated as present so an unreadable entry cannot open the gate.
+	if _, err := os.Lstat(filepath.Join(realDataDir, ".git")); !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("reset --hard: refusing to wipe %s — it contains .git, so it is a working tree rather than a data directory", abs)
+	}
+
+	// The store itself must live inside the directory we are about to empty.
+	// Without this a config that moved data_dir while leaving db_path behind
+	// would delete an unrelated directory and leave the events untouched.
+	dbPath, err := filepath.Abs(cfg.DBPath)
+	if err != nil {
+		return "", fmt.Errorf("reset --hard: refusing to wipe %s — cannot resolve db_path %q: %w", abs, cfg.DBPath, err)
+	}
+	realDBDir, err := filepath.EvalSymlinks(filepath.Dir(dbPath))
+	if err != nil || !containedIn(realDataDir, realDBDir) {
+		return "", fmt.Errorf("reset --hard: refusing to wipe %s — the event store this config points at lives at %s, outside that directory; wiping it would destroy unrelated files and leave the events behind", abs, dbPath)
+	}
+	if st, err := os.Stat(dbPath); err != nil || !st.Mode().IsRegular() {
+		return "", fmt.Errorf("reset --hard: refusing to wipe %s — it holds no event store at %s, so it is not this config's data directory", abs, dbPath)
+	}
+
+	return abs, nil
+}
+
+// containedIn reports whether p is root or lives beneath it. Both paths must
+// already be absolute and symlink-resolved.
+func containedIn(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resetHard wipes the local data directory. It only ever removes paths it
+// has joined under the directory hardResetTarget cleared, never
+// cfg.ObjectDir/LogDir/CacheDir as independently configured paths, so a
+// config that points one of those outside the data directory is never
+// reached — the safe, narrower behavior when there is any doubt about a
+// path's boundary.
 func resetHard(c *cli.Context, asJSON bool) error {
 	cfg, err := config.Load(".")
 	if err != nil {
 		return err
 	}
-	if cfg.DataDir == "" {
-		return fmt.Errorf("reset --hard: refusing to act, data_dir is empty")
+	dataDir, err := hardResetTarget(cfg)
+	if err != nil {
+		return err
 	}
 
-	entries, err := os.ReadDir(cfg.DataDir)
+	entries, err := os.ReadDir(dataDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			entries = nil // nothing to wipe: an empty directory is a valid reset outcome
 		} else {
-			return fmt.Errorf("read data dir %s: %w", cfg.DataDir, err)
+			return fmt.Errorf("read data dir %s: %w", dataDir, err)
 		}
 	}
 	for _, e := range entries {
-		p := filepath.Join(cfg.DataDir, e.Name())
+		p := filepath.Join(dataDir, e.Name())
 		if err := os.RemoveAll(p); err != nil {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
 	}
 
-	report := resetReport{Hard: true, WipedDataDir: cfg.DataDir}
+	report := resetReport{Hard: true, WipedDataDir: dataDir}
 	if asJSON {
 		enc := json.NewEncoder(c.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(report)
 	}
-	fmt.Fprintf(c.Stdout, "reset --hard: wiped %s (events and all derived data removed)\n", cfg.DataDir)
+	fmt.Fprintf(c.Stdout, "reset --hard: wiped %s (events and all derived data removed)\n", dataDir)
 	return nil
 }

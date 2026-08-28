@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -156,6 +157,102 @@ redact_patterns = ["repo"]
 	}
 	if len(cfg.RedactPatterns) != 1 || cfg.RedactPatterns[0] != "repo" {
 		t.Errorf("RedactPatterns = %v, want [repo]", cfg.RedactPatterns)
+	}
+}
+
+// TestLoadRepoDataDirMovesTheWholeStore is the config half of the
+// `reset --hard` data-loss fix: a scope that overrides data_dir must move
+// every store path with it. Before, overriding data_dir alone moved only the
+// directory while db_path/object_dir/log_dir/cache_dir kept pointing at the
+// previous scope's tree, so one Config described two unrelated locations.
+func TestLoadRepoDataDirMovesTheWholeStore(t *testing.T) {
+	userDir := t.TempDir()
+	repo := t.TempDir()
+	moved := filepath.Join(t.TempDir(), "moved")
+	t.Setenv("HFG_DATA_DIR", userDir)
+
+	if err := os.WriteFile(filepath.Join(repo, RepoConfigName), []byte("data_dir = "+strconv.Quote(moved)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := map[string]string{
+		"DataDir":   moved,
+		"DBPath":    filepath.Join(moved, "handoffgraph.db"),
+		"ObjectDir": filepath.Join(moved, "objects"),
+		"LogDir":    filepath.Join(moved, "logs"),
+		"CacheDir":  filepath.Join(moved, "cache"),
+	}
+	got := map[string]string{
+		"DataDir":   cfg.DataDir,
+		"DBPath":    cfg.DBPath,
+		"ObjectDir": cfg.ObjectDir,
+		"LogDir":    cfg.LogDir,
+		"CacheDir":  cfg.CacheDir,
+	}
+	for field, exp := range want {
+		if got[field] != exp {
+			t.Errorf("%s = %q, want %q (overriding data_dir must move the whole store)", field, got[field], exp)
+		}
+	}
+}
+
+// TestLoadExplicitPathsSurviveDataDirOverride: pinning a path in the same
+// scope that sets data_dir still wins, so a deliberately split layout stays
+// expressible.
+func TestLoadExplicitPathsSurviveDataDirOverride(t *testing.T) {
+	userDir := t.TempDir()
+	repo := t.TempDir()
+	moved := filepath.Join(t.TempDir(), "moved")
+	pinnedDB := filepath.Join(t.TempDir(), "elsewhere.db")
+	t.Setenv("HFG_DATA_DIR", userDir)
+
+	body := "data_dir = " + strconv.Quote(moved) + "\ndb_path = " + strconv.Quote(pinnedDB) + "\n"
+	if err := os.WriteFile(filepath.Join(repo, RepoConfigName), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DBPath != pinnedDB {
+		t.Errorf("DBPath = %q, want the explicitly pinned %q", cfg.DBPath, pinnedDB)
+	}
+	// The unpinned ones still follow data_dir.
+	if want := filepath.Join(moved, "objects"); cfg.ObjectDir != want {
+		t.Errorf("ObjectDir = %q, want %q", cfg.ObjectDir, want)
+	}
+}
+
+// TestLoadUserDataDirOverrideIsBeatenByRepoScope: scope precedence still
+// holds once data_dir re-derives — the repo scope's directory wins outright.
+func TestLoadUserDataDirOverrideIsBeatenByRepoScope(t *testing.T) {
+	userDir := t.TempDir()
+	repo := t.TempDir()
+	fromUser := filepath.Join(t.TempDir(), "user")
+	fromRepo := filepath.Join(t.TempDir(), "repo")
+	t.Setenv("HFG_DATA_DIR", userDir)
+
+	if err := os.WriteFile(filepath.Join(userDir, "config.toml"), []byte("data_dir = "+strconv.Quote(fromUser)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, RepoConfigName), []byte("data_dir = "+strconv.Quote(fromRepo)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DataDir != fromRepo {
+		t.Errorf("DataDir = %q, want repo scope %q", cfg.DataDir, fromRepo)
+	}
+	if want := filepath.Join(fromRepo, "handoffgraph.db"); cfg.DBPath != want {
+		t.Errorf("DBPath = %q, want %q — the repo data_dir must carry the store with it", cfg.DBPath, want)
 	}
 }
 
