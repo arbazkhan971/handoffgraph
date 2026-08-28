@@ -12,6 +12,9 @@
 //    and POST /v1/admin/reindex; apikeys.ts for /v1/api-keys*, the public
 //    read API under /api/v1/*, and /api/v1/openapi.json; mcp.ts for the
 //    hosted MCP endpoint at POST /v1/mcp; evals.ts for /v1/evals*)
+//    hosted MCP endpoint at POST /v1/mcp; playground.ts for
+//    /v1/playground/*, POST /v1/prompts/{name}/labels and
+//    POST /v1/prompt-optimizer/suggest)
 //
 // Invariants (see docs/architecture.md and platform/README.md):
 //   - workspace identity comes only from the device token binding;
@@ -92,6 +95,7 @@ import {
 import { handleMcpRoute } from "./mcp";
 import { buildObservationStatements, handleObservationsRoute } from "./observations";
 import { PLAN_CATALOG } from "./plans";
+import { handlePlaygroundRoute } from "./playground";
 import { handleQualityRoute } from "./quality";
 import { prepareQuotaReservation } from "./quota";
 import { handleSimulationsRoute } from "./simulations";
@@ -172,6 +176,10 @@ export default {
       if (evalsResponse !== null) return evalsResponse;
       const annotationsResponse = await handleAnnotationsRoute(request, env);
       if (annotationsResponse !== null) return annotationsResponse;
+      // After quality.ts: that module owns GET /v1/prompts* and returns null
+      // for POST, which is how POST /v1/prompts/{name}/labels reaches here.
+      const playgroundResponse = await handlePlaygroundRoute(request, env);
+      if (playgroundResponse !== null) return playgroundResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }

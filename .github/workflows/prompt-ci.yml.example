@@ -1,0 +1,203 @@
+# HandoffGraph prompt CI/CD — copy-paste GitHub Action (parity row 36).
+#
+# THIS FILE DOES NOT RUN IN THIS REPOSITORY. The `.example` suffix keeps it out
+# of the workflow set GitHub executes (Actions only loads `.yml` / `.yaml`), so
+# it can be reviewed, tested and shipped as documentation without ever firing a
+# job here or needing secrets in this repo. Copy it into YOUR repository as
+# `.github/workflows/prompt-ci.yml` and edit the two `env:` blocks.
+#
+# WHAT IT DOES
+#   1. VALIDATES with `dry_run` — the same endpoint, the same checks (does the
+#      prompt exist, does the version exist, does the eval gate pass) but
+#      nothing is appended and no label moves. A typo'd version is a failed
+#      build, not a broken deploy. This is also the only validation an `sk_` key
+#      can reach: the prompt READ routes are device-token-only by design.
+#   2. Repoints the label at that version, GATED on evals: the request carries
+#      `min_score` + `score_name`, and the platform refuses with HTTP 409
+#      `eval_gate_failed` unless the latest matching `score.recorded` event for
+#      that exact version clears the threshold. Absent evidence is a FAILURE,
+#      never a pass.
+#   3. On a bad deploy, rollback repoints the same label at an earlier version
+#      through the SAME gated route. There is no separate rollback API: a label
+#      is derived state over append-only `prompt.labeled` events, so rolling
+#      back is just another repoint, and it leaves the same audit trail.
+#
+# WHY IT IS ONLY curl
+#   No marketplace action, no vendored SDK, no `npm i`. A promotion gate that
+#   depends on a third-party action is a promotion gate you do not control.
+#
+# WHY EVERY VALUE GOES THROUGH `env:`
+#   `${{ ... }}` is substituted into the script BEFORE the shell sees it, so an
+#   expression interpolated inline is a script-injection hole: a prompt name
+#   containing a quote would become shell code. Every dynamic value below is
+#   bound to an environment variable and referenced as "$VAR", which the shell
+#   treats as data. This is the standard GitHub hardening pattern and it is not
+#   optional in a file people copy.
+#
+# CREDENTIALS
+#   HANDOFFGRAPH_API_KEY   an `sk_...` key created with the `write` scope
+#                          (POST /v1/api-keys with {"scopes":["read","write"]}).
+#                          Read-only keys — the default — are refused with 403.
+#                          Store it as a repository or environment secret.
+#   Nothing else is needed: the workspace is derived from the key, never from
+#   anything this workflow sends.
+
+name: prompt-ci
+
+on:
+  # Promote from a tag, so the thing being promoted is a named, reviewable
+  # point in history rather than "whatever main looked like".
+  push:
+    tags:
+      - "prompt-v*"
+  # Manual promotion and manual rollback share one entry point, because they
+  # are the same operation with a different version number.
+  workflow_dispatch:
+    inputs:
+      prompt_name:
+        description: Prompt to repoint
+        required: true
+      version:
+        description: Version to point the label at (an EARLIER one = rollback)
+        required: true
+      label:
+        description: Label to move
+        required: false
+        default: production
+      force:
+        description: Override a failing eval gate (audited in the event payload)
+        required: false
+        default: "false"
+
+# One in-flight promotion per prompt+label. Two jobs racing to repoint the same
+# label would both succeed — the spine accepts both appends — and the winner
+# would be whichever one D1 sequenced last, which is not a coin flip you want
+# in a deploy pipeline.
+concurrency:
+  group: prompt-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Your HandoffGraph API origin.
+  HANDOFFGRAPH_API: https://api.handoffgraph.dev
+  # The eval gate. Both are required together: a threshold with no score name
+  # would silently gate on whichever evaluation happened to run last, so the
+  # API rejects that combination with 400.
+  SCORE_NAME: answer_accuracy
+  MIN_SCORE: "0.80"
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Edit the fallbacks: they are what a tag push promotes.
+      # workflow_dispatch overrides each one.
+      PROMPT_NAME: ${{ github.event.inputs.prompt_name || 'support-triage' }}
+      PROMPT_VERSION: ${{ github.event.inputs.version || '4' }}
+      PROMPT_LABEL: ${{ github.event.inputs.label || 'production' }}
+      PROMPT_FORCE: ${{ github.event.inputs.force || 'false' }}
+    steps:
+      # ---------------------------------------------------------------------
+      # 1. VALIDATE — dry-run the exact promotion.
+      # ---------------------------------------------------------------------
+      # Same route, same checks, nothing appended and no label moved.
+      #   HTTP 200  {"dry_run":true,"would_apply":true,"gate":{...}}
+      #   HTTP 404  the prompt or the version does not exist (a version in
+      #             another workspace answers identically — existence is never
+      #             leaked)
+      #   HTTP 409  the eval gate would refuse this promotion
+      - name: Validate the promotion (dry run)
+        env:
+          HANDOFFGRAPH_API_KEY: ${{ secrets.HANDOFFGRAPH_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # jq ships on ubuntu-latest. --arg/--argjson keep every value out of
+          # the shell's hands, so a prompt name with a quote in it is data.
+          payload=$(jq -nc \
+            --arg label "$PROMPT_LABEL" \
+            --argjson version "$PROMPT_VERSION" \
+            --arg score_name "$SCORE_NAME" \
+            --arg min_score "$MIN_SCORE" \
+            '{label:$label, version:$version, score_name:$score_name, min_score:$min_score, dry_run:true}')
+
+          encoded=$(jq -rn --arg n "$PROMPT_NAME" '$n|@uri')
+          status=$(curl -sS -o /tmp/dryrun.json -w '%{http_code}' \
+            -X POST "${HANDOFFGRAPH_API}/v1/prompts/${encoded}/labels" \
+            -H "Authorization: Bearer ${HANDOFFGRAPH_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "$payload")
+
+          cat /tmp/dryrun.json
+          if [ "$status" != "200" ]; then
+            echo "::error::dry run refused ${PROMPT_NAME} v${PROMPT_VERSION} (HTTP ${status})"
+            exit 1
+          fi
+          echo "::notice::dry run says ${PROMPT_LABEL} -> v${PROMPT_VERSION} would apply"
+
+      # ---------------------------------------------------------------------
+      # 2. Repoint the label — for real, still gated.
+      # ---------------------------------------------------------------------
+      # HTTP 201  the label moved; the response carries the prompt.labeled
+      #           event id and the gate audit.
+      # HTTP 409  {"error":"eval_gate_failed","latest_score":...,"min_score":...}
+      #           the gate refused. `latest_score: null` means NO eval has ever
+      #           scored this version — treated as a failure, deliberately.
+      # HTTP 403  the sk_ key lacks the `write` scope.
+      - name: Repoint the label (eval-gated)
+        env:
+          HANDOFFGRAPH_API_KEY: ${{ secrets.HANDOFFGRAPH_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          payload=$(jq -nc \
+            --arg label "$PROMPT_LABEL" \
+            --argjson version "$PROMPT_VERSION" \
+            --arg score_name "$SCORE_NAME" \
+            --arg min_score "$MIN_SCORE" \
+            --argjson force "$PROMPT_FORCE" \
+            '{label:$label, version:$version, score_name:$score_name, min_score:$min_score, force:$force}')
+
+          encoded=$(jq -rn --arg n "$PROMPT_NAME" '$n|@uri')
+          status=$(curl -sS -o /tmp/label.json -w '%{http_code}' \
+            -X POST "${HANDOFFGRAPH_API}/v1/prompts/${encoded}/labels" \
+            -H "Authorization: Bearer ${HANDOFFGRAPH_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "$payload")
+
+          cat /tmp/label.json
+          case "$status" in
+            201)
+              echo "::notice::${PROMPT_LABEL} now points at v${PROMPT_VERSION}"
+              ;;
+            409)
+              echo "::error::eval gate refused the promotion — see latest_score vs min_score above"
+              exit 1
+              ;;
+            *)
+              echo "::error::label repoint failed (HTTP ${status})"
+              exit 1
+              ;;
+          esac
+
+      # ---------------------------------------------------------------------
+      # 3. OBSERVE — the promotion is an event, so it fans out on its own.
+      # ---------------------------------------------------------------------
+      # `prompt.labeled` is already in the outbound webhook sweep's kind list
+      # (platform/src/webhooks.ts, DEFAULT_INTERESTING_KINDS), so a workspace
+      # with a registered endpoint subscribed to `prompt.labeled` receives a
+      # signed, content-free notification of this promotion with no extra
+      # wiring here. Register one once with:
+      #
+      #   curl -X POST "$HANDOFFGRAPH_API/v1/webhooks" \
+      #     -H "Authorization: Bearer $HANDOFFGRAPH_DEVICE_TOKEN" \
+      #     -H 'Content-Type: application/json' \
+      #     -d '{"url":"https://example.com/hooks/handoffgraph",
+      #          "event_kinds":["prompt.labeled"]}'
+      - name: Note the audit trail
+        run: |
+          echo "The promotion is a prompt.labeled event on the append-only spine."
+          echo "Rollback = re-run this workflow via workflow_dispatch with an"
+          echo "earlier version number. Same route, same gate, same audit trail."

@@ -224,6 +224,33 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 # config and starting a judging run BOTH fail closed with 503 while it is
 # unset; deterministic-only eval configs never touch it and keep working.
 
+# Prompt playground + prompt CI/CD + optimization loop (parity rows 35, 36, 30)
+# at /v1/playground/*, POST /v1/prompts/{name}/labels and
+# POST /v1/prompt-optimizer/suggest.
+#
+# NO NEW BINDING. Deliberately so: the playground reuses the gateway's own
+# machinery rather than growing a parallel one —
+#   DB                   migration 0014's playground_runs (run METADATA only;
+#                        the evidence is playground.completed events on the
+#                        spine, which is row 35's acceptance gate);
+#   GATEWAY_KV           the same edge cache of the virtual-key registry (the
+#                        binding above, still commented until provisioned; D1
+#                        stays authoritative, so the routes work without it);
+#   GATEWAY_SEALING_KEY  the same `wrangler secret put` value used to unseal a
+#                        virtual key's upstream credential. Every route that
+#                        calls a model fails closed with 503 while it is unset;
+#                        label repoints and listings do not need it and keep
+#                        working;
+#   BODIES               not used directly. Prompt/completion bodies are stored
+#                        ONLY at capture_tier 'full', and then into migration
+#                        0010's gateway_capture_bodies table, so redaction keeps
+#                        exactly one choke-point.
+#
+# The GitHub Action that drives the gated label repoint authenticates with an
+# `sk_` API key (scope 'write'), so nothing about prompt CI/CD needs a device
+# token in a CI secret. See docs/prompt-cicd.md and
+# .github/workflows/prompt-ci.yml.example.
+
 # One cron drives every sweep (index.ts scheduled dispatcher): artifact
 # compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
 # never touches the events table), the webhook cursor sweep (src/webhooks.ts),
