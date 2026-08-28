@@ -60,12 +60,40 @@ migrations_dir = "migrations"
 binding = "BODIES"
 bucket_name = "handoffgraph-bodies"
 
-# Artifact tiering + retention sweep (src/artifacts.ts -> artifactsScheduled).
-# Every 10 minutes: compaction flushes spine runs past the age/size trigger
-# into R2, then retention slims derived read models. Neither ever touches the
-# events table.
+# Outbound webhooks (parity row 47): a cron sweep reads new events past each
+# workspace's cursor and enqueues one delivery message per (endpoint, event)
+# match; the consumer signs and POSTs it to the workspace's endpoint.
+#
+# Provision once, before first deploy:
+#   npx wrangler queues create handoffgraph-webhooks
+#   npx wrangler queues create handoffgraph-webhooks-dlq
+#
+# Endpoint secrets are sealed at rest with WEBHOOK_SEALING_KEY, set the same
+# way as the WorkOS credentials above (`wrangler secret put
+# WEBHOOK_SEALING_KEY`, or an ignored .dev.vars entry for local development).
+# Both webhook registration and delivery fail closed while it is unset.
+[[queues.producers]]
+binding = "WEBHOOK_QUEUE"
+queue = "handoffgraph-webhooks"
+
+[[queues.consumers]]
+queue = "handoffgraph-webhooks"
+# webhooksQueue (src/webhooks.ts) rethrows the first delivery failure it
+# hits in a batch rather than ack()/retry()-ing messages individually, so a
+# larger batch would let one bad endpoint force a retry of already-delivered
+# batch-mates too. max_batch_size = 1 keeps each retry scoped to exactly the
+# one message that actually failed.
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "handoffgraph-webhooks-dlq"
+
+# One cron drives every sweep (index.ts scheduled dispatcher): artifact
+# compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
+# never touches the events table) and the webhook cursor sweep
+# (src/webhooks.ts). Each sweep is isolated in its own try/catch.
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/5 * * * *"]
 
 # ---------------------------------------------------------------------------
 # Later versions (intentionally commented out — do not enable until shipped).

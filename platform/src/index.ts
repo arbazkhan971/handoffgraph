@@ -54,6 +54,7 @@ import {
 import { PLAN_CATALOG } from "./plans";
 import { prepareQuotaReservation } from "./quota";
 import { handleTeamsRoute } from "./teams";
+import { handleWebhooksRoute, webhooksQueue, webhooksScheduled } from "./webhooks";
 
 const JSON_HEADERS = {
   "cache-control": "no-store",
@@ -100,6 +101,8 @@ export default {
       if (teamsResponse !== null) return teamsResponse;
       const artifactsResponse = await handleArtifactsRoute(request, env);
       if (artifactsResponse !== null) return artifactsResponse;
+      const webhooksResponse = await handleWebhooksRoute(request, env);
+      if (webhooksResponse !== null) return webhooksResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
@@ -125,12 +128,13 @@ export default {
   },
 
   // Cron dispatcher (see wrangler.toml [triggers]). Sweeps are derived-model
-  // maintenance only: compaction copies the spine into object storage and
-  // retention slims rebuildable read models. A failing sweep is logged
-  // content-free and never surfaces — hosted maintenance must not affect
-  // ingest or local capture.
+  // maintenance only: compaction copies the spine into object storage,
+  // retention slims rebuildable read models, and the webhook sweep fans out
+  // deliveries. Each sweep runs in its own try/catch with content-free
+  // logging — hosted maintenance must never affect ingest or local capture,
+  // and one failing sweep must never starve the others.
   async scheduled<E extends ArtifactsEnv>(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: E,
     _ctx: ExecutionContext,
   ): Promise<void> {
@@ -139,8 +143,40 @@ export default {
     } catch (error) {
       console.error(JSON.stringify({
         message: "scheduled dispatch failed",
+        sweep: "artifacts",
+        cron: controller.cron,
         error_type: error instanceof Error ? error.name : "unknown",
       }));
+    }
+    try {
+      await webhooksScheduled(env);
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "scheduled dispatch failed",
+        sweep: "webhooks",
+        cron: controller.cron,
+        error_type: error instanceof Error ? error.name : "unknown",
+      }));
+    }
+  },
+
+  // Queues consumer dispatch by queue name. Failures are logged content-free
+  // and rethrown (never swallowed) so Cloudflare Queues applies its own
+  // retry/dead-letter policy for the failing message.
+  async queue(batch: MessageBatch<unknown>, env: Env, _ctx: ExecutionContext): Promise<void> {
+    try {
+      if (batch.queue === "handoffgraph-webhooks") {
+        await webhooksQueue(batch, env);
+        return;
+      }
+      console.error(JSON.stringify({ message: "unrecognized queue", queue: batch.queue }));
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "queue consumer failed",
+        queue: batch.queue,
+        error_type: error instanceof Error ? error.name : "unknown",
+      }));
+      throw error;
     }
   },
 } satisfies ExportedHandler<Env>;
