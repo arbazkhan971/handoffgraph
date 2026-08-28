@@ -203,5 +203,8 @@ CREATE INDEX idx_events_playground_run
 -- CI job (a GitHub Action blocks on it), so it gets its own partial index
 -- rather than riding the general-purpose idx_events_kind. src/quality.ts's
 -- GET /v1/scores scan uses the same predicate and benefits identically.
-CREATE INDEX idx_events_score_recorded ON events(workspace_id, seq)
+-- IF NOT EXISTS: migration 0012 (evals) creates this exact index under the
+-- same name for the same predicate; whichever lands first wins and the other
+-- is a no-op.
+CREATE INDEX IF NOT EXISTS idx_events_score_recorded ON events(workspace_id, seq)
     WHERE kind = 'score.recorded';
