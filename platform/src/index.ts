@@ -6,6 +6,9 @@
 //   GET  /v1/workstreams    cursor-paginated, workspace-scoped listing
 //   (see observations.ts for /v1/sessions, /v1/observations, /v1/fingerprints
 //    and POST /v1/admin/reindex)
+//   (see dashboards.ts for /v1/dashboards and the one unauthenticated route
+//    on this Worker, GET /v1/shared/dashboards/{token}, which serves a
+//    dashboard config document and no workspace data — docs/dashboards.md)
 //
 // Invariants (see docs/architecture.md and platform/README.md):
 //   - workspace identity comes only from the device token binding;
@@ -38,6 +41,7 @@ import {
   type AnalyticsEngineDatasetLike,
 } from "./analytics";
 import { artifactsScheduled, handleArtifactsRoute, type ArtifactsEnv } from "./artifacts";
+import { handleDashboardsRoute } from "./dashboards";
 import type {
   D1BoundStatement,
   D1DatabaseLike,
@@ -118,6 +122,8 @@ export default {
       if (artifactsResponse !== null) return artifactsResponse;
       const webhooksResponse = await handleWebhooksRoute(request, env);
       if (webhooksResponse !== null) return webhooksResponse;
+      const dashboardsResponse = await handleDashboardsRoute(request, env);
+      if (dashboardsResponse !== null) return dashboardsResponse;
       const observationsResponse = await handleObservationsRoute(request, env);
       if (observationsResponse !== null) return observationsResponse;
       const analyticsResponse = await handleAnalyticsRoute(request, env);

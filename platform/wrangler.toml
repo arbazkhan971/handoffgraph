@@ -100,6 +100,23 @@ max_batch_timeout = 5
 max_retries = 3
 dead_letter_queue = "handoffgraph-webhooks-dlq"
 
+# Dashboards-as-config (parity rows 39, 40) needs no new binding today: config
+# documents and share-token hashes live in D1 (migration 0008) and the export
+# path serves stored canonical bytes verbatim.
+#
+# The block below is the one optional accelerator, and it is deliberately
+# disabled: it would cache share-token -> latest-config resolutions at the edge
+# so an unauthenticated GET /v1/shared/dashboards/{token} could skip D1. Enable
+# it only after creating the namespace and pasting its real id, and only with
+# a short TTL — a cached entry outlives a revocation until it expires, so the
+# cache trades revocation latency for read latency.
+#
+#   npx wrangler kv namespace create DASHBOARD_SHARE_CACHE
+#
+# [[kv_namespaces]]
+# binding = "DASHBOARD_SHARE_CACHE"
+# id = "<replace-with-the-id-wrangler-prints>"
+
 # One cron drives every sweep (index.ts scheduled dispatcher): artifact
 # compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
 # never touches the events table) and the webhook cursor sweep

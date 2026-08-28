@@ -1,0 +1,150 @@
+{
+  "schema": "hfg.dashboard.v1",
+  "name": "Coding agent overview",
+  "variables": [
+    { "name": "window", "default": "-24h" },
+    { "name": "workstream", "default": "" },
+    { "name": "provider", "default": "" }
+  ],
+  "widgets": [
+    {
+      "id": "events-over-time",
+      "title": "Events over time",
+      "type": "series",
+      "query": {
+        "source": "events",
+        "metric": "count",
+        "interval": "1h",
+        "since": "$window",
+        "filters": { "workstream": "$workstream" }
+      },
+      "layout": { "x": 0, "y": 0, "w": 8, "h": 4 }
+    },
+    {
+      "id": "error-rate",
+      "title": "Error rate",
+      "type": "summary",
+      "query": {
+        "source": "observations",
+        "metric": "error_rate",
+        "since": "$window",
+        "filters": { "workstream": "$workstream", "provider": "$provider" }
+      },
+      "layout": { "x": 8, "y": 0, "w": 4, "h": 4 }
+    },
+    {
+      "id": "tokens-in-out",
+      "title": "Tokens in",
+      "type": "series",
+      "query": {
+        "source": "observations",
+        "metric": "token_in",
+        "interval": "1h",
+        "group_by": "model",
+        "since": "$window",
+        "filters": { "kind": "llm", "workstream": "$workstream", "provider": "$provider" }
+      },
+      "layout": { "x": 0, "y": 4, "w": 6, "h": 4 }
+    },
+    {
+      "id": "tokens-out",
+      "title": "Tokens out",
+      "type": "series",
+      "query": {
+        "source": "observations",
+        "metric": "token_out",
+        "interval": "1h",
+        "group_by": "model",
+        "since": "$window",
+        "filters": { "kind": "llm", "workstream": "$workstream", "provider": "$provider" }
+      },
+      "layout": { "x": 6, "y": 4, "w": 6, "h": 4 }
+    },
+    {
+      "id": "spend-over-time",
+      "title": "Spend over time",
+      "type": "series",
+      "query": {
+        "source": "observations",
+        "metric": "cost_amount",
+        "interval": "6h",
+        "group_by": "provider",
+        "since": "$window",
+        "filters": { "kind": "llm", "workstream": "$workstream" }
+      },
+      "layout": { "x": 0, "y": 8, "w": 6, "h": 4 }
+    },
+    {
+      "id": "latency-p95",
+      "title": "Tool latency p95",
+      "type": "series",
+      "query": {
+        "source": "observations",
+        "metric": "p95_duration_ms",
+        "interval": "1h",
+        "group_by": "tool_name",
+        "since": "$window",
+        "filters": { "kind": "tool", "workstream": "$workstream" }
+      },
+      "layout": { "x": 6, "y": 8, "w": 6, "h": 4 }
+    },
+    {
+      "id": "tool-funnel",
+      "title": "Tool funnel: read, edit, test, commit",
+      "type": "funnel",
+      "query": {
+        "source": "observations",
+        "metric": "count",
+        "since": "$window",
+        "steps": [
+          { "name": "read", "filters": { "kind": "tool", "tool": "read_file" } },
+          { "name": "edit", "filters": { "kind": "tool", "tool": "edit_file" } },
+          { "name": "test", "filters": { "kind": "tool", "tool": "run_tests" } },
+          { "name": "commit", "filters": { "kind": "tool", "tool": "git_commit" } }
+        ],
+        "filters": { "workstream": "$workstream" }
+      },
+      "layout": { "x": 0, "y": 12, "w": 7, "h": 5 }
+    },
+    {
+      "id": "slowest-tools",
+      "title": "Slowest tools",
+      "type": "table",
+      "query": {
+        "source": "observations",
+        "metric": "p50_duration_ms",
+        "group_by": "tool_name",
+        "since": "$window",
+        "limit": 20,
+        "filters": { "kind": "tool", "workstream": "$workstream" }
+      },
+      "layout": { "x": 7, "y": 12, "w": 5, "h": 5 }
+    },
+    {
+      "id": "failures-by-agent",
+      "title": "Failures by agent",
+      "type": "table",
+      "query": {
+        "source": "observations",
+        "metric": "count",
+        "group_by": "agent",
+        "since": "$window",
+        "limit": 20,
+        "filters": { "status": "error", "workstream": "$workstream" }
+      },
+      "layout": { "x": 0, "y": 17, "w": 6, "h": 4 }
+    },
+    {
+      "id": "active-sessions",
+      "title": "Active sessions",
+      "type": "summary",
+      "query": {
+        "source": "sessions",
+        "metric": "count",
+        "since": "$window",
+        "filters": { "workstream": "$workstream" }
+      },
+      "layout": { "x": 6, "y": 17, "w": 6, "h": 4 }
+    }
+  ]
+}
