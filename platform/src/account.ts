@@ -137,7 +137,11 @@ function bytesToBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-function randomSecret(byteLength = 32): string {
+/**
+ * Opaque credential material for tokens this platform issues (browser
+ * sessions, device tokens, invite links). Only the SHA-256 is ever persisted.
+ */
+export function randomSecret(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);
   return bytesToBase64Url(bytes);
@@ -190,7 +194,8 @@ function clearAuthCookies(): string[] {
   ];
 }
 
-function normalizedOrigin(value: string | undefined): string | null {
+/** Parse a configured origin, rejecting anything that is not a bare https (or loopback) origin. */
+export function normalizedOrigin(value: string | undefined): string | null {
   if (value === undefined || value.trim() === "") return null;
   try {
     const url = new URL(value);
@@ -684,7 +689,13 @@ async function validCsrf(request: Request, session: SessionAccount): Promise<boo
   return timingSafeEqual(await sha256Hex(token), session.csrfHash);
 }
 
-async function authorizedUnsafeRequest(
+/**
+ * Gate for every state-changing account-plane route: exact same-origin, a
+ * valid browser session, and a matching CSRF token. Exported so sibling
+ * account-plane modules (teams.ts) enforce the identical contract rather than
+ * reimplementing it.
+ */
+export async function authorizedUnsafeRequest(
   request: Request,
   env: AccountEnv,
 ): Promise<{ response: Response } | { session: SessionAccount }> {
@@ -733,7 +744,10 @@ export async function listDevices(request: Request, env: AccountEnv): Promise<Re
   return json(200, { devices: result.results });
 }
 
-async function readSmallJson(request: Request): Promise<Record<string, unknown> | null> {
+/** Read a bounded (4 KiB) JSON object body; null when absent or malformed. */
+export async function readAccountJsonBody(
+  request: Request,
+): Promise<Record<string, unknown> | null> {
   const body = await readRequestBody(request, MAX_ACCOUNT_BODY_BYTES);
   if (!body.ok) return null;
   try {
@@ -770,7 +784,7 @@ export async function createDevice(request: Request, env: AccountEnv): Promise<R
     return quotaResponse(auth.session);
   }
 
-  const body = await readSmallJson(request);
+  const body = await readAccountJsonBody(request);
   const label = body?.label;
   if (typeof label !== "string" || label.trim() === "" || new TextEncoder().encode(label).byteLength > MAX_DEVICE_LABEL_BYTES) {
     return json(400, { error: `label must be 1-${MAX_DEVICE_LABEL_BYTES} UTF-8 bytes` });

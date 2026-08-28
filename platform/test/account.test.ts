@@ -2,9 +2,13 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CSRF_COOKIE,
   SESSION_COOKIE,
+  authorizedUnsafeRequest,
   createDevice,
   finishAuth,
   getMe,
+  normalizedOrigin,
+  randomSecret,
+  readAccountJsonBody,
   signOut,
   startAuth,
   type AccountEnv,
@@ -590,6 +594,65 @@ describe("browser sessions and device quota", () => {
       local_capture_unaffected: true,
     });
     expect(writes).toHaveLength(0);
+  });
+
+  it("shares one unsafe-request gate with the other account-plane modules", async () => {
+    const { db } = mockDb({
+      first: (statement) => statement.sql.includes("FROM account_sessions")
+        ? sessionRow(csrfHash)
+        : null,
+    });
+    const headers = {
+      cookie: `${SESSION_COOKIE}=hfg_session_${"x".repeat(40)}`,
+      origin: "https://api.handoffgraph.dev",
+      "x-csrf-token": csrf,
+      "content-type": "application/json",
+    };
+    const authorized = await authorizedUnsafeRequest(
+      new Request("https://api.handoffgraph.dev/v1/workspace/invites", {
+        method: "POST",
+        headers,
+        body: "{}",
+      }),
+      configuredEnv(db),
+    );
+    expect("session" in authorized && authorized.session.userId).toBe(
+      "usr_01K4USER0000000000000000Z",
+    );
+
+    const foreignOrigin = await authorizedUnsafeRequest(
+      new Request("https://api.handoffgraph.dev/v1/workspace/invites", {
+        method: "POST",
+        headers: { ...headers, origin: "https://attacker.example" },
+        body: "{}",
+      }),
+      configuredEnv(db),
+    );
+    expect("response" in foreignOrigin && foreignOrigin.response.status).toBe(403);
+  });
+
+  it("exposes bounded body reading, origin parsing, and opaque secrets to sibling modules", async () => {
+    const body = (payload: string): Request =>
+      new Request("https://api.handoffgraph.dev/v1/workspace/invites", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: payload,
+      });
+    expect(await readAccountJsonBody(body(JSON.stringify({ email: "a@b.co" })))).toEqual({
+      email: "a@b.co",
+    });
+    expect(await readAccountJsonBody(body("[1,2]"))).toBeNull();
+    expect(await readAccountJsonBody(body("not json"))).toBeNull();
+    expect(await readAccountJsonBody(body(JSON.stringify({ x: "y".repeat(5_000) })))).toBeNull();
+
+    expect(normalizedOrigin("https://api.handoffgraph.dev")).toBe("https://api.handoffgraph.dev");
+    expect(normalizedOrigin("https://api.handoffgraph.dev/path")).toBeNull();
+    expect(normalizedOrigin("http://attacker.example")).toBeNull();
+    expect(normalizedOrigin(undefined)).toBeNull();
+
+    const secret = randomSecret();
+    expect(secret).toMatch(/^[\w-]{43}$/);
+    expect(secret).not.toBe(randomSecret());
   });
 
   it("rejects an account JSON body beyond 4 KiB before reserving a slot", async () => {

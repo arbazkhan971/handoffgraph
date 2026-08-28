@@ -26,6 +26,26 @@ export interface SetupItemView {
   complete?: boolean;
 }
 
+export interface AccountMemberView {
+  userId?: string;
+  email?: string;
+  displayName?: string;
+  role?: string;
+}
+
+export interface AccountInviteView {
+  id?: string;
+  email?: string;
+  role?: string;
+}
+
+export interface AccountWorkspaceView {
+  workspaceId?: string;
+  name?: string;
+  role?: string;
+  memberCount?: number;
+}
+
 export interface AccountPageData {
   displayName?: string;
   email?: string;
@@ -37,6 +57,9 @@ export interface AccountPageData {
   usage?: UsageMeterView[];
   devices?: AccountDeviceView[];
   setup?: SetupItemView[];
+  members?: AccountMemberView[];
+  invites?: AccountInviteView[];
+  workspaces?: AccountWorkspaceView[];
 }
 
 export interface SignedOutPageData {
@@ -290,6 +313,9 @@ dd { margin: .35rem 0 0; font-weight: 760; }
 .usage-card { grid-column: span 8; }
 .devices-card { grid-column: span 7; }
 .setup-card { grid-column: span 5; }
+.members-card { grid-column: span 7; }
+.invites-card { grid-column: span 5; }
+.workspaces-card { grid-column: 1 / -1; }
 
 .plan-top { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
 
@@ -356,6 +382,35 @@ progress::-moz-progress-bar { background: var(--violet); }
   align-items: end;
   padding-top: 1.1rem;
   border-top: 1px solid var(--line);
+}
+
+.invite-form { grid-template-columns: minmax(0, 1fr) auto auto; }
+
+.role-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 27px;
+  padding: .3rem .55rem;
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  background: #e7e0ff;
+  font: 800 .58rem/1 var(--mono);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.role-pill[data-role="owner"] { background: var(--acid); }
+.role-pill[data-role="viewer"] { background: #e4e2da; }
+
+.field select {
+  width: 100%;
+  min-height: 44px;
+  padding: .68rem .75rem;
+  border: 1px solid var(--ink);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
 }
 
 .field { min-width: 0; }
@@ -452,7 +507,8 @@ progress::-moz-progress-bar { background: var(--violet); }
 
 @media (max-width: 860px) {
   .hero { grid-template-columns: 1fr; }
-  .plan-card, .usage-card, .devices-card, .setup-card { grid-column: 1 / -1; }
+  .plan-card, .usage-card, .devices-card, .setup-card,
+  .members-card, .invites-card { grid-column: 1 / -1; }
   .section-head { display: grid; }
 }
 
@@ -464,7 +520,7 @@ progress::-moz-progress-bar { background: var(--violet); }
   .hero { padding-top: 2.6rem; }
   h1 { font-size: clamp(3rem, 18vw, 4.5rem); }
   .identity-grid, .tier-grid { grid-template-columns: 1fr; }
-  .device-form { grid-template-columns: 1fr; }
+  .device-form, .invite-form { grid-template-columns: 1fr; }
   .device-item { grid-template-columns: 1fr; }
   .device-meta { text-align: left; }
   .account-footer { flex-direction: column; }
@@ -650,6 +706,224 @@ const ACCOUNT_SCRIPT = `
     status.dataset.tone = tone || "";
   }
 
+  function setTeamStatus(message, tone) {
+    var status = document.getElementById("team-status");
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone || "";
+  }
+
+  function itemsOf(body) {
+    return body && Array.isArray(body.items) ? body.items : [];
+  }
+
+  function roleOf(value) {
+    return typeof value === "string" && value ? value : "member";
+  }
+
+  function rolePill(role) {
+    var pill = document.createElement("span");
+    pill.className = "role-pill";
+    pill.textContent = roleOf(role);
+    pill.dataset.role = roleOf(role);
+    return pill;
+  }
+
+  function emptyRow(message) {
+    var empty = document.createElement("li");
+    empty.className = "device-empty";
+    empty.textContent = message;
+    return empty;
+  }
+
+  function renderMembers(members) {
+    var list = document.getElementById("member-list");
+    if (!list) return;
+    list.replaceChildren();
+    if (!members.length) {
+      list.appendChild(emptyRow("No teammates yet. Invite one below."));
+      return;
+    }
+    members.forEach(function (entry) {
+      var item = document.createElement("li");
+      item.className = "device-item";
+      var identity = document.createElement("div");
+      var name = document.createElement("strong");
+      name.textContent = firstText(entry.display_name, entry.email, "Teammate");
+      var handle = document.createElement("code");
+      handle.textContent = firstText(entry.email, entry.user_id, "");
+      identity.append(name, handle);
+      item.append(identity, rolePill(entry.role));
+      list.appendChild(item);
+    });
+  }
+
+  function renderInvites(invites) {
+    var list = document.getElementById("invite-list");
+    if (!list) return;
+    list.replaceChildren();
+    if (!invites.length) {
+      list.appendChild(emptyRow("No invites are outstanding."));
+      return;
+    }
+    invites.forEach(function (entry) {
+      var item = document.createElement("li");
+      item.className = "device-item";
+      var identity = document.createElement("div");
+      var name = document.createElement("strong");
+      name.textContent = firstText(entry.email, "Pending invite");
+      var meta = document.createElement("code");
+      meta.textContent = firstText(entry.id, "");
+      identity.append(name, meta);
+      var actions = document.createElement("div");
+      var revoke = document.createElement("button");
+      revoke.className = "button";
+      revoke.type = "button";
+      revoke.dataset.inviteId = firstText(entry.id, "") || "";
+      revoke.textContent = "Revoke";
+      actions.append(rolePill(entry.role), revoke);
+      item.append(identity, actions);
+      list.appendChild(item);
+    });
+  }
+
+  function renderWorkspaces(workspaces) {
+    var list = document.getElementById("workspace-list");
+    if (!list) return;
+    list.replaceChildren();
+    if (!workspaces.length) {
+      list.appendChild(emptyRow("Only your personal workspace so far."));
+      return;
+    }
+    workspaces.forEach(function (entry) {
+      var item = document.createElement("li");
+      item.className = "device-item";
+      var identity = document.createElement("div");
+      var name = document.createElement("strong");
+      name.textContent = firstText(entry.name, entry.workspace_id, "Workspace");
+      var meta = document.createElement("code");
+      var count = typeof entry.member_count === "number" ? entry.member_count : 1;
+      meta.textContent = String(count) + (count === 1 ? " member" : " members");
+      identity.append(name, meta);
+      item.append(identity, rolePill(entry.role));
+      list.appendChild(item);
+    });
+  }
+
+  function hideAdminControls() {
+    var card = document.getElementById("invites-card");
+    var form = document.getElementById("invite-form");
+    if (card) card.hidden = true;
+    if (form) form.hidden = true;
+  }
+
+  async function refreshTeam() {
+    var results = await Promise.allSettled([
+      apiFetch("/v1/workspace/members"),
+      apiFetch("/v1/workspace/invites"),
+      apiFetch("/v1/workspaces")
+    ]);
+    if (results[0].status === "fulfilled") renderMembers(itemsOf(results[0].value));
+    if (results[1].status === "fulfilled") renderInvites(itemsOf(results[1].value));
+    else hideAdminControls();
+    if (results[2].status === "fulfilled") renderWorkspaces(itemsOf(results[2].value));
+  }
+
+  async function acceptPendingInvite() {
+    var params = new URLSearchParams(window.location.search);
+    var token = params.get("invite");
+    if (!token) return;
+    // The invite token is a bearer credential: drop it from the address bar
+    // and the history entry before doing anything else with it.
+    window.history.replaceState({}, "", window.location.pathname);
+    setTeamStatus("Joining the workspace…", "");
+    try {
+      var body = await apiFetch("/v1/workspace/invites/accept", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: token })
+      });
+      var workspace = (body && body.workspace) || {};
+      setTeamStatus(
+        "Joined " + firstText(workspace.name, "the workspace") + " as " +
+          roleOf(body && body.role) + ".",
+        "success"
+      );
+    } catch (error) {
+      setTeamStatus(
+        error instanceof Error ? error.message : "This invite could not be accepted.",
+        "error"
+      );
+    }
+  }
+
+  var inviteList = document.getElementById("invite-list");
+  if (inviteList) {
+    inviteList.addEventListener("click", async function (event) {
+      var trigger = event.target;
+      if (!trigger || !trigger.dataset || !trigger.dataset.inviteId) return;
+      trigger.disabled = true;
+      try {
+        await apiFetch("/v1/workspace/invites/revoke", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ invite_id: trigger.dataset.inviteId })
+        });
+        setTeamStatus("Invite revoked.", "success");
+        await refreshTeam();
+      } catch (error) {
+        trigger.disabled = false;
+        setTeamStatus(
+          error instanceof Error ? error.message : "The invite could not be revoked.",
+          "error"
+        );
+      }
+    });
+  }
+
+  var inviteForm = document.getElementById("invite-form");
+  if (inviteForm) {
+    inviteForm.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      var emailField = document.getElementById("invite-email");
+      var roleField = document.getElementById("invite-role");
+      var submit = document.getElementById("invite-submit");
+      var result = document.getElementById("invite-result");
+      var output = document.getElementById("invite-link");
+      var email = emailField && "value" in emailField ? emailField.value.trim() : "";
+      var role = roleField && "value" in roleField ? roleField.value : "member";
+      if (!email) {
+        setTeamStatus("Enter the address to invite.", "error");
+        if (emailField) emailField.focus();
+        return;
+      }
+      if (submit) submit.disabled = true;
+      setTeamStatus("Creating a single-use invite…", "");
+      try {
+        var body = await apiFetch("/v1/workspace/invites", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: email, role: role })
+        });
+        var invite = (body && body.invite) || {};
+        var link = firstText(invite.invite_url, invite.token);
+        if (!link) throw new Error("The invite was created without a shareable link.");
+        if (output) output.textContent = link;
+        if (result) result.hidden = false;
+        if (emailField && "value" in emailField) emailField.value = "";
+        setTeamStatus("Invite ready. Send this link now; it is shown once.", "success");
+        await refreshTeam();
+      } catch (error) {
+        setTeamStatus(
+          error instanceof Error ? error.message : "The invite could not be created.",
+          "error"
+        );
+      } finally {
+        if (submit) submit.disabled = false;
+      }
+    });
+  }
+
   var deviceForm = document.getElementById("device-form");
   if (deviceForm) {
     deviceForm.addEventListener("submit", async function (event) {
@@ -692,6 +966,10 @@ const ACCOUNT_SCRIPT = `
     var result = document.getElementById("token-result");
     if (output) output.textContent = "";
     if (result) result.hidden = true;
+    var inviteOutput = document.getElementById("invite-link");
+    var inviteResult = document.getElementById("invite-result");
+    if (inviteOutput) inviteOutput.textContent = "";
+    if (inviteResult) inviteResult.hidden = true;
   });
 
   var signOut = document.getElementById("sign-out");
@@ -712,6 +990,8 @@ const ACCOUNT_SCRIPT = `
     var results = await Promise.allSettled([refreshAccount(), refreshDevices()]);
     if (results[0].status === "rejected") setStatus("Account details could not be refreshed.", "error");
     if (results[1].status === "rejected") setStatus("Devices could not be refreshed.", "error");
+    await acceptPendingInvite();
+    await refreshTeam();
   }
 
   void refreshAll();
@@ -720,8 +1000,8 @@ const ACCOUNT_SCRIPT = `
 
 // Tests recompute these hashes from the exact constants above. Keep them in
 // sync whenever either inline block changes.
-const STYLE_CSP_HASH = "sha256-GxS2bTHxbGHFd/oR0uUAxht/8UUUPetwU+0l1v8miLA=";
-const SCRIPT_CSP_HASH = "sha256-0N5H4HRydPpfnRiiuQNaPKB4VM3pGPDewN8YI1+20/8=";
+const STYLE_CSP_HASH = "sha256-xXx3NNvaQPo3MnrfY7dNxJSyBiq+6Wa51yij0+aYVkY=";
+const SCRIPT_CSP_HASH = "sha256-q4TR2K6TUy4YxQJVLYYVIw8lKHnVSUBsbThv8Znovpc=";
 
 function escapeHTML(value: unknown): string {
   return String(value ?? "")
@@ -774,6 +1054,45 @@ function deviceRows(devices: AccountDeviceView[] | undefined): string {
     const id = text(device.id, "ID pending");
     const status = text(device.status, "active");
     return `<li class="device-item"><div><strong>${escapeHTML(label)}</strong><code>${escapeHTML(id)}</code></div><span class="device-meta">${escapeHTML(status)}</span></li>`;
+  }).join("");
+}
+
+function rolePill(role: unknown): string {
+  const value = text(role, "member");
+  return `<span class="role-pill" data-role="${escapeHTML(value)}">${escapeHTML(value)}</span>`;
+}
+
+function memberRows(members: AccountMemberView[] | undefined): string {
+  if (!members || members.length === 0) {
+    return '<li class="device-empty">No teammates yet. Invite one below.</li>';
+  }
+  return members.map((entry) => {
+    const name = text(entry.displayName, text(entry.email, "Teammate"));
+    const handle = text(entry.email, text(entry.userId, ""));
+    return `<li class="device-item"><div><strong>${escapeHTML(name)}</strong><code>${escapeHTML(handle)}</code></div>${rolePill(entry.role)}</li>`;
+  }).join("");
+}
+
+function inviteRows(invites: AccountInviteView[] | undefined): string {
+  if (!invites || invites.length === 0) {
+    return '<li class="device-empty">No invites are outstanding.</li>';
+  }
+  return invites.map((entry) => {
+    const email = text(entry.email, "Pending invite");
+    const id = text(entry.id, "");
+    return `<li class="device-item"><div><strong>${escapeHTML(email)}</strong><code>${escapeHTML(id)}</code></div><div>${rolePill(entry.role)}<button class="button" type="button" data-invite-id="${escapeHTML(id)}">Revoke</button></div></li>`;
+  }).join("");
+}
+
+function workspaceRows(workspaces: AccountWorkspaceView[] | undefined): string {
+  if (!workspaces || workspaces.length === 0) {
+    return '<li class="device-empty">Only your personal workspace so far.</li>';
+  }
+  return workspaces.map((entry) => {
+    const name = text(entry.name, text(entry.workspaceId, "Workspace"));
+    const count = nonNegative(entry.memberCount, 1);
+    const label = `${count} ${count === 1 ? "member" : "members"}`;
+    return `<li class="device-item"><div><strong>${escapeHTML(name)}</strong><code>${escapeHTML(label)}</code></div>${rolePill(entry.role)}</li>`;
   }).join("");
 }
 
@@ -830,6 +1149,9 @@ export function renderAccountPage(data: AccountPageData = {}): string {
   const planStatus = text(data.planStatus, "Active");
   const planPeriod = text(data.planPeriod, "No billing enabled");
   const devices = data.devices ?? [];
+  const members = data.members;
+  const invites = data.invites;
+  const workspaces = data.workspaces;
 
   return `${documentStart("Account · HandoffGraph", true)}
 <body>
@@ -885,6 +1207,33 @@ ${brandHeader(true)}
       <article class="card setup-card" aria-labelledby="setup-heading">
         <h3 id="setup-heading">Setup checklist</h3>
         <ol class="checklist">${setupRows(data.setup, devices.length)}</ol>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="team-title">
+    <div class="section-head"><div><p class="kicker">Team</p><h2 id="team-title">Onboard people, not machines.</h2></div><p>Roles are owner, admin, member, and viewer. Invites are single-use links bound to one address, and every membership change is appended to the workspace audit trail.</p></div>
+    <div class="grid">
+      <article class="card members-card" aria-labelledby="members-heading">
+        <h3 id="members-heading">Members</h3>
+        <ul class="device-list" id="member-list">${memberRows(members)}</ul>
+        <form class="device-form invite-form" id="invite-form">
+          <div class="field"><label for="invite-email">Invite by email</label><input id="invite-email" name="email" type="email" maxlength="254" autocomplete="off" placeholder="teammate@example.com" required></div>
+          <div class="field"><label for="invite-role">Role</label><select id="invite-role" name="role"><option value="member" selected>member</option><option value="admin">admin</option><option value="viewer">viewer</option></select></div>
+          <button class="button primary" id="invite-submit" type="submit">Send invite</button>
+          <p class="form-hint" id="invite-hint">Ownership is never granted by a link. The invite URL is returned once.</p>
+          <p class="status" id="team-status" role="status" aria-live="polite"></p>
+          <div class="token-result" id="invite-result" role="region" aria-label="New invite link" hidden><p>Send this link to the invited address now. It is not saved in this browser and disappears when you leave the page.</p><code id="invite-link"></code></div>
+        </form>
+      </article>
+      <article class="card invites-card" id="invites-card" aria-labelledby="invites-heading">
+        <h3 id="invites-heading">Pending invites</h3>
+        <ul class="device-list" id="invite-list">${inviteRows(invites)}</ul>
+        <p>Each link works once, for the invited address only, and expires after seven days.</p>
+      </article>
+      <article class="card workspaces-card" aria-labelledby="workspaces-heading">
+        <h3 id="workspaces-heading">Your workspaces</h3>
+        <ul class="device-list" id="workspace-list">${workspaceRows(workspaces)}</ul>
       </article>
     </div>
   </section>

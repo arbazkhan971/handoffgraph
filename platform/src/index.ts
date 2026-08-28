@@ -52,6 +52,7 @@ import {
 } from "./ingest";
 import { PLAN_CATALOG } from "./plans";
 import { prepareQuotaReservation } from "./quota";
+import { handleTeamsRoute } from "./teams";
 
 const JSON_HEADERS = {
   "cache-control": "no-store",
@@ -94,6 +95,8 @@ export default {
       }
       const accountResponse = await handleAccountRoute(request, env);
       if (accountResponse !== null) return accountResponse;
+      const teamsResponse = await handleTeamsRoute(request, env);
+      if (teamsResponse !== null) return teamsResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }
@@ -128,6 +131,16 @@ function accountPageData(session: SessionAccount): AccountPageData {
     planName: session.planId === "basic" ? "Hosted Basic" : session.planId,
     planStatus: session.planStatus,
     planPeriod: `Resets ${new Date(session.periodEnd * 1_000).toISOString().slice(0, 10)}`,
+    // Only the caller's own membership is known without another query; the
+    // page fetches the rest of the roster over the team API on load.
+    members: [
+      {
+        userId: session.userId,
+        email: session.email,
+        displayName: session.displayName ?? undefined,
+        role: session.role,
+      },
+    ],
     usage: [
       {
         label: "Monthly events",

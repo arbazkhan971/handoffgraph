@@ -75,6 +75,16 @@ migrations_dir = "migrations"
 # max_retries = 3
 # dead_letter_queue = "handoffgraph-ingest-dlq"
 
+# Teams (parity row 45): invite delivery by email. POST /v1/workspace/invites
+# already returns the single-use link so an admin can share it out of band; the
+# binding below only adds automatic delivery. Enable it after verifying a
+# sender address in Cloudflare Email Routing for the zone, then set
+# INVITE_SENDER to that address. Nothing in the invite flow depends on it, so
+# team onboarding keeps working while this stays commented out.
+# [[send_email]]
+# name = "INVITE_EMAIL"
+# destination_address = "invites@handoffgraph.dev"
+
 # v0.10.x: Durable Object for live workstream rooms (presence, subscriptions).
 # [[durable_objects.bindings]]
 # name = "WorkstreamRoom"

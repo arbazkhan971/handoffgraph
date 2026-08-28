@@ -117,6 +117,22 @@ describe("renderAccountPage", () => {
     expect(script).not.toMatch(/authorization/i);
   });
 
+  it("drives the team surface over the same CSRF-guarded API", () => {
+    const html = renderAccountPage();
+    const script = inlineBlock(html, "script");
+
+    expect(script).toContain('apiFetch("/v1/workspace/members")');
+    expect(script).toContain('apiFetch("/v1/workspace/invites")');
+    expect(script).toContain('apiFetch("/v1/workspaces")');
+    expect(script).toContain('apiFetch("/v1/workspace/invites/accept"');
+    expect(script).toContain('apiFetch("/v1/workspace/invites/revoke"');
+    // A pending invite token arrives in the URL and must not survive there.
+    expect(script).toContain('params.get("invite")');
+    expect(script).toContain("window.history.replaceState");
+    expect(script).toContain("hideAdminControls");
+    expect(script).not.toContain("document.cookie = ");
+  });
+
   it("renders devices without embedding tokens and clamps unsafe meter numbers", () => {
     const html = renderAccountPage({
       usage: [
@@ -132,6 +148,48 @@ describe("renderAccountPage", () => {
     expect(html).toContain("Laptop");
     expect(html).toContain('<code id="device-token"></code>');
     expect(html).not.toContain('value="dev_');
+  });
+
+  it("renders the members section with roles, invites, and a workspace list", () => {
+    const html = renderAccountPage({
+      members: [
+        { userId: "usr_1", email: "owner@example.com", displayName: "Ada", role: "owner" },
+        { userId: "usr_2", email: "viewer@example.com", role: "viewer" },
+      ],
+      invites: [{ id: "inv_1", email: "pending@example.com", role: "member" }],
+      workspaces: [{ workspaceId: "wsp_1", name: "Team", role: "admin", memberCount: 3 }],
+    });
+
+    expect(html).toContain('aria-labelledby="members-heading"');
+    expect(html).toContain('aria-labelledby="invites-heading"');
+    expect(html).toContain('<ul class="device-list" id="member-list">');
+    expect(html).toContain('<ul class="device-list" id="invite-list">');
+    expect(html).toContain('<ul class="device-list" id="workspace-list">');
+    // The workspace list stays visible for a member whose admin card is hidden.
+    expect(html).toContain('aria-labelledby="workspaces-heading"');
+    expect(html).toContain('<form class="device-form invite-form" id="invite-form">');
+    expect(html).toContain('<label for="invite-email">Invite by email</label>');
+    expect(html).toContain('<label for="invite-role">Role</label>');
+    expect(html).toContain('id="team-status" role="status" aria-live="polite"');
+    expect(html).toContain('data-role="owner"');
+    expect(html).toContain('data-invite-id="inv_1"');
+    expect(html).toContain("3 members");
+    // Ownership is never offered as an invitable role in the UI.
+    expect(html).not.toContain('<option value="owner"');
+    expect(html).toContain('<code id="invite-link"></code>');
+  });
+
+  it("escapes every server-rendered member, invite, and workspace value", () => {
+    const attack = `"><img src=x onerror=alert(1)>'&`;
+    const html = renderAccountPage({
+      members: [{ userId: attack, email: attack, displayName: attack, role: attack }],
+      invites: [{ id: attack, email: attack, role: attack }],
+      workspaces: [{ workspaceId: attack, name: attack, role: attack, memberCount: -4 }],
+    });
+
+    expect(html).not.toContain(attack);
+    expect(html).toContain("&quot;&gt;&lt;img src=x onerror=alert(1)&gt;&#39;&amp;");
+    expect(html).toContain("0 members");
   });
 
   it("keeps paid tiers visibly preview-only without a billing action", () => {
