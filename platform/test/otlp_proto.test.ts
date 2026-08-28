@@ -651,7 +651,7 @@ describe("decodeExportRequest wire rules", () => {
     expect(() => decodeExportRequest(new Uint8Array(1_048_577))).toThrow(/exceeds 1048576 bytes/);
   });
 
-  it("splits the UTF-8 policy: structural strings reject, span strings do not", async () => {
+  it("splits the UTF-8 policy: structural strings reject the request, span strings reject one span", async () => {
     const invalid = [0xff, 0xfe]; // never a valid UTF-8 sequence
     const goodSpan = span({
       traceId: TRACE,
@@ -692,9 +692,9 @@ describe("decodeExportRequest wire rules", () => {
     expect(() => decodeExportRequest(oneSpanRequest(withStatusMessage)))
       .toThrow(/Status.message is not valid UTF-8/);
 
-    // Per-span: the span name and attribute strings are handed to the
-    // sanitizer instead of rejecting the batch, so one hostile span never
-    // takes the export down with it.
+    // Per-span: the span name and attribute strings do NOT reject the batch —
+    // they reject their own span, fail-closed, so one hostile span never takes
+    // the export down with it and never lands as U+FFFD either.
     const spanLevel = [
       ...lenDelim(1, hexBytes(TRACE)),
       ...lenDelim(2, hexBytes("b7ad6b7169203331")),
@@ -705,7 +705,14 @@ describe("decodeExportRequest wire rules", () => {
     ];
     const decoded = decodeExportRequest(oneSpanRequest(spanLevel));
     const converted = await convertOtlpExport(decoded, CONVERT);
-    expect(converted.events.length).toBeGreaterThan(0);
+    expect(converted.rejectedSpans).toEqual([
+      {
+        traceId: TRACE,
+        spanId: "b7ad6b7169203331",
+        error: "span name is not valid UTF-8",
+      },
+    ]);
+    expect(converted.events).toEqual([]);
   });
 
   it("accepts an empty request and an empty resource_spans entry", async () => {

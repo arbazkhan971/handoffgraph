@@ -432,8 +432,13 @@ hosted), 3, 4 (local), 8–11, 16–23, 24, 25, 26 (local), 27 (local), 33, 34
    `platform/src/otlp.ts` hand-rolls the canonical Crockford ULID encoding;
    golden-test any change against Go outputs.
 4. **OTLP replay idempotency requires a deterministic `observed_at`** —
-   hosted derives it from the latest span end, never wall clock
-   (`latestSpanEndISO` in `platform/src/index.ts`).
+   hosted derives it PER EVENT from that event's own boundary instant (its
+   `occurred_at`), never wall clock and never a whole-export aggregate
+   (`handleOtlpExport` in `platform/src/index.ts`). `observed_at` rides inside
+   `raw_json`, which migration 0003's `events_reject_payload_conflict` trigger
+   compares, so an export-wide value made one span's events depend on the
+   COMPOSITION of the batch carrying them: re-sending that span with different
+   siblings aborted the whole batch with a 409.
 5. **The append p95 latency gate flakes under parallel-suite load.** It is
    race-scaled (`race_multiplier*.go`) and re-measures once on breach; real
    regressions fail both measures.

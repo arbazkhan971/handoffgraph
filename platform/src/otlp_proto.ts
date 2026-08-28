@@ -38,9 +38,18 @@
  * judgement (bad ids, bad times, unusable attribute strings) is deferred to
  * the converter so protobuf batches report rejected spans through the same
  * partial-success path as JSON batches.
+ *
+ * The one place protobuf cannot mirror JSON by construction is text: the wire
+ * carries raw BYTES for span names, attribute keys and string values, and a JS
+ * string cannot hold a sequence that is not valid UTF-8. Decoding those
+ * leniently would rewrite them to U+FFFD and ACCEPT telemetry the Go path
+ * rejects, so every string here is decoded STRICTLY; a per-span field that
+ * fails becomes an `OtlpUndecodable` the converter turns into one rejected
+ * span, and a structural field that fails rejects the request.
  */
 
 import { MAX_BODY_BYTES } from "./ingest";
+import { OtlpUndecodable } from "./otlp";
 
 /**
  * Bounds nested-message recursion while decoding. OTLP's deepest legitimate
@@ -217,11 +226,12 @@ function fieldCount(f: ProtoField, where: string): number {
   return Number(v);
 }
 
-// JS strings cannot hold invalid UTF-8, so the two decoders below are how the
-// Go policy (raw bytes retained, validity judged per string) is expressed
-// here. ignoreBOM keeps a leading U+FEFF instead of silently eating it.
+// One strict decoder for every string on the wire: a lenient decode would
+// rewrite bad bytes to U+FFFD and accept telemetry the Go path rejects. What
+// differs between the two helpers below is only the blast radius of a failure
+// — the whole request, or the one span the string belongs to. ignoreBOM keeps
+// a leading U+FEFF instead of silently eating it.
 const UTF8_STRICT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const UTF8_LENIENT = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
 
 /**
  * A string field that reaches the payload WITHOUT passing through the
@@ -240,12 +250,28 @@ function fieldStructuralString(f: ProtoField, where: string): string {
 }
 
 /**
- * A string field the per-span sanitizer judges (span/event names, attribute
- * keys, AnyValue.string_value). Left un-validated on purpose so one hostile
- * span never rejects the whole batch, exactly as on the JSON path.
+ * A string field the per-SPAN sanitizer judges (span/event names, attribute
+ * keys, AnyValue.string_value).
+ *
+ * Go keeps the raw bytes in a Go string here and lets `utf8String` /
+ * `validateSpan` reject that one span fail-closed while its siblings still
+ * convert. A JS string cannot hold those bytes, and decoding them leniently
+ * would rewrite them to U+FFFD and ACCEPT telemetry Go refuses — a fail-open
+ * divergence. So an invalid sequence becomes an {@link OtlpUndecodable}
+ * carrying the message Go reports, which the converter turns into the same
+ * single rejected span (never a request-level throw: one hostile span must
+ * not take the batch down with it).
+ *
+ * `reason` is the Go-side message for this field so the two implementations
+ * report the same rejection.
  */
-function fieldString(f: ProtoField, where: string): string {
-  return UTF8_LENIENT.decode(fieldBytes(f, where));
+function fieldString(f: ProtoField, where: string, reason: string): string | OtlpUndecodable {
+  const bytes = fieldBytes(f, where);
+  try {
+    return UTF8_STRICT.decode(bytes);
+  } catch {
+    return new OtlpUndecodable(reason);
+  }
 }
 
 // -- OTLP field numbers (the public schema) -----------------------------------
@@ -303,9 +329,16 @@ const F_KEY_VALUE_LIST_VALUES = 1;
 
 // -- decoded shapes (identical to the OTLP/JSON body the converter reads) -----
 
-/** The proto3-JSON AnyValue oneof; `{}` is the unset oneof. */
+/**
+ * The proto3-JSON AnyValue oneof; `{}` is the unset oneof.
+ *
+ * The string arms widen to {@link OtlpUndecodable} because protobuf carries
+ * raw bytes where JSON carries text: bytes that are not valid UTF-8 reach the
+ * converter as that marker and reject their own span, rather than being
+ * rewritten to U+FFFD (see {@link fieldString}).
+ */
 export type OtlpAnyValue =
-  | { stringValue: string }
+  | { stringValue: string | OtlpUndecodable }
   | { boolValue: boolean }
   | { intValue: string }
   | { doubleValue: number }
@@ -314,11 +347,11 @@ export type OtlpAnyValue =
   | { kvlistValue: { values: OtlpKeyValue[] } }
   | Record<string, never>;
 
-export type OtlpKeyValue = { key: string; value?: OtlpAnyValue };
+export type OtlpKeyValue = { key: string | OtlpUndecodable; value?: OtlpAnyValue };
 
 export type OtlpSpanEvent = {
   timeUnixNano?: string;
-  name?: string;
+  name?: string | OtlpUndecodable;
   attributes?: OtlpKeyValue[];
 };
 
@@ -329,7 +362,7 @@ export type OtlpSpan = {
   spanId?: string;
   parentSpanId?: string;
   traceState?: string;
-  name?: string;
+  name?: string | OtlpUndecodable;
   kind?: number;
   startTimeUnixNano?: string;
   endTimeUnixNano?: string;
@@ -496,7 +529,7 @@ function decodeSpan(buf: Uint8Array, depth: number): OtlpSpan {
   let spanId = "";
   let parentSpanId = "";
   let traceState = "";
-  let name = "";
+  let name: string | OtlpUndecodable = "";
   let kind: number | undefined;
   let startTimeUnixNano: string | undefined;
   let endTimeUnixNano: string | undefined;
@@ -519,9 +552,9 @@ function decodeSpan(buf: Uint8Array, depth: number): OtlpSpan {
         traceState = fieldStructuralString(f, "Span.trace_state");
         break;
       case F_SPAN_NAME:
-        // Left un-validated on purpose: the per-span sanitizer already judges
-        // a span name fail-closed, exactly as on the JSON path.
-        name = fieldString(f, "Span.name");
+        // Judged per span by the converter, fail-closed, exactly as
+        // internal/otlp/convert.go's validateSpan does over the raw bytes.
+        name = fieldString(f, "Span.name", "span name is not valid UTF-8");
         break;
       case F_SPAN_KIND:
         kind = Number(fieldVarint(f, "Span.kind"));
@@ -573,7 +606,7 @@ function decodeSpan(buf: Uint8Array, depth: number): OtlpSpan {
 function decodeSpanEvent(buf: Uint8Array, depth: number): OtlpSpanEvent {
   if (depth > MAX_PROTO_DEPTH) throw tooDeep();
   let timeUnixNano: string | undefined;
-  let name = "";
+  let name: string | OtlpUndecodable = "";
   const attributes: OtlpKeyValue[] = [];
   forEachField(buf, (f) => {
     switch (f.num) {
@@ -581,7 +614,7 @@ function decodeSpanEvent(buf: Uint8Array, depth: number): OtlpSpanEvent {
         timeUnixNano = fieldFixed64(f, "Span.Event.time_unix_nano").toString();
         break;
       case F_SPAN_EVENT_NAME:
-        name = fieldString(f, "Span.Event.name");
+        name = fieldString(f, "Span.Event.name", "span event name is not valid UTF-8");
         break;
       case F_SPAN_EVENT_ATTRIBUTES:
         attributes.push(decodeKeyValue(fieldBytes(f, "Span.Event.attributes"), depth + 1));
@@ -629,7 +662,7 @@ function decodeKeyValue(buf: Uint8Array, depth: number): OtlpKeyValue {
       case F_KEY_VALUE_KEY:
         // Keys are judged per span by the converter's sanitizer, matching
         // the JSON path.
-        out.key = fieldString(f, "KeyValue.key");
+        out.key = fieldString(f, "KeyValue.key", "invalid attribute key: not valid UTF-8");
         break;
       case F_KEY_VALUE_VALUE:
         out.value = decodeAnyValue(fieldBytes(f, "KeyValue.value"), depth + 1);
@@ -652,9 +685,15 @@ function decodeAnyValue(buf: Uint8Array, depth: number): OtlpAnyValue {
   forEachField(buf, (f) => {
     switch (f.num) {
       case F_ANY_VALUE_STRING:
-        // Deliberately raw: the converter's sanitizer judges it per span, the
-        // same outcome the JSON flavor produces.
-        out = { stringValue: fieldString(f, "AnyValue.string_value") };
+        // Judged per span by the converter's sanitizer, the same fail-closed
+        // outcome Go's utf8String produces for these bytes.
+        out = {
+          stringValue: fieldString(
+            f,
+            "AnyValue.string_value",
+            "attribute string is not valid UTF-8",
+          ),
+        };
         break;
       case F_ANY_VALUE_BOOL:
         out = { boolValue: fieldVarint(f, "AnyValue.bool_value") !== 0n };

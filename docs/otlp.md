@@ -219,7 +219,15 @@ carried unchanged in payload `source_kind`.
   attribute sanitizer (scope name/version, schema urls, trace state, status
   message) rather than let `encoding/json` rewrite them to U+FFFD. Span names
   and attribute strings stay raw so the existing per-span checks reject them
-  exactly as they do on the JSON path.
+  exactly as they do on the JSON path. A JS string cannot hold those raw
+  bytes, so the hosted decoder hands the converter an `OtlpUndecodable`
+  marker instead (`platform/src/otlp.ts`), which rejects that one span with
+  the same message Go reports — never a lenient U+FFFD rewrite, never a
+  request-level failure.
+- Session-key precedence is resolved by KEY order, not attribute emit order,
+  in both the per-span lookup and the trace-wide scan, and the trace-wide
+  candidate is sanitized before promotion — so a span rejected for an
+  unusable `session.id` cannot donate it to its accepted siblings.
 
 ## Layout
 
@@ -239,4 +247,12 @@ testdata/fixtures/otlp/          genai_session.json + genai_session.pb
                                   gen_ai.conversation.id, OpenInference
                                   EVALUATOR/PROMPT — JSON only, no .pb sibling;
                                   ids cross-checked in platform/test/otlp.test.ts)
+                                 payload_parity.json + payload_parity.pb
+                                  (every AnyValue arm — bytes, kvlist, int64 —
+                                  plus a FAILED span that must still carry its
+                                  attributes; four-corner parity)
+                                 utf8_reject.pb (three spans that each break one
+                                  per-span UTF-8 path plus a clean sibling —
+                                  protobuf only, since JSON cannot carry
+                                  invalid UTF-8)
 ```

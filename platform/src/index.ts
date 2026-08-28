@@ -442,16 +442,24 @@ async function handleOtlpExport(request: Request, env: { DB: D1DatabaseLike }): 
     }
   }
 
-  // Replay idempotency: observed_at must be a pure function of the input
-  // telemetry (the latest span end), never wall-clock receipt time —
-  // otherwise the same export re-sent produces a different envelope hash
-  // and the derived idempotency key collides with 409 instead of replaying.
-  const observedAt = latestSpanEndISO(parsed);
+  // Replay idempotency: observed_at is derived PER EVENT from that event's own
+  // boundary instant — which is exactly its occurred_at (span end for
+  // span.completed/span.failed, span start for span.started, the trace and
+  // session bounds for the aggregate events). Never wall-clock receipt time,
+  // and never a whole-export aggregate either: observed_at rides inside
+  // raw_json, which migration 0003's events_reject_payload_conflict trigger
+  // compares, so an export-wide value made one span's events change shape with
+  // the COMPOSITION of the batch they arrived in. Re-sending a span alongside
+  // different siblings then aborted the whole batch with a payload conflict
+  // instead of deduping under INSERT OR IGNORE. Per event, the same span is
+  // byte-identical in every batch that carries it.
   const converted = await convertOtlpExport(parsed, {
     workstreamID: undefined,
     captureTier,
-    observedAt,
   });
+  for (const event of converted.events) {
+    event["observed_at"] = event["occurred_at"];
+  }
   if (converted.events.length === 0) {
     return jsonResponse(400, {
       error: "no convertible spans",
@@ -504,30 +512,6 @@ async function handleOtlpExport(request: Request, env: { DB: D1DatabaseLike }): 
     capture_tier: captureTier,
   };
   return jsonResponse(200, receipt);
-}
-
-/** Latest endTimeUnixNano across the export, as ISO-3339 (epoch on none). */
-function latestSpanEndISO(body: unknown): string {
-  try {
-    let max = 0n;
-    const spans =
-      (body as { resourceSpans?: { scopeSpans?: { spans?: { endTimeUnixNano?: unknown }[] }[] }[] })
-        ?.resourceSpans ?? [];
-    for (const rs of spans) {
-      for (const ss of rs.scopeSpans ?? []) {
-        for (const sp of ss.spans ?? []) {
-          const raw = sp.endTimeUnixNano;
-          if (typeof raw === "string" && /^\d+$/.test(raw)) {
-            const ns = BigInt(raw);
-            if (ns > max) max = ns;
-          }
-        }
-      }
-    }
-    return new Date(Number(max / 1_000_000n)).toISOString();
-  } catch {
-    return new Date(0).toISOString();
-  }
 }
 
 // -- POST /v1/event-batches ---------------------------------------------------

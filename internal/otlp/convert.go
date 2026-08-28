@@ -477,14 +477,19 @@ func mapKind(rawKind, name string, attrs map[string]any) protocol.SpanKind {
 
 // sanitizeKeyValues converts KeyValue pairs into a plain map, dropping
 // reserved keys and rejecting (fail-closed) invalid keys or strings.
+//
+// The returned map is ALWAYS initialized, including for a span carrying zero
+// attributes: Convert merges the instrumentation-scope attributes into it,
+// and writing into a nil map panics. Every OTel SDK stamps a scope name, so a
+// nil return here took down any batch containing one attribute-less span.
 func sanitizeKeyValues(kvs []KeyValue, depth int) (map[string]any, []error) {
+	out := make(map[string]any, len(kvs))
 	if len(kvs) == 0 {
-		return nil, nil
+		return out, nil
 	}
 	if depth > maxAttrDepth {
-		return nil, []error{fmt.Errorf("attribute nesting exceeds %d levels", maxAttrDepth)}
+		return out, []error{fmt.Errorf("attribute nesting exceeds %d levels", maxAttrDepth)}
 	}
-	out := make(map[string]any, len(kvs))
 	var errs []error
 	for _, kv := range kvs {
 		if reservedAttrKeys[kv.Key] {
@@ -621,22 +626,33 @@ func mustJSON(v any) json.RawMessage {
 	return b
 }
 
-// rawStrAttr reads the first matching string-valued key from raw KeyValue
-// pairs without full sanitization (phase-1 scan only; phase 2 re-validates).
+// rawStrAttr reads a string-valued attribute out of raw KeyValue pairs during
+// the phase-1 scan, honouring KEY precedence rather than emit order: the keys
+// are the outer loop and the attribute list the inner one, so the caller's
+// ranking decides, exactly like strAttr does over a sanitized map. Looping the
+// attributes first would let a span that carries both session.id and
+// gen_ai.conversation.id resolve to whichever the SDK happened to append
+// first, splitting one logical trace across two derived session ids.
+//
+// The candidate is validated through utf8String before it is accepted. The
+// phase-1 scan feeds a TRACE-WIDE session key, so a span that phase 2 will
+// reject for an unusable session.id must not donate that string to its
+// accepted siblings' native_session_id.
 func rawStrAttr(kvs []KeyValue, keys ...string) string {
-	for _, kv := range kvs {
-		matched := false
-		for _, k := range keys {
-			if kv.Key == k {
-				matched = true
-				break
+	for _, k := range keys {
+		for _, kv := range kvs {
+			if kv.Key != k || kv.Value == nil {
+				continue
 			}
-		}
-		if !matched || kv.Value == nil {
-			continue
-		}
-		if s, ok := kv.Value.Value().(string); ok && s != "" {
-			return s
+			s, ok := kv.Value.Value().(string)
+			if !ok || s == "" {
+				continue
+			}
+			valid, err := utf8String(s)
+			if err != nil {
+				continue
+			}
+			return valid
 		}
 	}
 	return ""
