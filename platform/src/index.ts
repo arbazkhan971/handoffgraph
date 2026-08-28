@@ -80,6 +80,12 @@ import { buildObservationStatements, handleObservationsRoute } from "./observati
 import { PLAN_CATALOG } from "./plans";
 import { handleQualityRoute } from "./quality";
 import { prepareQuotaReservation } from "./quota";
+import { handleSimulationsRoute } from "./simulations";
+// The Workflows entrypoint for agent simulations must be exported from the
+// Worker's main module for the (currently commented) [[workflows]] binding in
+// wrangler.toml to resolve it. Re-exported here rather than defined here so
+// simulations.ts stays the single home of the loop.
+export { SimulationWorkflow } from "./simulations";
 import { handleTeamsRoute } from "./teams";
 import { handleWebhooksRoute, webhooksQueue, webhooksScheduled } from "./webhooks";
 
@@ -146,6 +152,8 @@ export default {
       if (analyticsResponse !== null) return analyticsResponse;
       const qualityResponse = await handleQualityRoute(request, env);
       if (qualityResponse !== null) return qualityResponse;
+      const simulationsResponse = await handleSimulationsRoute(request, env);
+      if (simulationsResponse !== null) return simulationsResponse;
       if (request.method === "POST" && pathname === "/v1/otlp") {
         return await handleOtlpExport(request, env);
       }

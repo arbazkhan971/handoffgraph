@@ -155,6 +155,36 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 # binding = "APIKEY_KV"
 # id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
+# Agent simulations (parity row 31): a user-simulator + judge loop at
+# /v1/simulations, recorded as provenance-labelled events on the spine
+# (simulation.turn.completed OBSERVED, simulation.completed INFERRED).
+#
+# SIM_WORKFLOW is the optional durability accelerator. Each exchange runs in
+# step.do('turn-<n>'), so a run killed mid-conversation resumes at the next
+# exchange instead of re-billing the completed ones; the deterministic event
+# ids make that replay idempotent. The feature is fully functional without it
+# — src/simulations.ts falls back to inline bounded execution under a
+# wall-clock deadline — so this stays commented until the Workflow exists.
+#
+# Enabling it is a two-step change, and BOTH steps are required:
+#   1. npx wrangler workflows create handoffgraph-simulations   (then uncomment)
+#   2. in src/simulations.ts, add
+#        import { WorkflowEntrypoint } from "cloudflare:workers";
+#      and make the class `extends WorkflowEntrypoint<SimulationsEnv,
+#      SimulationRunParams>`. The class already has the constructor/run shape
+#      that contract requires; the import is omitted today because the platform
+#      test suite runs in plain node (no miniflare) and could not load it.
+#
+# Instance params carry the caller's upstream credential SEALED under
+# GATEWAY_SEALING_KEY (the same secret the gateway uses), because the Workflows
+# runtime persists params. With no sealing key set, dispatch deliberately falls
+# back to inline execution rather than persisting a raw provider key.
+#
+# [[workflows]]
+# name = "handoffgraph-simulations"
+# binding = "SIM_WORKFLOW"
+# class_name = "SimulationWorkflow"
+
 # One cron drives every sweep (index.ts scheduled dispatcher): artifact
 # compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
 # never touches the events table), the webhook cursor sweep (src/webhooks.ts),
