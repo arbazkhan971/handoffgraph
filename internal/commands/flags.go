@@ -87,3 +87,18 @@ func consumePositionals(fs *flag.FlagSet) ([]string, error) {
 		}
 	}
 }
+
+// intFlag returns the value of int flag name, or 0 when the flag is absent
+// or its value is not an int.
+func intFlag(fs *flag.FlagSet, name string) int {
+	f := fs.Lookup(name)
+	if f == nil {
+		return 0
+	}
+	g, ok := f.Value.(flag.Getter)
+	if !ok {
+		return 0
+	}
+	v, _ := g.Get().(int)
+	return v
+}

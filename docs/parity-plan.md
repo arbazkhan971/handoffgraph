@@ -67,6 +67,10 @@ Matrix rows: 2, 3, 4, 9, 10, 11, 24, 37, 38.
   `coding_agent.*`; interop docs for OpenInference/OpenLLMetry/Langfuse attrs.
 - Read-model upgrade: wide `span_observations` (trace attrs denormalized),
   `ts_bucket` indexes, fingerprint tables, promoted columns.
+  **Shipped (2026-08-28):** migration 9 + `internal/observations` +
+  `index rebuild` / `query spans` (coarse bucket prune + exact predicates,
+  stale auto-rebuild). Remaining: Analytics Engine rollups for the hosted
+  tier (P3) and runtime attribute promotion (P2).
 - `score.recorded` event type + read model (numeric/categorical/bool, target
   trace/span/session/checkpoint/workstream, source-tagged) wired into
   CLI + MCP + UI. **Shipped (2026-08-28, event kind `score.recorded`):**

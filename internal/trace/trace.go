@@ -243,6 +243,7 @@ func spanFromEvent(ev *protocol.Event) *protocol.Span {
 		StartedAtNS:         ev.OccurredAt.UnixNano(),
 		Sequence:            ev.Sequence,
 		Provider:            ev.Provider,
+		Agent:               ev.Agent,
 		Model:               ev.Model,
 		ToolName:            payloadString(ev, "tool_name", ""),
 		EvidenceLevel:       protocol.Provenance(ev.Provenance),

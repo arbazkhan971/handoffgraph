@@ -63,6 +63,7 @@ type Span struct {
 	Sequence    int64 `json:"sequence"`
 
 	Provider string `json:"provider,omitempty"`
+	Agent    string `json:"agent,omitempty"`
 	Model    string `json:"model,omitempty"`
 
 	ToolName           string `json:"tool_name,omitempty"`

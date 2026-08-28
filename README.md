@@ -143,6 +143,7 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph mcp serve` | Run the local MCP stdio server (11 goal-oriented tools) |
 | `handoffgraph open` | Serve the local Session Debugger UI (localhost only) |
 | `handoffgraph score record ...` / `score list` | Record/list source-tagged quality scores (numeric, category, boolean) on any spine object |
+| `handoffgraph index rebuild` / `query spans ...` | Wide denormalized observation index: ts_bucket-pruned, fingerprint-filterable span queries (auto-rebuilds when stale) |
 | `handoffgraph redact --preview <file>` | Preview fail-closed redaction |
 | `handoffgraph fixture verify <dir>` | Verify golden fixtures |
 | `handoffgraph version` | Print the HandoffGraph version |
@@ -198,6 +199,7 @@ internal/
   detection/               deterministic session-pathology rules
   mcp/                     local MCP stdio server (11 tools incl. scores)
   scores/                  score read model + validated payload builder
+  observations/            wide denormalized observation derivation (ts_bucket + fingerprints)
   webui/                   embedded debugger API and static assets
   fixture/                 synthetic event generator
   verify/                  fixture verification harness

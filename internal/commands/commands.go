@@ -111,6 +111,7 @@ func Register(app *cli.App) {
 	RegisterLaunchCmd(app)
 	RegisterOTLPCmd(app)
 	RegisterScoreCmd(app)
+	RegisterIndexCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.

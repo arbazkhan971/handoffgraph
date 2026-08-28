@@ -97,9 +97,9 @@ Legend — **Target**: `L` = local Go core, `C` = Cloudflare hosted tier.
 | # | Feature | Provenance | Target | Phase |
 |---|---|---|---|---|
 | 8 | Append-only immutable event spine; derive everything | ours (validated by Langfuse V4, OpenObserve, LangWatch v3) | L | ✅ |
-| 9 | Wide denormalized observations read model (trace attrs on every row; trace_id = correlation handle) | Langfuse V4 | L + C | P1 |
-| 10 | Time-bucket indexed pruning (`ts_bucket`) on every hot query | SigNoz, OpenObserve | L + C | P1 |
-| 11 | Resource/session fingerprint pre-filter tables | SigNoz | L + C | P1–P2 |
+| 9 | Wide denormalized observations read model (trace attrs on every row; trace_id = correlation handle) — **local ✅ (2026-08-28)** | Langfuse V4 | L + C | P1 ✅L / C P3 |
+| 10 | Time-bucket indexed pruning (`ts_bucket`) on every hot query — **local ✅ (2026-08-28)** | SigNoz, OpenObserve | L + C | P1 ✅L / C P3 |
+| 11 | Resource/session fingerprint pre-filter tables — **local ✅ (2026-08-28)** | SigNoz | L + C | P1 ✅L / AE P3 |
 | 12 | Typed attribute maps + promoted indexed columns (`...$$key` + `_exists`) | SigNoz | L + C | P2 |
 | 13 | Derived exception groups (deterministic grouping hash) | SigNoz | L | P2 |
 | 14 | Object-store artifact tiering (compacted JSONL/parquet on R2) + D1 file-list index | OpenObserve, Helicone, Langfuse | C | P3 |

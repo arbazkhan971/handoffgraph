@@ -66,6 +66,7 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Cross-agent continuation (bounded payload, drift, append-only status + MCP acknowledgement) | `internal/launch`, `internal/commands`, `internal/mcp` | ✅ tested |
 | OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending) |
 | Scores primitive — `score record`/`list` + MCP `record_score`/`list_scores` (NUMERIC/CATEGORY/BOOLEAN on trace/span/session/checkpoint/workstream, source-tagged, deterministic derived read model, prefix-validated targets) | `internal/scores`, `internal/protocol`, `internal/commands`, `internal/mcp` | ✅ tested |
+| Wide observations read model — `index rebuild` + `query spans` (denormalized trace attrs on every row, 5-minute ts_bucket prune + exact time predicates, identity fingerprints, stale auto-rebuild; Langfuse-V4/SigNoz patterns re-implemented ideas-only) | `internal/observations`, `internal/storage`, `internal/commands` | ✅ tested (migration 9) |
 | JSON Schemas | `protocol/schema/v1/` | ✅ (3 files) |
 
 ### CLI commands (all work)
@@ -96,6 +97,9 @@ continue      --to codex|claude|pi --workstream <id> [--preview]
               resolve the handoff and print (never execute) the native invocation
 handoff       status [--json]  derive created/accepted acknowledgement state
 detect        run deterministic detections over materialized traces
+index         rebuild the derived wide observation index
+query         spans [--workstream|--trace|--session|--agent|--kind|--failed|--from|--to]
+              ts_bucket-pruned queries over the wide read model (auto-rebuilds)
 otlp          import <file> | serve [--addr 127.0.0.1:4318]
               ingest OTLP/JSON telemetry into the event spine (idempotent;
               serve listens on localhost only)
@@ -128,6 +132,7 @@ internal/
   graph/                   graph.go (model) + reduce.go (reducer)
   trace/                   trace.go (materializer; token/cost usage from trace.completed)
   otlp/                    OTLP/JSON ingest: types + deterministic convert + HTTP listener
+  observations/            wide observation derivation (rows 9-11) + fingerprints
   redact/                  redact.go + patterns.go
   checkpoint/              checkpoint.go (builder) + render.go (Markdown)
   launch/                  bounded continuation + drift + handoff read model

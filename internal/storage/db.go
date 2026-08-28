@@ -177,6 +177,49 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoints_workstream ON checkpoints(workstream_id);
 `},
+	{9, `
+-- Wide denormalized span observations (parity-plan rows 9-11): trace-level
+-- attributes copied onto every row; ts_bucket partitions every hot query;
+-- fingerprints pre-group identity labels. Fully derived + rebuildable.
+CREATE TABLE IF NOT EXISTS span_observations (
+    span_id        TEXT PRIMARY KEY,
+    trace_id       TEXT NOT NULL,
+    session_id     TEXT,
+    workstream_id  TEXT,
+    parent_span_id TEXT,
+    provider       TEXT,
+    agent          TEXT,
+    model          TEXT,
+    kind           TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    tool_name      TEXT,
+    started_at_ns  INTEGER NOT NULL,
+    ended_at_ns    INTEGER,
+    duration_ns    INTEGER,
+    exit_code      INTEGER,
+    sequence       INTEGER NOT NULL,
+    failed         INTEGER NOT NULL DEFAULT 0,
+    fingerprint    TEXT NOT NULL DEFAULT '',
+    ts_bucket      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_obs_bucket    ON span_observations(ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_ws_bucket ON span_observations(workstream_id, ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_trace     ON span_observations(trace_id);
+CREATE INDEX IF NOT EXISTS idx_obs_session   ON span_observations(session_id);
+CREATE INDEX IF NOT EXISTS idx_obs_fp        ON span_observations(fingerprint, ts_bucket);
+CREATE INDEX IF NOT EXISTS idx_obs_agent     ON span_observations(agent, ts_bucket);
+CREATE TABLE IF NOT EXISTS span_fingerprints (
+    fingerprint TEXT PRIMARY KEY,
+    provider    TEXT,
+    agent       TEXT,
+    model       TEXT
+);
+CREATE TABLE IF NOT EXISTS observations_meta (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    snapshot TEXT NOT NULL
+);
+`},
 }
 
 // migrate applies pending migrations in order.
