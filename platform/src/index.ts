@@ -9,6 +9,9 @@
 //   (see dashboards.ts for /v1/dashboards and the one unauthenticated route
 //    on this Worker, GET /v1/shared/dashboards/{token}, which serves a
 //    dashboard config document and no workspace data — docs/dashboards.md)
+//    and POST /v1/admin/reindex; apikeys.ts for /v1/api-keys*, the public
+//    read API under /api/v1/*, and /api/v1/openapi.json; mcp.ts for the
+//    hosted MCP endpoint at POST /v1/mcp)
 //
 // Invariants (see docs/architecture.md and platform/README.md):
 //   - workspace identity comes only from the device token binding;
@@ -43,6 +46,7 @@ import {
 } from "./analytics";
 import { artifactsScheduled, handleArtifactsRoute, type ArtifactsEnv } from "./artifacts";
 import { handleDashboardsRoute } from "./dashboards";
+import { handleApiKeysRoute } from "./apikeys";
 import type {
   D1BoundStatement,
   D1DatabaseLike,
@@ -71,6 +75,7 @@ import {
   validateEventBatch,
   type WorkstreamRow,
 } from "./ingest";
+import { handleMcpRoute } from "./mcp";
 import { buildObservationStatements, handleObservationsRoute } from "./observations";
 import { PLAN_CATALOG } from "./plans";
 import { prepareQuotaReservation } from "./quota";
@@ -130,6 +135,10 @@ export default {
       if (alertsResponse !== null) return alertsResponse;
       const gatewayResponse = await handleGatewayRoute(request, env);
       if (gatewayResponse !== null) return gatewayResponse;
+      const apiKeysResponse = await handleApiKeysRoute(request, env);
+      if (apiKeysResponse !== null) return apiKeysResponse;
+      const mcpResponse = await handleMcpRoute(request, env);
+      if (mcpResponse !== null) return mcpResponse;
       const observationsResponse = await handleObservationsRoute(request, env);
       if (observationsResponse !== null) return observationsResponse;
       const analyticsResponse = await handleAnalyticsRoute(request, env);

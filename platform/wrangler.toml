@@ -142,6 +142,19 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 # existing BODIES bucket under the gwcache/<workspace_id>/ prefix; no extra
 # binding is required.
 
+# Edge-cached API-key verdicts (parity row 44): src/apikeys.ts caches every
+# sk_ verification verdict — good or bad — for 60s so a repeated bad key
+# never reaches D1 twice in a row and revocation writes an immediate
+# tombstone. APIKEY_KV is optional in code (authenticateApiKey falls back to
+# always-hit-D1 while it is unset), so the Worker deploys and type-checks
+# before this exists. Provision once, then uncomment:
+#   npx wrangler kv namespace create handoffgraph-apikeys
+#     -> replace id below with the printed id
+#
+# [[kv_namespaces]]
+# binding = "APIKEY_KV"
+# id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
 # One cron drives every sweep (index.ts scheduled dispatcher): artifact
 # compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
 # never touches the events table), the webhook cursor sweep (src/webhooks.ts),
