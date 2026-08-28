@@ -49,6 +49,7 @@ import type {
   D1Statement,
 } from "./db";
 export type { D1BoundStatement, D1DatabaseLike, D1Statement } from "./db";
+import { handleGatewayRoute } from "./gateway";
 import { convertOtlpExport, type CaptureTier } from "./otlp";
 import {
   OtlpProtoError,
@@ -127,6 +128,8 @@ export default {
       if (dashboardsResponse !== null) return dashboardsResponse;
       const alertsResponse = await handleAlertsRoute(request, env);
       if (alertsResponse !== null) return alertsResponse;
+      const gatewayResponse = await handleGatewayRoute(request, env);
+      if (gatewayResponse !== null) return gatewayResponse;
       const observationsResponse = await handleObservationsRoute(request, env);
       if (observationsResponse !== null) return observationsResponse;
       const analyticsResponse = await handleAnalyticsRoute(request, env);

@@ -117,6 +117,31 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 # binding = "DASHBOARD_SHARE_CACHE"
 # id = "<replace-with-the-id-wrangler-prints>"
 
+# Gateway capture mode (parity rows 6 and 7): an OpenAI-compatible proxy at
+# /gateway/openai/v1/* whose real output is a provenance-labelled event per
+# proxied call, appended to the same spine as coding-agent evidence.
+#
+# GATEWAY_KV is the edge cache of the D1 key registry (`vk:<sha256(token)>`)
+# plus the per-key rate-limit counters. D1 (migration 0010) stays
+# authoritative, so the proxy is fully functional without this binding — it
+# just reads D1 on every call and stops enforcing rate limits. Uncomment
+# after creating the namespace and pasting the printed id:
+#
+#   npx wrangler kv namespace create GATEWAY_KV
+#
+# [[kv_namespaces]]
+# binding = "GATEWAY_KV"
+# id = "<paste the id printed by `wrangler kv namespace create`>"
+#
+# Upstream provider credentials are sealed at rest under GATEWAY_SEALING_KEY,
+# set the same way as the WorkOS and webhook secrets above (`wrangler secret
+# put GATEWAY_SEALING_KEY`, or an ignored .dev.vars entry locally). Both key
+# creation and proxying fail closed with 503 while it is unset.
+#
+# Cached responses (opt-in per request via X-HandoffGraph-Cache) reuse the
+# existing BODIES bucket under the gwcache/<workspace_id>/ prefix; no extra
+# binding is required.
+
 # One cron drives every sweep (index.ts scheduled dispatcher): artifact
 # compaction + retention (src/artifacts.ts, idempotent, age/size-triggered,
 # never touches the events table), the webhook cursor sweep (src/webhooks.ts),
