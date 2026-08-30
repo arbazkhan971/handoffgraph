@@ -37,8 +37,11 @@ doctor run. The separate read-only Codex App Server listing path was exercised
 against Codex CLI 0.144.3 and returned deterministic state-DB thread metadata.
 Directed continuation and acknowledgement behavior is covered by unit and
 compiled-binary fixture flows for all three destinations. The six-pair
-real-session acceptance matrix remains open; do not treat fixture coverage as
-proof that native Codex, Claude, and Pi sessions completed that manual gate.
+real-session acceptance matrix also passed against clean commit `ca4a9b8`:
+each real source transcript was imported twice with stable counts, every
+preview was write-free, and native Codex, Claude Code, and Pi clients accepted
+all six recorded handoffs through MCP with exact checkpoint references. See
+`docs/releases/v0.7.0-beta.1-six-pair-acceptance.md`.
 
 The Cloudflare zone and isolated staging/production durable resources exist,
 and all 22 migrations are applied and verified on staging D1. Production is
@@ -359,6 +362,11 @@ Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + c
   bounded, read-only stdio client lists state-DB threads deterministically. It
   sends only the stable initialization/listing methods and does not replace
   file-based `codex sessions`.
+- ~~Six-pair real-session continuation acceptance~~ — **DONE (2026-08-31):**
+  all directed Codex/Claude/Pi pairs imported twice with stable counts,
+  previewed without writes, recorded, and were acknowledged by the actual
+  destination clients through MCP. See
+  `docs/releases/v0.7.0-beta.1-six-pair-acceptance.md`.
 
 ### Deliberately deferred (per roadmap)
 - Remote MCP (v0.11.0); the local twelve-tool MCP server is implemented.
@@ -385,8 +393,6 @@ canonical `hfg.event.v1` fixtures go through the event-store import path,
 while native codex rollout fixtures are verified via the adapter's
 `Normalize`.
 Remaining acceptance work, in priority order:
-- Exercise real cross-agent continuations and acknowledgements across the
-  supported provider pairs.
 - Transfer or mirror the repository to the canonical module location before
   publishing the first tag; see `docs/releasing.md`.
 - Publish `v0.7.0-beta.1`, then prove clean install and upgrade from the
@@ -626,7 +632,7 @@ in `src/index.ts`.
 
 | Suite | Command | Result |
 |---|---|---|
-| Go core | `go test ./...` | **1327 passed** across 35 packages; `-race` clean |
+| Go core | `go test ./...` | **1328 passed** across 35 packages; `-race` clean |
 | Hosted Worker | `cd platform && npx vitest run` | **1553 passed**, 37 files |
 | Debugger UI | `cd web && npx vitest run` | **129 passed**, 4 files |
 | Landing | `node --test landing/*.test.mjs` | **10 passed** |

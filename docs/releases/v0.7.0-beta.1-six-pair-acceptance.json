@@ -1,0 +1,185 @@
+{
+  "schema_version": "hfg.native_acceptance.v1",
+  "acceptance_date": "2026-08-31",
+  "timezone": "Asia/Kolkata",
+  "candidate": {
+    "commit": "ca4a9b82cad138aff8b76325985329a211bc5a89",
+    "version": "v0.7.0-beta.1-acceptance.ca4a9b8",
+    "binary_sha256": "fdcd486c08ce7beb1a4c916ef8213da436e259f366d47702df0e554c11cd7597",
+    "ci_run": 33338206999,
+    "ci_jobs_passed": 5
+  },
+  "clients": {
+    "codex": {
+      "version": "0.144.3"
+    },
+    "claude": {
+      "version": "2.1.227"
+    },
+    "pi": {
+      "version": "0.84.2",
+      "provider": "zai",
+      "model": "glm-5.3-flash"
+    }
+  },
+  "source_imports": [
+    {
+      "provider": "codex",
+      "transcript_sha256": "39a571d9d401adf749b63b477e54d2994eaa6c45cd8dea983ccf2561923b1899",
+      "first_pass_events": 96,
+      "second_pass_new_events": 0,
+      "workstream_id": "ws_01M1ABBAFYNZXM0DTFVMZCRK3H",
+      "checkpoint_id": "cp_01M1ABDP43YQZ2E9VS9VQ2SX27"
+    },
+    {
+      "provider": "claude",
+      "transcript_sha256": "bebeb3462066ea0f2432fe477eba6f19f55318baa8b0a762ac6fab1f5e7ac81d",
+      "first_pass_events": 180,
+      "second_pass_new_events": 0,
+      "workstream_id": "ws_01M1ABBJ5MTDHRWY2P31002C8T",
+      "checkpoint_id": "cp_01M1ABHHDDMQPXKYRV2N232QEQ"
+    },
+    {
+      "provider": "pi",
+      "transcript_sha256": "e6e6467e3d2b47764d0515bb30ea97095043b4269dabcd0f8487ebbd22d4cb2b",
+      "first_pass_events": 1314,
+      "second_pass_new_events": 0,
+      "workstream_id": "ws_01M1ABBRRQKPT79RX1FECNHQX7",
+      "checkpoint_id": "cp_01M1ABHHCY4SH2KK6HRHE9VTNJ"
+    }
+  ],
+  "preview_gate": {
+    "handoff_records_before": 0,
+    "handoff_records_after": 0,
+    "post_acceptance_recheck": {
+      "runs": 6,
+      "exit_codes": [0, 0, 0, 0, 0, 0],
+      "events_before": 1602,
+      "events_after": 1602,
+      "checkpoints_before": 3,
+      "checkpoints_after": 3,
+      "workstreams_before": 3,
+      "workstreams_after": 3,
+      "database_sha256_before": "492a4ea9bb04443304ee130d26f76dafd9380806acb22a786873aa89836ea4a2",
+      "database_sha256_after": "492a4ea9bb04443304ee130d26f76dafd9380806acb22a786873aa89836ea4a2"
+    }
+  },
+  "pairs": [
+    {
+      "source_provider": "codex",
+      "target_agent": "claude",
+      "mode": "checkpoint_seed",
+      "workstream_id": "ws_01M1ABBAFYNZXM0DTFVMZCRK3H",
+      "checkpoint_id": "cp_01M1ABDP43YQZ2E9VS9VQ2SX27",
+      "handoff_id": "ho_01M1ABKH1TF31AYPAS400H15JM",
+      "acceptance_event_id": "evt_01M1ABQ6EJ7DKA22FW637P6KVB",
+      "acceptance_kind": "handoff.accepted",
+      "accepting_agent": "claude",
+      "destination_cli_exit_code": 0,
+      "final_status": "accepted",
+      "accepted": ["objective", "repository", "source_sessions", "status"],
+      "missing": ["commands", "completed", "constraints", "decisions", "failed_approaches", "files", "next_actions", "open_questions", "tests"],
+      "unverifiable": [],
+      "preview_stdout_sha256": "63c0e08f18d90a8288f128621154eabdf57057e368c74f25beeeecab27349abc",
+      "recorded_stdout_sha256": "5e8b292b2d7fb1e1e2bb69c9a1609d641ed7e32a8a69c9001a4ffda77f3309ac"
+    },
+    {
+      "source_provider": "codex",
+      "target_agent": "pi",
+      "mode": "checkpoint_seed",
+      "workstream_id": "ws_01M1ABBAFYNZXM0DTFVMZCRK3H",
+      "checkpoint_id": "cp_01M1ABDP43YQZ2E9VS9VQ2SX27",
+      "handoff_id": "ho_01M1ABKH8STXET5R5A2MQHVAJ7",
+      "acceptance_event_id": "evt_01M1ABREHQAW2R5SBH98Z1MWFT",
+      "acceptance_kind": "handoff.accepted",
+      "accepting_agent": "pi",
+      "destination_cli_exit_code": 0,
+      "final_status": "accepted",
+      "accepted": ["objective", "repository", "source_sessions", "status"],
+      "missing": ["commands", "completed", "constraints", "decisions", "failed_approaches", "files", "next_actions", "open_questions", "tests"],
+      "unverifiable": [],
+      "preview_stdout_sha256": "6786e87465c56966062364c6b1b3a6a0898014645b924909aca4ec49d6f46fbe",
+      "recorded_stdout_sha256": "e5b9e09bf500c2ea7582c2a84b48dd17a9c05c1155bcd17ea0d12002530cdcd0"
+    },
+    {
+      "source_provider": "claude",
+      "target_agent": "codex",
+      "mode": "checkpoint_seed",
+      "workstream_id": "ws_01M1ABBJ5MTDHRWY2P31002C8T",
+      "checkpoint_id": "cp_01M1ABHHDDMQPXKYRV2N232QEQ",
+      "handoff_id": "ho_01M1ABKHE5KFM8X90DGK8C6W8M",
+      "acceptance_event_id": "evt_01M1ABNX58J5BKR9M8PSZ8HYHF",
+      "acceptance_kind": "handoff.accepted",
+      "accepting_agent": "codex",
+      "destination_cli_exit_code": 0,
+      "final_status": "accepted",
+      "accepted": ["objective", "repository", "source_sessions", "status"],
+      "missing": ["commands", "completed", "constraints", "decisions", "failed_approaches", "files", "next_actions", "open_questions", "tests"],
+      "unverifiable": [],
+      "preview_stdout_sha256": "bd6aa081f92a2d4d5251f6fb9e0b7f58262d3d7f2d63da5ec389a29a80de521b",
+      "recorded_stdout_sha256": "d95bda99b1ccda121dc133f55f136f15e298c4d8357d09587b46fb6e8ae5f68e"
+    },
+    {
+      "source_provider": "claude",
+      "target_agent": "pi",
+      "mode": "checkpoint_seed",
+      "workstream_id": "ws_01M1ABBJ5MTDHRWY2P31002C8T",
+      "checkpoint_id": "cp_01M1ABHHDDMQPXKYRV2N232QEQ",
+      "handoff_id": "ho_01M1ABKHNZHCCGX8ECSSX8XN63",
+      "acceptance_event_id": "evt_01M1ABRFRAXFQ7RJ94BS69RE9M",
+      "acceptance_kind": "handoff.accepted",
+      "accepting_agent": "pi",
+      "destination_cli_exit_code": 0,
+      "final_status": "accepted",
+      "accepted": ["objective", "repository", "source_sessions", "status"],
+      "missing": ["commands", "completed", "constraints", "decisions", "failed_approaches", "files", "next_actions", "open_questions", "tests"],
+      "unverifiable": [],
+      "preview_stdout_sha256": "d035990dc7e7d22a49cefd3c77a046414f1706cc4ff599039b320bb54bc5f07d",
+      "recorded_stdout_sha256": "33f5c4126997ab547232a6f14f2c3552cc7ad00e4ea27619177b410354024ee5"
+    },
+    {
+      "source_provider": "pi",
+      "target_agent": "codex",
+      "mode": "checkpoint_seed",
+      "workstream_id": "ws_01M1ABBRRQKPT79RX1FECNHQX7",
+      "checkpoint_id": "cp_01M1ABHHCY4SH2KK6HRHE9VTNJ",
+      "handoff_id": "ho_01M1ABKHWZ4Y8WM22GNN1RJACE",
+      "acceptance_event_id": "evt_01M1ABNY9WT07A8TGGC2G2TTN3",
+      "acceptance_kind": "handoff.accepted",
+      "accepting_agent": "codex",
+      "destination_cli_exit_code": 0,
+      "final_status": "accepted",
+      "accepted": ["commands", "objective", "repository", "source_sessions", "status"],
+      "missing": ["completed", "constraints", "decisions", "failed_approaches", "files", "next_actions", "open_questions", "tests"],
+      "unverifiable": [],
+      "preview_stdout_sha256": "c0b928a751749f3e104c5f60828b3ba94b18bf12d00ff208cd3caed4d85fc83b",
+      "recorded_stdout_sha256": "af908c38f80dbefec7c57494c409ff1794f9cb7e1b23b2de1c20f83b412b2ac1"
+    },
+    {
+      "source_provider": "pi",
+      "target_agent": "claude",
+      "mode": "checkpoint_seed",
+      "workstream_id": "ws_01M1ABBRRQKPT79RX1FECNHQX7",
+      "checkpoint_id": "cp_01M1ABHHCY4SH2KK6HRHE9VTNJ",
+      "handoff_id": "ho_01M1ABKJ3YHHXBFW6AGDD3KVB2",
+      "acceptance_event_id": "evt_01M1ABQ80X4PQ7FAJFKV6PN8AW",
+      "acceptance_kind": "handoff.accepted",
+      "accepting_agent": "claude",
+      "destination_cli_exit_code": 0,
+      "final_status": "accepted",
+      "accepted": ["commands", "objective", "repository", "source_sessions", "status"],
+      "missing": ["completed", "constraints", "decisions", "failed_approaches", "files", "next_actions", "open_questions", "tests"],
+      "unverifiable": [],
+      "preview_stdout_sha256": "a7241e2a57d024d32d3c5ed5892eb8e4ba88f5964554d83ccd175b2b84e0f016",
+      "recorded_stdout_sha256": "9a04dc0685489386236277a201ed1441524f40bf1349399a7d8e0b5548c42880"
+    }
+  ],
+  "final_state": {
+    "events": 1602,
+    "checkpoints": 3,
+    "workstreams": 3,
+    "handoffs": 6,
+    "accepted_handoffs": 6,
+    "database_sha256": "492a4ea9bb04443304ee130d26f76dafd9380806acb22a786873aa89836ea4a2"
+  }
+}

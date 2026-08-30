@@ -3,8 +3,8 @@
 Condensed from `HANDOFFGRAPH_VERSION_ROADMAP.md`. Each version moves only when
 its acceptance gate passes. The repository contains the **v0.7.0-beta.1
 release candidate** plus the ahead-of-roadmap Hosted Basic foundation. Real
-cross-provider continuation acceptance and the public-release boundary remain
-(updated 2026-08-30).
+cross-provider continuation acceptance is complete; the canonical repository,
+first public tag, and hosted-production boundary remain (updated 2026-08-31).
 
 Two companion tracks ride alongside this release train (2026-08-28):
 
@@ -77,12 +77,13 @@ service is live; the v0.8 gate below remains open.
 - [x] Repository drift is checked against the source checkpoint
 - [x] Machine checkpoint reference + MCP `accept_handoff` acknowledgement
 - [x] Deterministic `handoff status` read model over created/accepted events
-- [ ] Real-session acceptance across the six directed supported pairs:
+- [x] Real-session acceptance across the six directed supported pairs:
       Codex→Claude, Claude→Codex, Codex→Pi, Pi→Codex, Claude→Pi, and
       Pi→Claude. Each proof must import the source transcript twice with a
       stable count, create a checkpoint, prove preview is write-free, record
       the handoff, accept it through MCP as the destination provider, and show
       an `accepted` handoff read model with the exact checkpoint reference.
+      Evidence: [`docs/releases/v0.7.0-beta.1-six-pair-acceptance.md`](docs/releases/v0.7.0-beta.1-six-pair-acceptance.md).
 
 ## v0.7.0 launch gate
 
