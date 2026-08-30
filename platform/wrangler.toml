@@ -32,6 +32,10 @@ WORKOS_REDIRECT_URI = "https://api.handoffgraph.dev/v1/auth/callback"
 # ingestion, and workstream surface. Ahead-of-gate parity modules stay in the
 # bundle for local development but return 404 in this deployment.
 HOSTED_SURFACE = "basic"
+# Emergency cutover/restore fence. The Worker serves only GET /healthz and
+# disables cron/queue storage work when this changes to "true". Any configured
+# value other than the exact "false" also fails closed into maintenance.
+HOSTED_MAINTENANCE = "false"
 
 # Runtime-assigned immutable deployment identity. Version metadata bindings are
 # not inherited by named Wrangler environments, so staging repeats this block
@@ -370,6 +374,7 @@ APP_ORIGIN = "https://handoffgraph-api-staging.arbaz-khan.workers.dev"
 LANDING_ORIGIN = "https://handoffgraph-api-staging.arbaz-khan.workers.dev"
 WORKOS_REDIRECT_URI = "https://handoffgraph-api-staging.arbaz-khan.workers.dev/v1/auth/callback"
 HOSTED_SURFACE = "basic"
+HOSTED_MAINTENANCE = "false"
 
 [env.staging.version_metadata]
 binding = "CF_VERSION_METADATA"

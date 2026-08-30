@@ -29,6 +29,35 @@ function fencedEnv(surface: string | undefined = "basic") {
   };
 }
 
+function maintenanceEnv(value: string) {
+  const storageTouches: string[] = [];
+  const touched = (operation: string): never => {
+    storageTouches.push(operation);
+    throw new Error(`maintenance fence reached ${operation}`);
+  };
+  return {
+    storageTouches,
+    env: {
+      HOSTED_SURFACE: "advanced",
+      HOSTED_MAINTENANCE: value,
+      WORKOS_CLIENT_ID: "client_test",
+      WORKOS_API_KEY: "key_test",
+      WORKOS_REDIRECT_URI: "https://api.handoffgraph.dev/v1/auth/callback",
+      DB: {
+        prepare(): never { return touched("D1 prepare"); },
+        batch(): never { return touched("D1 batch"); },
+      },
+      BODIES: {
+        head(): never { return touched("R2 head"); },
+        get(): never { return touched("R2 get"); },
+        put(): never { return touched("R2 put"); },
+        list(): never { return touched("R2 list"); },
+        delete(): never { return touched("R2 delete"); },
+      },
+    },
+  };
+}
+
 async function credentialEnv(
   surface: string | undefined,
   bodies: "missing" | "malformed",
@@ -102,6 +131,100 @@ async function credentialEnv(
 }
 
 describe("Hosted Basic deployment surface", () => {
+  it.each([undefined, "false"])(
+    "serves normally when HOSTED_MAINTENANCE is %s",
+    async (maintenance) => {
+      const env = { ...fencedEnv(), HOSTED_MAINTENANCE: maintenance };
+      const health = await worker.fetch(
+        new Request("https://api.handoffgraph.dev/healthz"),
+        env,
+        CTX,
+      );
+      const plans = await worker.fetch(
+        new Request("https://api.handoffgraph.dev/v1/plans"),
+        env,
+        CTX,
+      );
+
+      expect(health.status).toBe(200);
+      expect(health.headers.get("x-handoffgraph-maintenance")).toBeNull();
+      expect(plans.status).toBe(200);
+    },
+  );
+
+  it.each(["true", "", "TRUE", "1", "off", "false "])(
+    "keeps versioned liveness available when HOSTED_MAINTENANCE is %j",
+    async (maintenance) => {
+      const { env, storageTouches } = maintenanceEnv(maintenance);
+      const response = await worker.fetch(
+        new Request("https://api.handoffgraph.dev/healthz"),
+        {
+          ...env,
+          CF_VERSION_METADATA: {
+            id: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+            tag: "git-maintenance",
+            timestamp: "2026-08-31T12:00:00.000Z",
+          },
+        } as never,
+        CTX,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("x-handoffgraph-maintenance")).toBe("true");
+      expect(response.headers.get("x-handoffgraph-worker-version"))
+        .toBe("095f00a7-23a7-43b7-a227-e4c97cab5f22");
+      expect(response.headers.get("x-handoffgraph-worker-tag")).toBe("git-maintenance");
+      await expect(response.json()).resolves.toEqual({ status: "ok" });
+      expect(storageTouches).toEqual([]);
+    },
+  );
+
+  it.each(["true", "", "TRUE", "1", "off", "false "])(
+    "returns one storage-free 503 fence when HOSTED_MAINTENANCE is %j",
+    async (maintenance) => {
+      const { env, storageTouches } = maintenanceEnv(maintenance);
+      const requests = [
+        new Request("https://api.handoffgraph.dev/"),
+        new Request("https://api.handoffgraph.dev/account", {
+          headers: { cookie: `__Host-hfg_session=${SESSION_TOKEN}` },
+        }),
+        new Request("https://api.handoffgraph.dev/v1/plans"),
+        new Request("https://api.handoffgraph.dev/v1/auth/start"),
+        new Request("https://api.handoffgraph.dev/v1/me", {
+          headers: { cookie: `__Host-hfg_session=${SESSION_TOKEN}` },
+        }),
+        new Request("https://api.handoffgraph.dev/v1/event-batches", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${DEVICE_TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        }),
+        new Request("https://api.handoffgraph.dev/v1/workstreams", {
+          headers: { authorization: `Bearer ${DEVICE_TOKEN}` },
+        }),
+        new Request("https://api.handoffgraph.dev/v1/shared/dashboards/token"),
+        new Request("https://api.handoffgraph.dev/not-a-route"),
+        new Request("https://api.handoffgraph.dev/healthz", { method: "POST" }),
+      ];
+
+      for (const request of requests) {
+        const response = await worker.fetch(request, env as never, CTX);
+        expect(response.status, `${request.method} ${new URL(request.url).pathname}`).toBe(503);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("retry-after")).toBe("60");
+        expect(response.headers.get("x-handoffgraph-maintenance")).toBe("true");
+        await expect(response.json()).resolves.toEqual({
+          error: "service unavailable",
+          code: "hosted_maintenance",
+        });
+      }
+      expect(storageTouches).toEqual([]);
+    },
+  );
+
   it("keeps public liveness and plan metadata available", async () => {
     const health = await worker.fetch(
       new Request("https://api.handoffgraph.dev/healthz"),
@@ -250,6 +373,17 @@ describe("Hosted Basic deployment surface", () => {
     },
   );
 
+  it.each(["true", "", "TRUE", "1", "off", "false "])(
+    "suppresses every scheduled storage sweep when HOSTED_MAINTENANCE is %j",
+    async (maintenance) => {
+      const { env, storageTouches } = maintenanceEnv(maintenance);
+
+      await expect(worker.scheduled(CONTROLLER, env as never, CTX)).resolves.toBeUndefined();
+
+      expect(storageTouches).toEqual([]);
+    },
+  );
+
   it("rejects queue delivery at the code boundary without touching storage", async () => {
     const batch = {
       queue: "handoffgraph-webhooks",
@@ -273,4 +407,23 @@ describe("Hosted Basic deployment surface", () => {
 
     await expect(worker.queue(batch, fencedEnv() as never, CTX)).resolves.toBeUndefined();
   });
+
+  it.each(["true", "", "TRUE", "1", "off", "false "])(
+    "retries queued work without storage access when HOSTED_MAINTENANCE is %j",
+    async (maintenance) => {
+      const { env, storageTouches } = maintenanceEnv(maintenance);
+      let retryAllCalls = 0;
+      const batch = {
+        queue: "handoffgraph-webhooks",
+        messages: [],
+        ackAll(): never { throw new Error("maintenance queue acknowledged work"); },
+        retryAll() { retryAllCalls += 1; },
+      } as never;
+
+      await expect(worker.queue(batch, env as never, CTX)).resolves.toBeUndefined();
+
+      expect(retryAllCalls).toBe(1);
+      expect(storageTouches).toEqual([]);
+    },
+  );
 });

@@ -93,10 +93,17 @@ database until this entire procedure passes. Application triggers are restored
 with D1 and cannot prove which terminal credential/deletion decisions the
 chosen bookmark predates.
 
-1. Put the API behind an approved maintenance response or remove its serving
-   route before restoring D1, then drain in-flight requests. Health-only
-   access is acceptable; account, callback, device, event-batch, and
-   workstream traffic is not.
+1. Deploy the exact reviewed Worker candidate with
+   `HOSTED_MAINTENANCE="true"`, then prove Cloudflare has moved 100% of traffic
+   to that version. `GET /healthz` must remain `200`, identify the expected
+   Worker version/tag, and return `x-handoffgraph-maintenance: true`; every
+   other probe (including `/`, `/account`, auth start/callback, device,
+   event-batch, and workstream routes) must return the same no-store `503`
+   `hosted_maintenance` response with `Retry-After`. Wait for older in-flight
+   invocations to drain before restoring D1. The same fence suppresses cron
+   storage sweeps and retries queue deliveries without touching storage. Any
+   configured value other than the exact `false` fails closed into this mode,
+   so a typo cannot reopen traffic. Keep the fence active through step 9.
 2. While the pre-restore D1 is quiesced, export an exact allowlist of every
    credential that is currently usable. Record one cutoff Unix second and
    export these tuples, without emails or raw tokens:
@@ -168,11 +175,13 @@ chosen bookmark predates.
    include one hash per prior issued WorkOS subject; if it is absent while
    prior issuances exist, keep signup disabled and perform a reviewed bootstrap.
 9. Deploy the candidate against the restored D1 and unchanged R2 while the
-   maintenance fence remains. Prove a deleted workspace's old browser cookie
-   and device token both return `401`, a simulated R2 read failure also denies
-   both, existing-account sign-in does not consume capacity, and a new signup
-   fails closed when the capacity object is unavailable or full. Only then
-   restore user traffic.
+   maintenance fence remains. Use an isolated, non-serving verification path
+   to prove a deleted workspace's old browser cookie and device token both
+   return `401`, a simulated R2 read failure also denies both, existing-account
+   sign-in does not consume capacity, and a new signup fails closed when the
+   capacity object is unavailable or full. Only then restore the exact
+   `HOSTED_MAINTENANCE="false"` value, deploy that reviewed version, prove the
+   maintenance header is absent, and restore user traffic.
 
 An R2 failure after the exact-session D1 prelock but before the permanent
 deletion ledger/job is created leaves `workspaces.status = 'deleting'` with no
@@ -184,9 +193,11 @@ fail-closed so a sign-out/deletion race cannot reopen credentials.
 
 Only after every staging gate passes:
 
-1. Preserve a production D1 rollback bookmark/export, apply all migrations
-   remotely through 0022, verify all 22 entries and the
-   `hosted_beta_capacity = 50` row.
+1. Put the production API candidate behind the verified maintenance fence
+   above, record the previous Worker version for code rollback, then preserve
+   a production D1 rollback bookmark/export. Apply all migrations remotely
+   through 0022 and verify all 22 entries plus the
+   `hosted_beta_capacity = 50` row while public traffic remains fenced.
 2. Install production WorkOS secrets while keeping
    `HOSTED_SIGNUP_ENABLED` absent.
 3. Deploy the API and landing Workers using the already-configured custom

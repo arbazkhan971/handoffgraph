@@ -134,6 +134,8 @@ const WORKER_VERSION_TAG_PATTERN =
   /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
 const WORKER_VERSION_HEADER = "x-handoffgraph-worker-version";
 const WORKER_VERSION_TAG_HEADER = "x-handoffgraph-worker-tag";
+const MAINTENANCE_HEADER = "x-handoffgraph-maintenance";
+const MAINTENANCE_RETRY_AFTER_SECONDS = "60";
 
 interface HostedSurfaceEnv {
   /**
@@ -143,6 +145,13 @@ interface HostedSurfaceEnv {
    * Worker bundle.
    */
   HOSTED_SURFACE?: string;
+  /**
+   * Emergency quiescence fence for cutover and D1 restore operations. Missing
+   * or the exact value "false" serves normally. Any other configured value
+   * fails closed into maintenance so a typo cannot expose a database that an
+   * operator intended to take offline.
+   */
+  HOSTED_MAINTENANCE?: string;
   /** Runtime-assigned by Cloudflare's version metadata binding. */
   CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
@@ -154,12 +163,19 @@ function advancedHostedSurfaceEnabled(env: HostedSurfaceEnv): boolean {
   return env.HOSTED_SURFACE === "advanced";
 }
 
+function hostedMaintenanceEnabled(env: HostedSurfaceEnv): boolean {
+  return env.HOSTED_MAINTENANCE !== undefined && env.HOSTED_MAINTENANCE !== "false";
+}
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
 function healthResponse(env: HostedSurfaceEnv): Response {
   const headers = new Headers(JSON_HEADERS);
+  if (hostedMaintenanceEnabled(env)) {
+    headers.set(MAINTENANCE_HEADER, "true");
+  }
   const metadata = env.CF_VERSION_METADATA;
   // Treat metadata as an external runtime boundary: a malformed ID suppresses
   // the whole identity, and a malformed tag suppresses only the optional tag.
@@ -172,6 +188,16 @@ function healthResponse(env: HostedSurfaceEnv): Response {
     }
   }
   return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers });
+}
+
+function maintenanceResponse(): Response {
+  const headers = new Headers(JSON_HEADERS);
+  headers.set(MAINTENANCE_HEADER, "true");
+  headers.set("retry-after", MAINTENANCE_RETRY_AFTER_SECONDS);
+  return new Response(JSON.stringify({
+    error: "service unavailable",
+    code: "hosted_maintenance",
+  }), { status: 503, headers });
 }
 
 function canonicalResponse(status: number, canonicalJson: string): Response {
@@ -210,6 +236,13 @@ export default {
     try {
       if (request.method === "GET" && pathname === "/healthz") {
         return healthResponse(env);
+      }
+      // The restore/cutover fence runs before every public, account, device,
+      // or advanced route and before any D1/R2/WorkOS access. Liveness remains
+      // available above so an operator can prove the exact maintenance Worker
+      // version before touching durable state.
+      if (hostedMaintenanceEnabled(env)) {
+        return maintenanceResponse();
       }
       if (request.method === "GET" && pathname === "/") {
         const destination = landingDestination(request, env.LANDING_ORIGIN);
@@ -306,6 +339,9 @@ export default {
     env: E,
     _ctx: ExecutionContext,
   ): Promise<void> {
+    // A quiesced D1 must not be mutated by the deletion saga or any advanced
+    // sweep while Time Travel/reconciliation is in progress.
+    if (hostedMaintenanceEnabled(env)) return;
     try {
       await accountDeletionScheduled(accountDeletionEnv(env));
     } catch (error) {
@@ -363,6 +399,12 @@ export default {
   // and rethrown (never swallowed) so Cloudflare Queues applies its own
   // retry/dead-letter policy for the failing message.
   async queue(batch: MessageBatch<unknown>, env: Env, _ctx: ExecutionContext): Promise<void> {
+    // Preserve queued work for a later healthy deployment without touching
+    // tenant storage during a maintenance window.
+    if (hostedMaintenanceEnabled(env)) {
+      batch.retryAll();
+      return;
+    }
     // No queue is part of Hosted Basic. Keep the code-level boundary
     // fail-closed too, so a future accidental binding cannot bypass the
     // checked-in deployment fence.

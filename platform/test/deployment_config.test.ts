@@ -13,6 +13,8 @@ describe("Hosted Basic deployment configuration", () => {
   it("pins the production and staging route fence", () => {
     expect(config).toMatch(/^HOSTED_SURFACE = "basic"$/m);
     expect(config.match(/^HOSTED_SURFACE = "basic"$/gm)).toHaveLength(2);
+    expect([...config.matchAll(/^HOSTED_MAINTENANCE = "([^"]+)"$/gm)]
+      .map((match) => match[1])).toEqual(["false", "false"]);
     expect(config).toMatch(/^workers_dev = false$/m);
     expect(config).toMatch(/^preview_urls = false$/m);
   });
