@@ -11,6 +11,8 @@ permissions:
 jobs:
   test:
     strategy:
+      # Preserve independent Linux/macOS diagnostics when one platform fails.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}

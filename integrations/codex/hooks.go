@@ -3,8 +3,11 @@
 package codexhooks
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/handoffgraph/handoffgraph/internal/lockfile"
 )
 
 const (
@@ -24,7 +28,13 @@ const (
 	backupPrefix       = "hfg-backup-"
 	lockFileName       = ".hfg-hooks.lock"
 	defaultLockTimeout = 5 * time.Second
+	lockTokenBytes     = 32
 )
+
+type lockOwnership struct {
+	info  fs.FileInfo
+	token string
+}
 
 // ErrHookConflict means the installer could not prove that a hook fragment
 // belongs to HandoffGraph. The config is left untouched in that case.
@@ -1544,22 +1554,33 @@ func writeFileAtomic(path, text string, mode os.FileMode, original string, exist
 
 func withLock(dir string, timeout time.Duration, fn func() error) error {
 	lockPath := filepath.Join(dir, lockFileName)
+	token, err := newLockToken()
+	if err != nil {
+		return fmt.Errorf("codex hooks: generate ownership token for %s: %w", lockPath, err)
+	}
 	deadline := time.Now().Add(timeout)
 	for {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		f, err := lockfile.OpenExclusive(lockPath, 0o600)
 		if err == nil {
-			owned, statErr := f.Stat()
+			if n, writeErr := f.WriteString(token); writeErr != nil || n != len(token) {
+				_ = f.Close()
+				if writeErr == nil {
+					writeErr = io.ErrShortWrite
+				}
+				return fmt.Errorf("codex hooks: record ownership token in acquired lock %s (lock left in place): %w", lockPath, writeErr)
+			}
+			ownedInfo, statErr := f.Stat()
 			if statErr != nil {
 				_ = f.Close()
-				_ = os.Remove(lockPath)
-				return fmt.Errorf("codex hooks: identify acquired lock %s: %w", lockPath, statErr)
+				return fmt.Errorf("codex hooks: identify acquired lock %s (lock left in place): %w", lockPath, statErr)
 			}
+			owned := lockOwnership{info: ownedInfo, token: token}
 			runErr := fn()
+			if removeErr := removeOwnedLock(lockPath, f, owned); removeErr != nil {
+				runErr = errors.Join(runErr, removeErr)
+			}
 			if closeErr := f.Close(); closeErr != nil {
 				runErr = errors.Join(runErr, closeErr)
-			}
-			if removeErr := removeOwnedLock(lockPath, owned); removeErr != nil {
-				runErr = errors.Join(runErr, removeErr)
 			}
 			return runErr
 		}
@@ -1573,17 +1594,51 @@ func withLock(dir string, timeout time.Duration, fn func() error) error {
 	}
 }
 
-func removeOwnedLock(path string, owned fs.FileInfo) error {
-	current, err := os.Lstat(path)
+func newLockToken() (string, error) {
+	raw := make([]byte, lockTokenBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func removeOwnedLock(path string, acquired *os.File, owned lockOwnership) error {
+	if owned.info == nil || owned.token == "" {
+		return fmt.Errorf("codex hooks: lock ownership changed at %s; acquired ownership proof is incomplete", path)
+	}
+	if acquired == nil {
+		return fmt.Errorf("codex hooks: lock ownership changed at %s; acquired lock handle is missing", path)
+	}
+	opened, err := acquired.Stat()
+	if err != nil {
+		return fmt.Errorf("codex hooks: inspect acquired lock %s before release: %w", path, err)
+	}
+	if !os.SameFile(owned.info, opened) {
+		return fmt.Errorf("codex hooks: lock ownership changed at %s; refusing to remove another operation's lock", path)
+	}
+	if _, err := acquired.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("codex hooks: inspect acquired lock %s before release: %w", path, err)
+	}
+	proof, readErr := io.ReadAll(io.LimitReader(acquired, int64(len(owned.token)+1)))
+	if readErr != nil {
+		return fmt.Errorf("codex hooks: inspect acquired lock %s before release: %w", path, readErr)
+	}
+	if string(proof) != owned.token {
+		return fmt.Errorf("codex hooks: lock ownership changed at %s; refusing to remove another operation's lock", path)
+	}
+	latest, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("codex hooks: acquired lock %s disappeared before release", path)
 		}
 		return fmt.Errorf("codex hooks: inspect acquired lock %s before release: %w", path, err)
 	}
-	if !os.SameFile(owned, current) {
+	if !latest.Mode().IsRegular() || !os.SameFile(opened, latest) {
 		return fmt.Errorf("codex hooks: lock ownership changed at %s; refusing to remove another operation's lock", path)
 	}
+	// There is no portable conditional unlink. Cooperative lock users never
+	// replace a live sentinel; a manual same-user replacement in the final
+	// Lstat-to-Remove instruction window is outside this pathname protocol.
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("codex hooks: release lock %s: %w", path, err)
 	}

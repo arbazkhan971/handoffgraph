@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/handoffgraph/handoffgraph/internal/lockfile"
 )
 
 const testHookCommand = "/usr/local/bin/handoffgraph hook claude"
@@ -1240,23 +1242,65 @@ func TestLockTimeoutNeverReclaimsAnApparentlyStaleLock(t *testing.T) {
 func TestRemoveOwnedLockPreservesReplacement(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, lockFileName)
-	if err := os.WriteFile(path, []byte("owned"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	owned, err := os.Lstat(path)
+	acquired, err := lockfile.OpenExclusive(path, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(path); err != nil {
+	defer acquired.Close()
+	if _, err := acquired.WriteString("owned"); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := acquired.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, path+".retired"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnedLock(path, owned); err == nil || !strings.Contains(err.Error(), "ownership changed") {
+	if err := removeOwnedLock(path, acquired, lockOwnership{info: owned, token: "owned"}); err == nil || !strings.Contains(err.Error(), "ownership changed") {
 		t.Fatalf("release error = %v, want ownership refusal", err)
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "replacement" {
+		t.Fatalf("replacement lock = %q, %v; want preserved", got, err)
+	}
+}
+
+func TestRemoveOwnedLockPreservesSameIdentityTokenReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, lockFileName)
+	ownedToken := strings.Repeat("a", 64)
+	replacementToken := strings.Repeat("b", 64)
+	acquired, err := lockfile.OpenExclusive(path, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acquired.Close()
+	if _, err := acquired.WriteString(ownedToken); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := acquired.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Truncating in place preserves the file identity that os.SameFile checks.
+	// The ownership token must still prevent deleting the replacement contents.
+	if err := os.WriteFile(path, []byte(replacementToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(owned, current) {
+		t.Fatal("test setup changed file identity")
+	}
+	if err := removeOwnedLock(path, acquired, lockOwnership{info: owned, token: ownedToken}); err == nil || !strings.Contains(err.Error(), "ownership changed") {
+		t.Fatalf("release error = %v, want ownership refusal", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != replacementToken {
 		t.Fatalf("replacement lock = %q, %v; want preserved", got, err)
 	}
 }
