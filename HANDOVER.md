@@ -86,7 +86,7 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Claude adapter (Detect + Normalize + merge-safe hooks + native Resume + checkpoint-seeded ExecSpec) | `internal/adapter/claude` | ✅ tested |
 | Pi adapter (Detect + Normalize + merge-safe hooks + native Resume + checkpoint-seeded ExecSpec) | `internal/adapter/pi` | ✅ tested |
 | CLI framework + subcommands (flag helpers, JSONL redact preview) | `internal/cli`, `internal/commands` | ✅ tested |
-| Explicit hosted sync (network-free preview, first-upload acceptance, durable canonical retry batches, tenant-scoped cursor) | `internal/hostedsync`, `internal/config`, `internal/commands` | ✅ tested |
+| Explicit hosted sync (network-free preview, first-upload acceptance, durable canonical retry batches, tenant-scoped cursor, classified quota backpressure with no automatic retry) | `internal/hostedsync`, `internal/config`, `internal/commands` | ✅ tested |
 | Codex CLI wiring (`install`, `sessions`, `resume`; resume prints the shell-quoted `codex resume <id>` invocation) | `internal/commands` | ✅ tested |
 | Cross-agent continuation (bounded payload, drift, append-only status + MCP acknowledgement) | `internal/launch`, `internal/commands`, `internal/mcp` | ✅ tested |
 | OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending; capture tiers shipped) |
@@ -568,14 +568,20 @@ presigned direct-to-R2 on row 53 (needs S3-compatible R2 *account* keys we do
 not hold), and rows 32 + 54 (both marked "(optional)" in the plan from day
 one; demand-gated, not built).
 
-Three **pending tails** live inside otherwise-shipped rows. Do not let a
+Two **pending tails** live inside otherwise-shipped rows. Do not let a
 future edit quietly checkmark them:
 
-1. **Row 4** — hosted batch-endpoint backpressure (local 429/Retry-After ships).
-2. **Row 38** — edits accepted/rejected + commit/PR linkage, blocked on the
+1. **Row 38** — edits accepted/rejected + commit/PR linkage, blocked on the
    adapters emitting acceptance events. Do **not** synthesize them.
-3. **Row 48** — SCIM beyond the `Users` subset, and wiring the finished,
+2. **Row 48** — SCIM beyond the `Users` subset, and wiring the finished,
    fail-closed masking engine into `platform/src/ingest.ts`.
+
+**Row 4's hosted tail closed on 2026-08-31.** The platform now distinguishes
+monthly waitable 429s from batch/lifetime denials that cannot succeed
+unchanged. Go sync makes no automatic retry of a denied pending batch,
+preserves its exact durable body/key, and never advances past it without a
+validated receipt. Claude and Pi inline truncation is visibly marked and
+UTF-8-safe rather than silently cutting evidence.
 
 **The owner gates are unchanged** and still precede any public claim — see
 "Launch gates" below. Nothing in this wave moved them.

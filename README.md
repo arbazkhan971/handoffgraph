@@ -55,7 +55,9 @@ implements:
   fallback); a hosted MCP endpoint mirroring the local tool contract; a
   public REST API with `pk_`/`sk_` keys, edge-cached rejection, and an
   OpenAPI 3.1 document; and an explicit-only local CLI sync with fail-closed
-  first-upload redaction acceptance and crash-safe idempotent resume.
+  first-upload redaction acceptance, crash-safe idempotent resume, and
+  quota-aware backpressure: monthly 429s provide bounded wait guidance,
+  while batch/lifetime denials reject unchanged hot-loop retries.
 - **Quality loop** — evals (deterministic checks recorded OBSERVED, LLM judge
   always recorded INFERRED, BYO sealed keys, cron + manual on a durable
   contract); human annotation queues; datasets × experiments and prompt
@@ -70,10 +72,10 @@ implements:
 **None of this is serving public production traffic, and no paid checkout
 exists.** An isolated, sign-up-closed staging Worker is deployed only for
 release verification. Known gaps are stated rather than implied: masking is
-not yet wired into the ingest path, SCIM provisioning is a subset, and hosted
-batch backpressure is outstanding. Production identity credentials, edge
-abuse controls, remote migration, domains, and remaining production
-privacy/edge operations remain release gates in [ROADMAP.md](ROADMAP.md).
+not yet wired into the ingest path and SCIM provisioning is a subset.
+Production identity credentials, edge abuse controls, remote migration,
+domains, and remaining production privacy/edge operations remain release
+gates in [ROADMAP.md](ROADMAP.md).
 Feature status per
 competitor-parity row lives in
 [docs/competitor-analysis.md](docs/competitor-analysis.md) §3.

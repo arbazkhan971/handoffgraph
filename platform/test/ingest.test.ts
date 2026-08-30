@@ -760,6 +760,8 @@ function mockDb(handlers: {
 }
 
 const CTX = {} as never; // ExecutionContext stub (unused by handlers)
+const TEST_PERIOD_START = Math.floor(Date.now() / 1_000) - 60;
+const TEST_PERIOD_END = TEST_PERIOD_START + 30 * 24 * 60 * 60;
 
 function makeEnv(db: D1DatabaseLike): { DB: D1DatabaseLike } {
   return { DB: db };
@@ -791,8 +793,8 @@ function entitlementRow(overrides: Record<string, unknown> = {}): Record<string,
     used_monthly_bytes: 0,
     used_lifetime_events: 0,
     used_lifetime_bytes: 0,
-    period_start: 1_700_000_000,
-    period_end: 1_900_000_000,
+    period_start: TEST_PERIOD_START,
+    period_end: TEST_PERIOD_END,
     ...overrides,
   };
 }
@@ -1073,11 +1075,102 @@ describe("worker: POST /v1/event-batches", () => {
       CTX,
     );
     expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBeNull();
     expect(await response.json()).toMatchObject({
       error: "hosted quota exceeded",
       code: "batch_events_exceeded",
       local_capture_unaffected: true,
-      detail: { scope: "batch", resource: "events", limit: 100, requested: 101 },
+      detail: {
+        scope: "batch",
+        resource: "events",
+        limit: 100,
+        requested: 101,
+        retryable: false,
+      },
+    });
+    expect(batches).toHaveLength(0);
+  });
+
+  it("marks monthly quota denials retryable and emits Retry-After seconds to reset", async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const periodEnd = nowSeconds + 600;
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("FROM workspace_entitlements")) {
+          return entitlementRow({
+            max_monthly_events: 1,
+            used_monthly_events: 1,
+            period_start: nowSeconds - 600,
+            period_end: periodEnd,
+          });
+        }
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "metered-monthly-over" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+
+    expect(response.status).toBe(429);
+    const retryAfter = Number(response.headers.get("retry-after"));
+    expect(Number.isSafeInteger(retryAfter)).toBe(true);
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(600);
+    expect(await response.json()).toMatchObject({
+      error: "hosted quota exceeded",
+      code: "monthly_events_exceeded",
+      local_capture_unaffected: true,
+      detail: {
+        scope: "month",
+        resource: "events",
+        limit: 1,
+        used: 1,
+        requested: 1,
+        resets_at: periodEnd,
+        retryable: true,
+      },
+    });
+    expect(batches).toHaveLength(0);
+  });
+
+  it("fails closed instead of emitting Retry-After beyond the fixed horizon", async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const { db, batches } = mockDb({
+      first: async (sql) => {
+        if (sql.includes("FROM devices")) return deviceRow();
+        if (sql.includes("FROM workspace_entitlements")) {
+          return entitlementRow({
+            max_monthly_events: 1,
+            used_monthly_events: 1,
+            period_start: nowSeconds,
+            period_end: nowSeconds + 30 * 24 * 60 * 60 + 1,
+          });
+        }
+        return null;
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "metered-monthly-invalid-reset" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBeNull();
+    expect(await response.json()).toMatchObject({
+      code: "quota_configuration_error",
+      local_capture_unaffected: true,
     });
     expect(batches).toHaveLength(0);
   });

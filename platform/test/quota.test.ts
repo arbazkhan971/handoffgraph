@@ -68,7 +68,7 @@ function entitlement(overrides: Partial<EntitlementState> = {}): EntitlementStat
     used_monthly_bytes: 0,
     used_lifetime_events: 0,
     used_lifetime_bytes: 0,
-    period_start: NOW - 100,
+    period_start: NOW,
     period_end: NOW + PERIOD,
     ...overrides,
   };
@@ -288,6 +288,7 @@ describe("hosted ingestion quotas", () => {
           requested: 5,
           remaining: 4,
           resets_at: NOW + PERIOD,
+          retryable: true,
         },
       },
     });
@@ -348,7 +349,13 @@ describe("hosted ingestion quotas", () => {
       status: 429,
       body: {
         code: "lifetime_events_exceeded",
-        detail: { scope: "lifetime", limit: 10, used: 9, requested: 2 },
+        detail: {
+          scope: "lifetime",
+          limit: 10,
+          used: 9,
+          requested: 2,
+          retryable: false,
+        },
       },
     });
     expect(db.entitlement?.used_lifetime_events).toBe(9);

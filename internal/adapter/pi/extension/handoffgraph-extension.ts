@@ -27,8 +27,13 @@ const DEFAULT_COLLECTOR_URL = "http://127.0.0.1:7333/v1/events"
 /** Spool fallback path (HFG_SPOOL_PATH overrides). */
 const DEFAULT_SPOOL_PATH = "~/.handoffgraph/spool/pi-spool.jsonl"
 
-/** Max text kept per event field; long bodies belong in the object store. */
+/** Max UTF-8 bytes kept per event field; long bodies belong in the object store. */
 const MAX_TEXT = 4096
+
+/** Visible suffix included inside MAX_TEXT whenever capture clips a field. */
+const TRUNCATION_MARKER = "…[truncated]"
+
+const UTF8_ENCODER = new TextEncoder()
 
 /** Documented subset of the Pi ExtensionAPI used by this extension. */
 interface PiExtensionAPI {
@@ -68,9 +73,20 @@ function expandPath(p: string): string {
   return p
 }
 
-/** truncate caps a text field so payloads stay bounded. */
-function truncate(s: string): string {
-  return s.length <= MAX_TEXT ? s : s.slice(0, MAX_TEXT)
+/** truncateCapturedText caps a field on a Unicode boundary and marks clipping. */
+export function truncateCapturedText(s: string): string {
+  if (UTF8_ENCODER.encode(s).byteLength <= MAX_TEXT) return s
+
+  const contentBudget = MAX_TEXT - UTF8_ENCODER.encode(TRUNCATION_MARKER).byteLength
+  let content = ""
+  let used = 0
+  for (const character of s) {
+    const width = UTF8_ENCODER.encode(character).byteLength
+    if (used + width > contentBudget) break
+    content += character
+    used += width
+  }
+  return content + TRUNCATION_MARKER
 }
 
 let cachedSessionID = ""
@@ -184,7 +200,7 @@ export default async function handoffgraph(pi: PiExtensionAPI): Promise<void> {
       timestamp: ev?.timestamp ?? now(),
       cwd,
       model: ev?.model ?? undefined,
-      message: truncate(String(ev?.message?.text ?? "")),
+      message: truncateCapturedText(String(ev?.message?.text ?? "")),
     })
   })
 
@@ -208,8 +224,8 @@ export default async function handoffgraph(pi: PiExtensionAPI): Promise<void> {
       timestamp: now(),
       cwd,
       tool: String(ev?.tool ?? ev?.name ?? "unknown"),
-      output: truncate(String(ev?.output ?? "")),
-      error: ev?.error ? truncate(String(ev?.error)) : undefined,
+      output: truncateCapturedText(String(ev?.output ?? "")),
+      error: ev?.error ? truncateCapturedText(String(ev?.error)) : undefined,
     })
   })
 

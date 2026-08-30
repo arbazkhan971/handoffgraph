@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/handoffgraph/handoffgraph/internal/adapter"
 	"github.com/handoffgraph/handoffgraph/internal/content"
@@ -451,13 +452,33 @@ func checkpointPrompt(cp *protocol.Checkpoint) string {
 		cp.WorkstreamID, cp.CheckpointID, string(objective), cp.CheckpointID)
 }
 
-// truncate caps oversized text fields; large bodies belong in the object
-// store as references, never inlined into events.
+const truncationMarker = "…[truncated]"
+
+// truncate caps oversized text fields on a rune boundary and leaves an
+// explicit marker inside the same byte budget. Large bodies belong in the
+// object store as references, never inlined into events.
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max]
+	if max <= len(truncationMarker) {
+		return utf8Prefix(truncationMarker, max)
+	}
+	return utf8Prefix(s, max-len(truncationMarker)) + truncationMarker
+}
+
+func utf8Prefix(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // orNull renders an optional raw JSON field as "null" when absent.

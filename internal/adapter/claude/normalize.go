@@ -612,6 +612,8 @@ func buildEvent(base baseFields, seq int64, m mappedEvent, raw json.RawMessage, 
 // store as references, never inlined into events.
 const maxInlineText = 4096
 
+const truncationMarker = "…[truncated]"
+
 // rawOrNull passes through raw JSON (or JSON null) for payload fields that
 // keep structured values.
 func rawOrNull(raw json.RawMessage) json.RawMessage {
@@ -621,9 +623,23 @@ func rawOrNull(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// truncate caps oversized text fields on a rune boundary so a cut never
-// produces invalid UTF-8.
+// truncate caps oversized text fields on a rune boundary and leaves an
+// explicit marker inside the same byte budget. Consumers can distinguish a
+// complete observation from captured text that reached the inline limit.
 func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= len(truncationMarker) {
+		return utf8Prefix(truncationMarker, max)
+	}
+	return utf8Prefix(s, max-len(truncationMarker)) + truncationMarker
+}
+
+func utf8Prefix(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	if len(s) <= max {
 		return s
 	}

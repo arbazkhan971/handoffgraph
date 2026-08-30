@@ -45,8 +45,13 @@ Every invocation captures a local SQLite append-sequence high-water mark,
 redacts every pending event through that mark, and reports counts of clean and
 redacted events plus removed field values. Any invalid redaction policy,
 unclassifiable payload, prior failed-redaction marker, or oversized event
-closes the hosted boundary before a request is sent. Events captured after the
-high-water mark remain local until a later explicit sync.
+closes the hosted boundary before a request is sent. Claude and Pi adapters
+visibly mark inline text clipped within their 4096-byte capture ceiling with
+`…[truncated]` on a valid UTF-8 boundary (Codex uses the same visible marker).
+Hosted sync never truncates an already captured event to make transport
+succeed: a single post-redaction event that cannot fit the Basic 256-KiB
+request fails closed. Events captured after the high-water mark remain local
+until a later explicit sync.
 
 The uploaded copy receives the configured fail-closed pipeline across payload,
 free-form metadata, Git credentials, and forward-compatible unknown fields.
@@ -67,6 +72,28 @@ manual sync replays the identical body and key, so the server returns the same
 receipt without charging twice. A partial multi-batch transfer resumes at the
 first unacknowledged batch.
 
+Quota handling is explicit and does not hide a retry loop:
+
+- A monthly event/byte 429 is waitable. The platform returns `resets_at`,
+  `detail.retryable: true`, and `Retry-After`. The CLI accepts either HTTP
+  delay-seconds or an HTTP date only when it is positive and within the fixed
+  30-day entitlement window. The structured `resets_at` remains authoritative,
+  so a separate header cannot shorten or override the displayed policy.
+- A per-batch 429 has `detail.retryable: false`; the same body cannot succeed
+  unchanged and no `Retry-After` is sent. Basic-safe batching normally keeps
+  the client below this boundary.
+- A lifetime 429 also has `detail.retryable: false`; it requires an
+  entitlement change rather than another unchanged request.
+
+The CLI does not sleep or retry the denied pending request automatically in
+any of these cases. It returns after the denial with that exact body and key
+still durable and never advances the cursor past it; batches accepted earlier
+in the same invocation remain committed at their validated boundary. A later
+explicit `handoffgraph sync` replays the denied pending request byte-for-byte.
+Missing, unknown, internally inconsistent, or implausibly distant structured
+quota metadata receives a fixed generic 429 error instead of being trusted as
+retry policy.
+
 Repository config cannot choose the hosted-state location. State is scoped by
 canonical API endpoint, a one-way SHA-256 fingerprint of the high-entropy
 device token, and the canonical local SQLite-store identity; neither the token
@@ -77,6 +104,9 @@ changed workspace receipt is rejected without advancing the cursor. Rotating
 a token therefore creates a new local scope and requires a new first-upload
 acceptance; it never inherits another credential's cursor or tenant binding.
 
-Only content-free counts and cursor progress are printed. Server response
-bodies are never reflected into CLI errors, so a remote response cannot make
-the CLI echo a credential or event payload.
+Only content-free counts and cursor progress are printed. The bounded server
+error body is decoded against a strict allowlist solely to classify quota
+scope and retryability; unknown fields or inconsistent values fail back to a
+fixed status-only message. Server response bodies are never reflected into
+CLI errors, so a remote response cannot make the CLI echo a credential or
+event payload.

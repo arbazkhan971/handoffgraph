@@ -113,7 +113,11 @@ import { buildObservationStatements, handleObservationsRoute } from "./observati
 import { PLAN_CATALOG } from "./plans";
 import { handlePlaygroundRoute } from "./playground";
 import { handleQualityRoute } from "./quality";
-import { prepareQuotaReservation } from "./quota";
+import {
+  MAX_QUOTA_RETRY_AFTER_SECONDS,
+  prepareQuotaReservation,
+  type QuotaDenial,
+} from "./quota";
 import { handleSimulationsRoute } from "./simulations";
 // The Workflows entrypoint for agent simulations must be exported from the
 // Worker's main module for the (currently commented) [[workflows]] binding in
@@ -169,6 +173,47 @@ function hostedMaintenanceEnabled(env: HostedSurfaceEnv): boolean {
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+}
+
+/**
+ * Render a quota denial without making every 429 look retryable.
+ *
+ * Monthly limits carry an authoritative reset timestamp and are the only
+ * unchanged requests that can succeed merely by waiting. Batch and lifetime
+ * limits deliberately omit Retry-After: one needs a smaller request and the
+ * other needs an entitlement change. RFC 9110 permits either a date or delay
+ * seconds; delay seconds keep the CLI message deterministic and easy to test.
+ */
+function quotaResponse(denial: QuotaDenial, nowSeconds: number): Response {
+  const headers = new Headers(JSON_HEADERS);
+  const detail = denial.body.detail;
+  if (denial.status === 429 && detail?.retryable === true) {
+    const validInputs = Number.isSafeInteger(detail.resets_at) &&
+      Number.isSafeInteger(nowSeconds) && nowSeconds >= 0;
+    const delaySeconds = validInputs
+      ? (detail.resets_at as number) - nowSeconds
+      : Number.NaN;
+    // Never turn malformed entitlement state into unbounded or immediate
+    // operator retry policy. The reservation has not committed at this point,
+    // so a fixed 503 is the fail-closed response.
+    if (
+      !Number.isSafeInteger(delaySeconds) ||
+      delaySeconds <= 0 ||
+      delaySeconds > MAX_QUOTA_RETRY_AFTER_SECONDS
+    ) {
+      return jsonResponse(503, {
+        error: "hosted quota is not configured safely",
+        code: "quota_configuration_error",
+        local_capture_unaffected: true,
+        detail: { retryable: false },
+      });
+    }
+    headers.set("retry-after", String(delaySeconds));
+  }
+  return new Response(JSON.stringify(denial.body), {
+    status: denial.status,
+    headers,
+  });
 }
 
 function healthResponse(env: HostedSurfaceEnv): Response {
@@ -878,7 +923,7 @@ async function handleEventBatches(
     bodyBytes,
     nowSeconds: ingestedAt,
   });
-  if (!quota.ok) return jsonResponse(quota.status, quota.body);
+  if (!quota.ok) return quotaResponse(quota, ingestedAt);
   if (quota.duplicate) {
     // The reservation and receipt commit in the same D1 transaction. Seeing
     // an allowed reservation after the first receipt read means a concurrent
@@ -984,7 +1029,7 @@ async function handleEventBatches(
       bodyBytes,
       nowSeconds: ingestedAt,
     });
-    if (!afterFailure.ok) return jsonResponse(afterFailure.status, afterFailure.body);
+    if (!afterFailure.ok) return quotaResponse(afterFailure, ingestedAt);
     return jsonResponse(500, { error: "internal error" });
   }
 

@@ -1,6 +1,7 @@
 package hostedsync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -451,6 +452,285 @@ func TestPartialFailureResumesExactPendingBatch(t *testing.T) {
 	}
 	if string(bodies[1]) != string(bodies[2]) || keys[1] != keys[2] {
 		t.Fatalf("pending retry changed\nfailed key/body: %s %s\nretry key/body: %s %s", keys[1], bodies[1], keys[2], bodies[2])
+	}
+}
+
+func TestMonthlyQuotaRetryPreservesExactPendingBatch(t *testing.T) {
+	db := openSyncDB(t, json.RawMessage(`{"n":1}`))
+	resetAt := time.Date(2026, 8, 30, 12, 1, 0, 0, time.UTC).Unix()
+	var mu sync.Mutex
+	var bodies [][]byte
+	var keys []string
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := ioReadAll(r)
+		mu.Lock()
+		requests++
+		current := requests
+		bodies = append(bodies, append([]byte(nil), body...))
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		mu.Unlock()
+		if current == 1 {
+			w.Header().Set("content-type", "application/json")
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":                    "hosted quota exceeded",
+				"code":                     "monthly_events_exceeded",
+				"local_capture_unaffected": true,
+				"detail": map[string]any{
+					"scope": "month", "resource": "events",
+					"limit": 1, "used": 1, "requested": 1, "remaining": 0,
+					"resets_at": resetAt,
+					"retryable": true,
+				},
+			})
+			return
+		}
+		successReceipt(w, body, "wsp_tenant_a")
+	}))
+	defer server.Close()
+
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	opts := runOptions(server.URL, statePath)
+	opts.AcceptRedaction = true
+	first, err := Run(context.Background(), db, syncEngine(t), server.Client(), opts)
+	if err == nil || !strings.Contains(err.Error(), "monthly quota") || !strings.Contains(err.Error(), "retry after 60 seconds") {
+		t.Fatalf("first Run error = %v, want classified monthly Retry-After", err)
+	}
+	if first.Cursor != 0 || first.AcceptedEvents != 0 || first.BatchesSent != 0 {
+		t.Fatalf("first report advanced across quota denial: %+v", first)
+	}
+	state, err := loadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, _, _ := NormalizeEndpoint(server.URL)
+	scope, err := getScope(state, origin, testDeviceToken, opts.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if requests != 1 {
+		mu.Unlock()
+		t.Fatalf("first explicit sync made %d requests, want one with no automatic sleep/retry", requests)
+	}
+	if scope.Cursor != 0 || scope.Pending == nil || !bytes.Equal(scope.Pending.Body, bodies[0]) || scope.Pending.IdempotencyKey != keys[0] {
+		mu.Unlock()
+		t.Fatalf("quota denial did not retain the exact pending request: scope=%+v", scope)
+	}
+	mu.Unlock()
+
+	opts.AcceptRedaction = false
+	second, err := Run(context.Background(), db, syncEngine(t), server.Client(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Cursor != 1 || second.AcceptedEvents != 1 || second.BatchesSent != 1 || !second.UpToDate {
+		t.Fatalf("explicit retry report = %+v", second)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 2 || !bytes.Equal(bodies[0], bodies[1]) || keys[0] != keys[1] {
+		t.Fatalf("explicit quota retry changed pending request: requests=%d keys=%v", requests, keys)
+	}
+}
+
+func TestRetryAfterSecondsSupportsDelayAndHTTPDate(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		value string
+		want  int64
+		ok    bool
+	}{
+		{name: "delay seconds", value: "60", want: 60, ok: true},
+		{name: "maximum monthly delay", value: fmt.Sprint(maxQuotaRetryAfterSeconds), want: maxQuotaRetryAfterSeconds, ok: true},
+		{name: "over maximum monthly delay", value: fmt.Sprint(maxQuotaRetryAfterSeconds + 1), ok: false},
+		{name: "HTTP date", value: now.Add(90 * time.Second).Format(http.TimeFormat), want: 90, ok: true},
+		{name: "maximum monthly HTTP date", value: now.Add(time.Duration(maxQuotaRetryAfterSeconds) * time.Second).Format(http.TimeFormat), want: maxQuotaRetryAfterSeconds, ok: true},
+		{name: "over maximum monthly HTTP date", value: now.Add(time.Duration(maxQuotaRetryAfterSeconds+1) * time.Second).Format(http.TimeFormat), ok: false},
+		{name: "past HTTP date", value: now.Add(-time.Second).Format(http.TimeFormat), want: 0, ok: true},
+		{name: "negative is not delay seconds", value: "-1", ok: false},
+		{name: "malformed", value: "soon", ok: false},
+		{name: "overflow", value: "999999999999999999999999999999", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := retryAfterSeconds(tt.value, now)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("retryAfterSeconds(%q) = (%d, %v), want (%d, %v)", tt.value, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestResponseRetryAfterBoundsQuotaReset(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	response := &http.Response{Header: make(http.Header)}
+	atBoundary := now.Unix() + maxQuotaRetryAfterSeconds
+	if got, ok := responseRetryAfter(response, &atBoundary, now); !ok || got != maxQuotaRetryAfterSeconds {
+		t.Fatalf("boundary reset = (%d, %v), want (%d, true)", got, ok, maxQuotaRetryAfterSeconds)
+	}
+	overBoundary := atBoundary + 1
+	if got, ok := responseRetryAfter(response, &overBoundary, now); ok || got != 0 {
+		t.Fatalf("over-boundary reset = (%d, %v), want (0, false)", got, ok)
+	}
+	if got, ok := responseRetryAfter(response, nil, now); ok || got != 0 {
+		t.Fatalf("absent reset = (%d, %v), want (0, false)", got, ok)
+	}
+	atNow := now.Unix()
+	if got, ok := responseRetryAfter(response, &atNow, now); ok || got != 0 {
+		t.Fatalf("non-future reset = (%d, %v), want (0, false)", got, ok)
+	}
+
+	future := now.Unix() + 600
+	response.Header.Set("Retry-After", "60")
+	if got, ok := responseRetryAfter(response, &future, now); !ok || got != 600 {
+		t.Fatalf("contradictory shorter header = (%d, %v), want authoritative reset (600, true)", got, ok)
+	}
+	response.Header.Set("Retry-After", "0")
+	if got, ok := responseRetryAfter(response, &future, now); ok || got != 0 {
+		t.Fatalf("zero header = (%d, %v), want fail-closed (0, false)", got, ok)
+	}
+}
+
+func TestStructuredQuotaMetadataNeverFallsBackToContradictoryHeader(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	body, err := json.Marshal(map[string]any{
+		"error":                    "hosted quota exceeded",
+		"code":                     "monthly_events_exceeded",
+		"local_capture_unaffected": true,
+		"detail": map[string]any{
+			"scope": "month", "resource": "events",
+			"limit": 1, "used": 1, "requested": 1, "remaining": 0,
+			"resets_at": now.Unix() + 600,
+			"retryable": true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	response.Header.Set("Retry-After", "0")
+	got := hostedStatusError(response, body, now).Error()
+	if !strings.Contains(got, "hosted API is rate-limited") || strings.Contains(got, "retry after") {
+		t.Fatalf("hostedStatusError = %q, want status-only generic fallback", got)
+	}
+}
+
+func TestUnknownRateLimitBodyCanUseBoundedRetryAfter(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	response.Header.Set("Retry-After", "60")
+	got := hostedStatusError(response, []byte(`{"error":"gateway rate limit"}`), now).Error()
+	if !strings.Contains(got, "hosted API is rate-limited") || !strings.Contains(got, "retry after 60 seconds") {
+		t.Fatalf("hostedStatusError = %q, want bounded generic Retry-After guidance", got)
+	}
+}
+
+func TestUnknownStructuredQuotaMetadataSuppressesRetryAfter(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"error":"hosted quota exceeded","code":"monthly_events_exceeded","local_capture_unaffected":true,"future_policy":"unknown"}`)
+	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	response.Header.Set("Retry-After", "60")
+	got := hostedStatusError(response, body, now).Error()
+	if !strings.Contains(got, "hosted API is rate-limited") || strings.Contains(got, "retry after") {
+		t.Fatalf("hostedStatusError = %q, want status-only fallback for unknown structured metadata", got)
+	}
+}
+
+func TestPermanentQuotaErrorsOverrideMisleadingRetryAfter(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		code      string
+		scope     string
+		used      int
+		requested int
+		remaining int
+		want      string
+	}{
+		{name: "batch", code: "batch_events_exceeded", scope: "batch", used: 0, requested: 11, remaining: 10, want: "unchanged cannot succeed"},
+		{name: "lifetime", code: "lifetime_events_exceeded", scope: "lifetime", used: 9, requested: 2, remaining: 1, want: "entitlement change"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"error":                    "hosted quota exceeded",
+				"code":                     tt.code,
+				"local_capture_unaffected": true,
+				"detail": map[string]any{
+					"scope": tt.scope, "resource": "events",
+					"limit": 10, "used": tt.used, "requested": tt.requested, "remaining": tt.remaining,
+					"retryable": false,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+			response.Header.Set("Retry-After", "60")
+			got := hostedStatusError(response, body, now).Error()
+			if !strings.Contains(got, tt.want) || strings.Contains(got, "retry after") {
+				t.Fatalf("hostedStatusError = %q, want permanent classification", got)
+			}
+		})
+	}
+}
+
+func TestQuotaClassificationFallsBackForMissingOrInvalidPolicy(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		code   string
+		detail map[string]any
+	}{
+		{
+			name: "missing permanent retryable flag",
+			code: "batch_events_exceeded",
+			detail: map[string]any{
+				"scope": "batch", "resource": "events",
+				"limit": 10, "used": 0, "requested": 11, "remaining": 10,
+			},
+		},
+		{
+			name: "missing monthly reset",
+			code: "monthly_events_exceeded",
+			detail: map[string]any{
+				"scope": "month", "resource": "events",
+				"limit": 1, "used": 1, "requested": 1, "remaining": 0,
+				"retryable": true,
+			},
+		},
+		{
+			name: "far future monthly reset",
+			code: "monthly_events_exceeded",
+			detail: map[string]any{
+				"scope": "month", "resource": "events",
+				"limit": 1, "used": 1, "requested": 1, "remaining": 0,
+				"retryable": true,
+				"resets_at": now.Unix() + maxQuotaRetryAfterSeconds + 1,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"error":                    "hosted quota exceeded",
+				"code":                     tt.code,
+				"local_capture_unaffected": true,
+				"detail":                   tt.detail,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+			got := hostedStatusError(response, body, now).Error()
+			if !strings.Contains(got, "hosted API is rate-limited") || strings.Contains(got, "quota is exhausted") || strings.Contains(got, "per-batch quota") {
+				t.Fatalf("hostedStatusError = %q, want generic fallback", got)
+			}
+		})
 	}
 }
 

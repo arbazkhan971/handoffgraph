@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/handoffgraph/handoffgraph/internal/adapter"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
@@ -309,7 +310,7 @@ func TestNormalizeEnvelopeWithoutSessionID(t *testing.T) {
 
 func TestNormalizePreservesUnknownFieldsAndTruncates(t *testing.T) {
 	p := New()
-	long := strings.Repeat("x", 5000)
+	long := strings.Repeat("🙂", 2000)
 	raw := rawEvent(t, map[string]any{
 		"schema": EnvelopeSchema, "type": "message.user", "sessionID": "s1",
 		"timestamp": "2026-08-21T19:13:09.482Z", "message": long,
@@ -324,8 +325,15 @@ func TestNormalizePreservesUnknownFieldsAndTruncates(t *testing.T) {
 	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
-	if got := len(payload["message"].(string)); got != 4096 {
-		t.Errorf("message length = %d, want 4096 (truncated)", got)
+	message := payload["message"].(string)
+	if got := len(message); got > 4096 {
+		t.Errorf("message length = %d, want <= 4096", got)
+	}
+	if !strings.HasSuffix(message, truncationMarker) {
+		t.Errorf("message missing explicit truncation marker: %q", message[len(message)-len(truncationMarker):])
+	}
+	if !utf8.ValidString(message) {
+		t.Error("truncated message is not valid UTF-8")
 	}
 	if _, ok := ev.Unknown["futureField"]; !ok {
 		t.Errorf("unknown envelope field not preserved: %+v", ev.Unknown)

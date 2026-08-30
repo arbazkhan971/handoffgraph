@@ -93,7 +93,7 @@ rationale stated inline (rows 32, 54).
 | 1 | Native coding-agent adapters (Claude Code, Codex, Pi) + merge-safe idempotent hook install | ours (unique depth) | L | ✅ |
 | 2 | OTLP/HTTP ingest (JSON **and** protobuf) — be an OTel *backend* (OpenLLMetry/OpenLIT/Phoenix/Claude-native data lands here) — **protobuf flavor ✅ local *and* hosted (2026-08-28): four-corner Go/TS × JSON/protobuf id parity, golden-fixture-proven (`testdata/fixtures/otlp/genai_session.pb`, `platform/test/otlp_proto.test.ts`)** — **semconv v1.37 mapping refresh ✅ (2026-08-28): `gen_ai.provider.name`, `gen_ai.conversation.id`, proto3 `arrayValue` spec fix** — **gRPC re-scoped out (2026-08-28):** Workers cannot terminate inbound gRPC, and the local single-binary posture keeps its 3 dependencies; protobuf-only emitters front a collector (`otlp` receiver → `otlphttp` exporter), per [`docs/otlp.md`](./otlp.md) | Langfuse, SigNoz, OpenObserve, OpenLLMetry | L + C | P1 ✅ |
 | 3 | `handoffgraph.*` attribute namespace over `gen_ai.*` / `coding_agent.*` semconv + interop mappings + reserved-key sanitizer — **✅ (2026-08-28): OpenInference 10-kind coverage in both languages (EVALUATOR→GUARDRAIL, PROMPT→WORKFLOW folds documented at the case)** | Langfuse, OpenLIT, SigNoz | L + C | P1 ✅ |
-| 4 | Batch ingest API with ingest-side dedup + backpressure semantics (429/retry, truncation markers) — **local ✅ (2026-08-28); hosted batch pending** | Opik, Langfuse | L + C | P1 ✅L / P3 |
+| 4 | Batch ingest API with ingest-side dedup + backpressure semantics (429/retry, truncation markers) — **local + hosted ✅ (2026-08-31):** hosted D1 quota reservation, receipt, append-only events, and projections commit atomically; Basic stays ≤100 events/256 KiB; monthly denials are explicitly retryable with bounded `Retry-After`, while batch/lifetime denials are explicitly non-retryable unchanged. The Go sync preserves the exact denied pending body/key and never advances past that batch, never auto-sleeps, and replays it only on the next explicit invocation; batches accepted earlier in the invocation remain committed. Codex/Claude/Pi inline capture truncation is UTF-8-safe and visibly marked; an individual post-redaction event that cannot fit still fails closed before network I/O. | Opik, Langfuse | L + C | P1 ✅ / P3 ✅ |
 | 5 | Native-vendor telemetry coalescing (`signal_source` precedence: native vs hook vs sdk) — **local ✅ (2026-08-28): `native > hook > sdk > import` coalescing, losing rows kept as shadow rows (never deleted), `--signal-source` / `--include-shadowed` filters on `sessions` and `query spans`** | OpenLIT, SigNoz | L | P2 ✅L |
 | 6 | Proxy/gateway capture mode (OpenAI-compatible endpoint; zero-code baseURL swap) + virtual keys/budgets/rate limits — **✅ (2026-08-28): `vk_` virtual keys, budgets as exact decimal strings, KV rate limits, capture-to-spine events (OBSERVED), `POST/GET /v1/gateway/keys`; streaming rejected in v1 rather than silently buffered (dated re-scope — a buffered "stream" would fake a capability)** | Helicone, LangWatch, OpenRouter | C | P3 ✅ |
 | 7 | Response caching + provider fallback/routing — **✅ (2026-08-28): opt-in R2 response cache (`gwcache/` prefix) + ordered provider fallbacks (max 3)** | Helicone, LangWatch | C | P3 ✅ |
@@ -176,12 +176,13 @@ this doc with rationale. Row 55 is the only explicit out-of-scope. Rows 32 and
 from the start); gRPC (row 2) and presigned direct-to-R2 (row 53) are
 **substrate re-scopes** with the rationale recorded in their cells.
 
-**Status as of 2026-08-28:** every row 1–54 is either ✅ shipped behind a
+**Status as of 2026-08-31:** every row 1–54 is either ✅ shipped behind a
 tested gate or carries a dated re-scope rationale above. The residual
-*pending* tails, stated plainly rather than hidden behind a checkmark: hosted
-batch backpressure (row 4), edits-accepted/rejected + commit/PR linkage
-awaiting adapter events (row 38), and SCIM provisioning + masking-at-ingest
-(row 48).
+*pending* tails, stated plainly rather than hidden behind a checkmark, are
+edits-accepted/rejected + commit/PR linkage awaiting adapter events (row 38),
+and SCIM provisioning + masking-at-ingest (row 48). Hosted batch
+backpressure (row 4) closed on 2026-08-31 with bounded retry guidance and
+crash-safe exact replay semantics.
 
 ---
 

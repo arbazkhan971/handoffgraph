@@ -31,6 +31,10 @@ const (
 	// Higher plans can still sync the same data over more requests.
 	maxBodyBytes     = 262_144
 	maxResponseBytes = 64 << 10
+	// Hosted entitlements currently use fixed 30-day quota periods. Refuse
+	// remote retry guidance beyond one complete period so a malformed or
+	// hostile header cannot present an absurd wait as platform policy.
+	maxQuotaRetryAfterSeconds int64 = 30 * 24 * 60 * 60
 	// Basic hosted workspaces accept at most 100 events per request. Keep the
 	// zero-value/default client batch within that entitlement so a normal first
 	// sync does not create an unreplayable, over-quota pending body.
@@ -101,6 +105,29 @@ type receipt struct {
 	BatchID       string `json:"batch_id"`
 	SchemaVersion string `json:"schema_version"`
 	WorkspaceID   string `json:"workspace_id"`
+}
+
+// hostedErrorEnvelope is intentionally narrower than an arbitrary remote
+// error. It lets the CLI classify the platform's content-free quota contract
+// without ever reflecting an untrusted response body into terminal output.
+// Unknown fields fail parsing so a future server response falls back to the
+// generic, fixed status message until the client explicitly understands it.
+type hostedErrorEnvelope struct {
+	Error                  string             `json:"error"`
+	Code                   string             `json:"code"`
+	LocalCaptureUnaffected bool               `json:"local_capture_unaffected"`
+	Detail                 *hostedErrorDetail `json:"detail,omitempty"`
+}
+
+type hostedErrorDetail struct {
+	Scope     string `json:"scope,omitempty"`
+	Resource  string `json:"resource,omitempty"`
+	Limit     *int64 `json:"limit,omitempty"`
+	Used      *int64 `json:"used,omitempty"`
+	Requested *int64 `json:"requested,omitempty"`
+	Remaining *int64 `json:"remaining,omitempty"`
+	ResetsAt  *int64 `json:"resets_at,omitempty"`
+	Retryable *bool  `json:"retryable,omitempty"`
 }
 
 // Run previews and, unless PreviewOnly, explicitly uploads every local event
@@ -223,7 +250,7 @@ func Run(ctx context.Context, store EventStore, engine *redact.Engine, client HT
 			}
 		}
 
-		receipt, err := postPending(ctx, client, batchURL, token, opts.UserAgent, pending)
+		receipt, err := postPending(ctx, client, batchURL, token, opts.UserAgent, pending, opts.Now)
 		if err != nil {
 			return report, err
 		}
@@ -388,7 +415,7 @@ func validatePending(scope *scopeState, highWatermark int64) error {
 	return nil
 }
 
-func postPending(ctx context.Context, client HTTPDoer, batchURL, token, userAgent string, pending *pendingBatch) (receipt, error) {
+func postPending(ctx context.Context, client HTTPDoer, batchURL, token, userAgent string, pending *pendingBatch, now func() time.Time) (receipt, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, batchURL, bytes.NewReader(pending.Body))
 	if err != nil {
 		return receipt{}, fmt.Errorf("create hosted sync request: %w", err)
@@ -405,8 +432,13 @@ func postPending(ctx context.Context, client HTTPDoer, batchURL, token, userAgen
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
-		return receipt{}, hostedStatusError(response)
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+		if readErr != nil || len(body) > maxResponseBytes {
+			// Response classification is optional. A body that cannot be read
+			// safely still receives the fixed status-only error below.
+			body = nil
+		}
+		return receipt{}, hostedStatusError(response, body, now())
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
@@ -432,11 +464,11 @@ func postPending(ctx context.Context, client HTTPDoer, batchURL, token, userAgen
 	return got, nil
 }
 
-func hostedStatusError(response *http.Response) error {
+func hostedStatusError(response *http.Response, body []byte, now time.Time) error {
 	status := response.StatusCode
 	switch status {
 	case http.StatusBadRequest:
-		return fmt.Errorf("hosted API rejected the redacted batch contract (400); local cursor was not advanced")
+		return fmt.Errorf("hosted API rejected the redacted batch contract (400); local cursor was not advanced past the pending batch")
 	case http.StatusUnauthorized:
 		return fmt.Errorf("hosted API rejected the device credential (401); local capture is unaffected")
 	case http.StatusForbidden:
@@ -444,18 +476,186 @@ func hostedStatusError(response *http.Response) error {
 	case http.StatusNotFound:
 		return fmt.Errorf("hosted workspace, endpoint, or tenant binding was not found (404); local capture is unaffected")
 	case http.StatusConflict:
-		return fmt.Errorf("hosted API reported an idempotency or evidence conflict (409); local cursor was not advanced")
+		return fmt.Errorf("hosted API reported an idempotency or evidence conflict (409); local cursor was not advanced past the pending batch")
 	case http.StatusRequestEntityTooLarge:
-		return fmt.Errorf("hosted API rejected the batch size (413); local cursor was not advanced")
+		return fmt.Errorf("hosted API rejected the batch size (413); local cursor was not advanced past the pending batch")
 	case http.StatusTooManyRequests:
-		retry := response.Header.Get("Retry-After")
-		if _, err := strconv.Atoi(retry); err == nil && retry != "" {
-			return fmt.Errorf("hosted API is rate-limited (429; retry after %s seconds); local capture is unaffected", retry)
+		if remote, ok := parseHostedError(body); ok {
+			switch remote.Code {
+			case "batch_events_exceeded", "batch_bytes_exceeded":
+				if validLimitDetail(remote.Code, remote.Detail, "batch", false) {
+					return fmt.Errorf("hosted per-batch quota rejected the pending batch (429; retrying it unchanged cannot succeed); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
+				}
+			case "monthly_events_exceeded", "monthly_bytes_exceeded":
+				if validLimitDetail(remote.Code, remote.Detail, "month", true) {
+					if seconds, ok := responseRetryAfter(response, remote.Detail.ResetsAt, now); ok {
+						return fmt.Errorf("hosted monthly quota is exhausted (429; retry after %d seconds); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected", seconds)
+					}
+				}
+			case "lifetime_events_exceeded", "lifetime_bytes_exceeded":
+				if validLimitDetail(remote.Code, remote.Detail, "lifetime", false) {
+					return fmt.Errorf("hosted lifetime quota is exhausted (429; retrying unchanged cannot succeed without an entitlement change); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
+				}
+			case "quota_reservation_rejected":
+				if validReservationDetail(remote.Detail) {
+					return fmt.Errorf("hosted quota reservation rejected the pending batch (429; retrying it unchanged cannot succeed); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
+				}
+			}
+			// The response declared a hosted quota contract but did not satisfy
+			// the exact policy above. Do not fall through and trust a standalone
+			// Retry-After header that could contradict the structured reset.
+			return fmt.Errorf("hosted API is rate-limited (429); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
 		}
-		return fmt.Errorf("hosted API is rate-limited (429); local capture is unaffected")
+		if declaresStructuredErrorCode(body) {
+			// A coded application response that failed the strict allowlist is
+			// malformed or newer than this client. Its Retry-After cannot be
+			// treated independently without bypassing fail-closed classification.
+			return fmt.Errorf("hosted API is rate-limited (429); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
+		}
+		if seconds, ok := retryAfterSeconds(response.Header.Get("Retry-After"), now); ok {
+			return fmt.Errorf("hosted API is rate-limited (429; retry after %d seconds); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected", seconds)
+		}
+		return fmt.Errorf("hosted API is rate-limited (429); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
 	case http.StatusServiceUnavailable:
-		return fmt.Errorf("hosted quota or storage is temporarily unavailable (503); local cursor was not advanced and local capture is unaffected")
+		return fmt.Errorf("hosted quota or storage is temporarily unavailable (503); local cursor was not advanced past the pending batch and local capture is unaffected")
 	default:
-		return fmt.Errorf("hosted API returned HTTP %d; local cursor was not advanced and local capture is unaffected", status)
+		return fmt.Errorf("hosted API returned HTTP %d; local cursor was not advanced past the pending batch and local capture is unaffected", status)
 	}
+}
+
+func parseHostedError(body []byte) (hostedErrorEnvelope, bool) {
+	if len(body) == 0 {
+		return hostedErrorEnvelope{}, false
+	}
+	var remote hostedErrorEnvelope
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&remote); err != nil {
+		return hostedErrorEnvelope{}, false
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return hostedErrorEnvelope{}, false
+	}
+	if remote.Error == "" || !remote.LocalCaptureUnaffected {
+		return hostedErrorEnvelope{}, false
+	}
+	switch remote.Code {
+	case "batch_events_exceeded", "batch_bytes_exceeded",
+		"monthly_events_exceeded", "monthly_bytes_exceeded",
+		"lifetime_events_exceeded", "lifetime_bytes_exceeded",
+		"quota_reservation_rejected", "quota_unavailable",
+		"quota_configuration_error":
+		return remote, true
+	default:
+		return hostedErrorEnvelope{}, false
+	}
+}
+
+func declaresStructuredErrorCode(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var probe struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(body, &probe) == nil && strings.TrimSpace(probe.Code) != ""
+}
+
+func validLimitDetail(code string, detail *hostedErrorDetail, scope string, retryable bool) bool {
+	if detail == nil || detail.Scope != scope || detail.Retryable == nil || *detail.Retryable != retryable ||
+		detail.Limit == nil || detail.Used == nil || detail.Requested == nil || detail.Remaining == nil {
+		return false
+	}
+	wantResource := "bytes"
+	if strings.Contains(code, "_events_") {
+		wantResource = "events"
+	}
+	if detail.Resource != wantResource || *detail.Limit < 0 || *detail.Used < 0 ||
+		*detail.Requested <= 0 || *detail.Remaining < 0 || *detail.Used > *detail.Limit ||
+		*detail.Remaining != *detail.Limit-*detail.Used || *detail.Requested <= *detail.Remaining {
+		return false
+	}
+	if scope == "batch" && (*detail.Used != 0 || *detail.Remaining != *detail.Limit) {
+		return false
+	}
+	if scope == "month" {
+		return detail.ResetsAt != nil
+	}
+	return detail.ResetsAt == nil
+}
+
+func validReservationDetail(detail *hostedErrorDetail) bool {
+	return detail != nil && detail.Retryable != nil && !*detail.Retryable &&
+		detail.Scope == "" && detail.Resource == "" && detail.Limit == nil &&
+		detail.Used == nil && detail.Requested == nil && detail.Remaining == nil &&
+		detail.ResetsAt == nil
+}
+
+func responseRetryAfter(response *http.Response, resetsAt *int64, now time.Time) (int64, bool) {
+	if resetsAt == nil || *resetsAt < 0 {
+		return 0, false
+	}
+	resetSeconds, ok := secondsUntil(time.Unix(*resetsAt, 0), now)
+	if !ok || resetSeconds == 0 {
+		return 0, false
+	}
+	header := strings.TrimSpace(response.Header.Get("Retry-After"))
+	if header == "" {
+		return resetSeconds, true
+	}
+	// resets_at is the authoritative quota boundary. Validate that a present
+	// HTTP header is itself positive and bounded, but never let its relative
+	// value override or shorten the structured reset policy.
+	headerSeconds, ok := retryAfterSeconds(header, now)
+	if !ok || headerSeconds == 0 {
+		return 0, false
+	}
+	return resetSeconds, true
+}
+
+// retryAfterSeconds accepts both Retry-After forms defined by HTTP: an
+// unsigned delay in seconds or an HTTP date. It never sleeps; the value is
+// surfaced only as content-free operator guidance for the next explicit sync.
+func retryAfterSeconds(value string, now time.Time) (int64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if isASCIIDigits(value) {
+		seconds, err := strconv.ParseInt(value, 10, 64)
+		if err == nil && seconds <= maxQuotaRetryAfterSeconds {
+			return seconds, true
+		}
+		return 0, false
+	}
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	return secondsUntil(retryAt, now)
+}
+
+func isASCIIDigits(value string) bool {
+	for i := range len(value) {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func secondsUntil(retryAt, now time.Time) (int64, bool) {
+	delta := retryAt.Sub(now)
+	if delta <= 0 {
+		return 0, true
+	}
+	if delta > time.Duration(maxQuotaRetryAfterSeconds)*time.Second {
+		return 0, false
+	}
+	seconds := delta / time.Second
+	if delta%time.Second != 0 {
+		seconds++
+	}
+	return int64(seconds), true
 }

@@ -274,6 +274,12 @@ Behavior:
 - Batches are globally capped at **500 events** and **1 MiB** bodies (`413`
   beyond). Hosted Basic applies the smaller limits above and returns a
   structured `429` before storing anything.
+- Quota 429s are intentionally not one generic retry signal. A monthly
+  event/byte denial has `detail.retryable: true`, includes `resets_at`, and
+  sends `Retry-After` delay-seconds until that reset. Per-batch and lifetime
+  denials have `detail.retryable: false` and omit `Retry-After`: the former
+  needs a smaller request and the latter an entitlement change. Every denial
+  includes `local_capture_unaffected: true`.
 - Envelope and per-event minimum validation is fail-closed: an invalid batch
   stores nothing (`400`). Required event timestamps and non-negative sequence
   values are checked; external sync requires redaction version 1 with status

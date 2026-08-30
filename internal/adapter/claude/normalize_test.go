@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
@@ -419,11 +420,26 @@ func TestNormalizeContextCanceled(t *testing.T) {
 }
 
 func TestNormalizeTruncatesOversizedText(t *testing.T) {
-	long := strings.Repeat("x", 10*maxInlineText)
-	evs := mustNormalize(t, hookPayload("UserPromptSubmit", fmt.Sprintf(`"prompt":%q`, long)))
-	msg, _ := payloadField(evs[0], "message").(string)
-	if len(msg) != maxInlineText {
-		t.Errorf("message len = %d, want %d", len(msg), maxInlineText)
+	for _, tt := range []struct {
+		name string
+		text string
+	}{
+		{name: "ASCII", text: strings.Repeat("x", 10*maxInlineText)},
+		{name: "multibyte", text: strings.Repeat("🙂", 2*maxInlineText)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			evs := mustNormalize(t, hookPayload("UserPromptSubmit", fmt.Sprintf(`"prompt":%q`, tt.text)))
+			msg, _ := payloadField(evs[0], "message").(string)
+			if len(msg) > maxInlineText {
+				t.Errorf("message len = %d, want <= %d", len(msg), maxInlineText)
+			}
+			if !strings.HasSuffix(msg, truncationMarker) {
+				t.Errorf("message suffix = %q, want explicit truncation marker", msg[len(msg)-len(truncationMarker):])
+			}
+			if !utf8.ValidString(msg) {
+				t.Error("truncated message is not valid UTF-8")
+			}
+		})
 	}
 }
 

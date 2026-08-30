@@ -143,6 +143,11 @@ interface ReservationRow {
 
 const CANONICAL_HASH = /^[0-9a-f]{64}$/;
 
+// Hosted Basic provisions fixed 30-day accounting periods. The HTTP boundary
+// uses this horizon to reject corrupted reset metadata before emitting retry
+// policy; quota accounting itself remains conservative for existing rows.
+export const MAX_QUOTA_RETRY_AFTER_SECONDS = 30 * 24 * 60 * 60;
+
 const READ_POLICY_SQL = `
   /* quota:read-policy */
   SELECT workspace_id, plan_id, status,
@@ -234,6 +239,12 @@ function limitDenial(
         requested,
         remaining: Math.max(0, limit - used),
         ...(resetsAt === undefined ? {} : { resets_at: resetsAt }),
+        // A byte-identical retry can succeed after a monthly period rolls
+        // over. Per-batch requests must be made smaller and lifetime caps need
+        // an entitlement change, so retrying either unchanged would only
+        // create a hot loop. Keep this server-authoritative classification in
+        // the response instead of making clients infer it from an error code.
+        retryable: scope === "month",
       },
     },
   };
@@ -503,6 +514,7 @@ export async function prepareQuotaReservation(
             error: "hosted quota reservation was rejected",
             code: "quota_reservation_rejected",
             local_capture_unaffected: true,
+            detail: { retryable: false },
           },
         };
       }

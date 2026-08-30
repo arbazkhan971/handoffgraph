@@ -125,6 +125,12 @@ Matrix rows: 2, 3, 4, 9, 10, 11, 24, 37, 38.
   events yet, and we will not synthesize an acceptance signal we did not
   observe — that would put an INFERRED guess where a fact belongs.
 - Batch import API with backpressure semantics + ingest-side dedup.
+  **Local + hosted shipped (2026-08-31, row 4):** deterministic dedup and
+  atomic D1 quota reservation; Basic-safe 100-event/256-KiB requests;
+  structured 429s that distinguish monthly waiting from permanent unchanged
+  batch/lifetime retries; and UTF-8-safe marked inline truncation. Explicit
+  Go sync persists and replays the exact pending body/key without an automatic
+  retry or cursor advance.
 - **Acceptance gate:** golden fixtures for OTLP paths; re-import idempotency
   (duplicate batch = zero new events); deterministic rebuild hash stable across
   runs; p95 ingest < 5 ms maintained (BenchmarkAppend extension); every hot
@@ -181,7 +187,10 @@ Matrix rows: 5, 12, 13, 23(tiers), 25, 26, 27(local), 33, 34, 44(start), 50, 52.
   `.claude-plugin/plugin.json` (skill + stdio MCP declaration).
 - Batch import API with backpressure semantics + ingest-side dedup.
   **Backpressure shipped (2026-08-28):** 429 + Retry-After at the in-flight
-  cap; dedup already deterministic. Remaining: hosted batch endpoints (P3).
+  cap; dedup already deterministic. **Hosted tail shipped (2026-08-31):**
+  monthly 429s carry a bounded `Retry-After`; batch/lifetime 429s declare an
+  unchanged retry non-retryable; the explicit client preserves the exact
+  pending request and never auto-sleeps.
 - Public API v0 on Workers (read-only first) + pk/sk keys w/ edge-cached
   rejection; hosted MCP endpoint (remote MCP = v0.11 roadmap item pulled in).
   **Shipped (2026-08-28, rows 44 + 21):** `pk_`/`sk_` keys with KV
@@ -201,13 +210,17 @@ Matrix rows: 5, 12, 13, 23(tiers), 25, 26, 27(local), 33, 34, 44(start), 50, 52.
   rejects bad keys without D1 read (KV cache) — property-tested.
 
 ### P3 — Hosted platform, Cloudflare-only  (v0.8 hosted-beta + v0.9 team track)
-Matrix rows: 6, 7, 14, 15, 21, 27(hosted), 28, 29, 39, 40, 41, 43, 45, 46, 47, 49.
+Matrix rows: 4(hosted), 6, 7, 14, 15, 21, 27(hosted), 28, 29, 39, 40, 41, 43, 45, 46, 47, 49.
 - Workers ingest: OTLP + batch endpoints (P1 contract mirrored), Queues →
   normalization Workers → D1 read models + R2 raw artifacts + AE rollups.
   **Shipped (2026-08-28):** `POST /v1/otlp` in both wire flavors (see P1);
   AE mirroring via `recordIngestDataPoints`, fire-and-forget so a missing or
   throwing `ANALYTICS` binding can never affect an ingest response.
-  Remaining: batch-endpoint backpressure (row 4 tail).
+  **Batch endpoint completed (2026-08-31, row 4):** `POST /v1/event-batches`
+  enforces atomic tenant quotas and deterministic receipts; monthly limits
+  supply bounded retry guidance, while per-batch and lifetime limits reject
+  hot-loop retries. The explicit Go client retains its byte-identical pending
+  batch for the next operator invocation.
 - D1 schema: fingerprints, `ts_bucket`-indexed observations, scores, datasets,
   prompts, alert rules; file-list index for R2 artifact compaction (Workflows
   compact on count/age triggers — OpenObserve's 256 MB/600 s pattern).
@@ -365,18 +378,20 @@ re-scoped with a dated rationale edit in `competitor-analysis.md`. `doctor`
 reports parity-relevant capability state; `docs/parity-plan.md` statuses are
 updated in the same PR as the feature they declare.
 
-**Status — 2026-08-28.** That condition is now met for all of rows 1–54:
+**Status — 2026-08-31.** That condition is now met for all of rows 1–54:
 every row is either shipped behind a tested gate or carries a dated re-scope
 rationale (rows 32 and 54 demand-gated; gRPC on row 2 and presigned
 direct-to-R2 on row 53 substrate-gated; row 55 was always out of scope).
-Three *pending tails* remain inside otherwise-shipped rows and are stated
+Two *pending tails* remain inside otherwise-shipped rows and are stated
 plainly rather than hidden behind a checkmark:
 
-1. **Row 4** — hosted batch-endpoint backpressure (local 429/Retry-After ships).
-2. **Row 38** — edits accepted/rejected + commit/PR linkage, blocked on
+1. **Row 38** — edits accepted/rejected + commit/PR linkage, blocked on
    adapters emitting acceptance events; we will not synthesize them.
-3. **Row 48** — SCIM provisioning beyond the `Users` subset, and wiring the
+2. **Row 48** — SCIM provisioning beyond the `Users` subset, and wiring the
    (complete, fail-closed) masking engine into the ingest path.
+
+Row 4's hosted tail closed on 2026-08-31: retryability is explicit and the
+durable Go pending batch remains byte-identical until a validated receipt.
 
 Parity is not the launch gate. The `ROADMAP.md` v0.7 gates — canonical repo
 and module path, ~20 real sessions imported as acceptance evidence, first tag
