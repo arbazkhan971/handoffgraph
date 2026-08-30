@@ -369,12 +369,14 @@ func TestDetect(t *testing.T) {
 	root := t.TempDir()
 	sessions := filepath.Join(root, "sessions")
 	// Flat transcript (real Pi layout: <encoded-cwd>/<ts>_<uuid>.jsonl).
+	flatPath := filepath.Join(sessions, "--Users-x-repo--", "2026-08-20T11-59-43-125Z_01a01f0a-9815-726e-96d9-8d16cb2ce479.jsonl")
 	writeSessionFile(t,
-		filepath.Join(sessions, "--Users-x-repo--", "2026-08-20T11-59-43-125Z_01a01f0a-9815-726e-96d9-8d16cb2ce479.jsonl"),
+		flatPath,
 		"01a01f0a-9815-726e-96d9-8d16cb2ce479", "2026-08-20T11:59:43.125Z")
 	// Nested subagent transcript (.../<run>/session.jsonl).
+	nestedPath := filepath.Join(sessions, "--Users-x-repo--", "2026-08-21T19-07-42-151Z_01a02092-6cc7-7a51-844a-8919597a8ec6", "73c1255e-91f1-448a-9f33-c84980cfcbb2", "run-0", "session.jsonl")
 	writeSessionFile(t,
-		filepath.Join(sessions, "--Users-x-repo--", "2026-08-21T19-07-42-151Z_01a02092-6cc7-7a51-844a-8919597a8ec6", "73c1255e-91f1-448a-9f33-c84980cfcbb2", "run-0", "session.jsonl"),
+		nestedPath,
 		"01a025bd-c76a-7ce4-8558-2f6b2d2cb865", "2026-08-21T19:13:09.482Z")
 	// Skipped: first line is not a session record.
 	if err := os.WriteFile(filepath.Join(sessions, "--Users-x-repo--", "junk.jsonl"), []byte("{\"type\":\"message\"}\n"), 0o644); err != nil {
@@ -395,12 +397,16 @@ func TestDetect(t *testing.T) {
 	}
 	// Newest first, deterministic.
 	wantOrder := []string{"01a025bd-c76a-7ce4-8558-2f6b2d2cb865", "01a01f0a-9815-726e-96d9-8d16cb2ce479"}
+	wantPaths := []string{nestedPath, flatPath}
 	for i, ref := range refs {
 		if ref.Provider != protocol.ProviderPi {
 			t.Errorf("refs[%d].Provider = %q, want pi", i, ref.Provider)
 		}
 		if ref.NativeID != wantOrder[i] {
 			t.Errorf("refs[%d].NativeID = %q, want %q (newest first)", i, ref.NativeID, wantOrder[i])
+		}
+		if ref.Path != wantPaths[i] {
+			t.Errorf("refs[%d].Path = %q, want %q", i, ref.Path, wantPaths[i])
 		}
 	}
 	if !refs[0].LastEventAt.Equal(time.Date(2026, 8, 21, 19, 13, 9, 482000000, time.UTC)) {

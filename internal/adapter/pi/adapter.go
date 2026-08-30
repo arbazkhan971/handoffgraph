@@ -218,6 +218,7 @@ func detectSession(path string) (adapter.SessionRef, bool) {
 	return adapter.SessionRef{
 		Provider:    protocol.ProviderPi,
 		NativeID:    head.ID,
+		Path:        path,
 		LastEventAt: head.Timestamp,
 	}, true
 }

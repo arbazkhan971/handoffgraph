@@ -1,5 +1,9 @@
 # HandoffGraph completion sprint
 
+> Historical sprint log. Its dated counts and deployment notes describe the
+> 2026-08-24 through 2026-08-28 work as it landed; use `HANDOVER.md` and
+> `ROADMAP.md` for the current release and hosted-publication gates.
+
 Last updated: 2026-08-24 01:10 IST
 
 ## Objective
