@@ -53,6 +53,7 @@ type detectRow struct {
 	Path            string `json:"path"`
 	StartedAt       string `json:"started_at"`
 	EndedAt         string `json:"ended_at"`
+	LastEventAt     string `json:"last_event_at"`
 	Model           string `json:"model"`
 }
 
@@ -67,11 +68,12 @@ func TestSessionsDetectText(t *testing.T) {
 	}
 
 	// Newest first: sess_detect_b (11:30) before sess_detect_a (09:00),
-	// tab-separated as agent \t id \t path \t started \t model. Both
-	// fixtures declare a model, so none of the "-" placeholders appear.
+	// tab-separated as agent \t id \t path \t started \t last-event \t model.
+	// Codex does not expose last-event time through file detection, so that
+	// column is the explicit "-" placeholder.
 	want := strings.Join([]string{
-		"codex\tsess_detect_b\t" + pathB + "\t2026-08-20T11:30:00Z\tm2",
-		"codex\tsess_detect_a\t" + pathA + "\t2026-08-20T09:00:00Z\tm1",
+		"codex\tsess_detect_b\t" + pathB + "\t2026-08-20T11:30:00Z\t-\tm2",
+		"codex\tsess_detect_a\t" + pathA + "\t2026-08-20T09:00:00Z\t-\tm1",
 	}, "\n") + "\n"
 	if out != want {
 		t.Errorf("stdout = %q, want %q", out, want)
@@ -105,9 +107,9 @@ func TestSessionsDetectJSON(t *testing.T) {
 	// Newest first.
 	want := []detectRow{
 		{Agent: "codex", NativeSessionID: "sess_detect_b", Path: pathB,
-			StartedAt: "2026-08-20T11:30:00Z", EndedAt: "", Model: "m2"},
+			StartedAt: "2026-08-20T11:30:00Z", EndedAt: "", LastEventAt: "", Model: "m2"},
 		{Agent: "codex", NativeSessionID: "sess_detect_a", Path: pathA,
-			StartedAt: "2026-08-20T09:00:00Z", EndedAt: "", Model: "m1"},
+			StartedAt: "2026-08-20T09:00:00Z", EndedAt: "", LastEventAt: "", Model: "m1"},
 	}
 	for i, w := range want {
 		if got := rows[i]; got != w {
@@ -127,11 +129,87 @@ func TestSessionsDetectJSON(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
 	for i, raw := range raws {
-		for _, field := range []string{"agent", "native_session_id", "path", "started_at", "ended_at", "model"} {
+		for _, field := range []string{"agent", "native_session_id", "path", "started_at", "ended_at", "last_event_at", "model"} {
 			if _, ok := raw[field]; !ok {
 				t.Errorf("rows[%d] is missing JSON field %q", i, field)
 			}
 		}
+	}
+}
+
+func TestSessionsDetectClaudeUsesProviderRootAndLastEventAt(t *testing.T) {
+	home := t.TempDir()
+	projects := filepath.Join(home, ".claude", "projects", "repo")
+	if err := os.MkdirAll(projects, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	older := filepath.Join(projects, "claude-old.jsonl")
+	newer := filepath.Join(projects, "claude-new.jsonl")
+	for _, path := range []string{older, newer} {
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldTime := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	newTime := time.Date(2026, 8, 20, 11, 30, 0, 0, time.UTC)
+	if err := os.Chtimes(older, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	app := newRegisteredApp(t)
+
+	out, _, err := runRegisteredApp(app, "sessions", "--detect", "--agent", "claude", "--json")
+	if err != nil {
+		t.Fatalf("sessions --detect --agent claude: %v", err)
+	}
+	var rows []detectRow
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows=%+v, want two provider-root transcripts", rows)
+	}
+	if rows[0].NativeSessionID != "claude-new" || rows[0].Path != newer || rows[0].LastEventAt != "2026-08-20T11:30:00Z" {
+		t.Fatalf("newest claude row=%+v", rows[0])
+	}
+	if rows[0].StartedAt != "" {
+		t.Fatalf("claude started_at fabricated: %+v", rows[0])
+	}
+}
+
+func TestSessionsDetectPiUsesProviderRootAndLastEventAt(t *testing.T) {
+	home := t.TempDir()
+	sessions := filepath.Join(home, ".pi", "agent", "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, line := range map[string]string{
+		"old.jsonl": `{"type":"session","id":"pi-old","timestamp":"2026-08-20T09:00:00Z"}`,
+		"new.jsonl": `{"type":"session","id":"pi-new","timestamp":"2026-08-20T11:30:00Z"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(sessions, name), []byte(line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", home)
+	app := newRegisteredApp(t)
+
+	out, _, err := runRegisteredApp(app, "sessions", "--detect", "--agent", "pi", "--json")
+	if err != nil {
+		t.Fatalf("sessions --detect --agent pi: %v", err)
+	}
+	var rows []detectRow
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].NativeSessionID != "pi-new" || rows[0].LastEventAt != "2026-08-20T11:30:00Z" {
+		t.Fatalf("pi rows=%+v", rows)
+	}
+	if rows[0].StartedAt != "" {
+		t.Fatalf("pi started_at fabricated: %+v", rows[0])
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -157,6 +158,36 @@ redact_patterns = ["repo"]
 	}
 	if len(cfg.RedactPatterns) != 1 || cfg.RedactPatterns[0] != "repo" {
 		t.Errorf("RedactPatterns = %v, want [repo]", cfg.RedactPatterns)
+	}
+}
+
+func TestLoadUserIgnoresRepositoryRedirects(t *testing.T) {
+	dataDir := t.TempDir()
+	repo := t.TempDir()
+	redirected := filepath.Join(repo, "attacker-controlled")
+	t.Setenv("HFG_DATA_DIR", dataDir)
+	if err := os.WriteFile(filepath.Join(repo, RepoConfigName), []byte("data_dir = "+strconv.Quote(redirected)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+
+	cfg, err := LoadUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DataDir != dataDir || cfg.DBPath != filepath.Join(dataDir, "handoffgraph.db") {
+		t.Fatalf("user config redirected by repository: %+v", cfg)
+	}
+	if _, err := os.Stat(redirected); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("repository redirect path was touched: %v", err)
 	}
 }
 

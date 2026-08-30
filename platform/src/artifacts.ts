@@ -25,6 +25,7 @@ import { monotonicFactory } from "ulid";
 
 import { authenticate, deviceLookup, hasCapability, sha256Hex, type DeviceBinding } from "./auth";
 import type { D1DatabaseLike } from "./db";
+import { deletionLedgerBinding, deletionLedgerRequired } from "./deletion_ledger";
 import {
   WORKSTREAM_ID_PATTERN,
   canonicalJsonStringify,
@@ -923,7 +924,10 @@ async function authorizeDevice(
   request: Request,
   env: ArtifactsEnv,
 ): Promise<{ device: DeviceBinding } | { response: Response }> {
-  const auth = await authenticate(request.headers.get("authorization"), deviceLookup(env.DB));
+  const auth = await authenticate(
+    request.headers.get("authorization"),
+    deviceLookup(env.DB, deletionLedgerBinding(env), deletionLedgerRequired(env)),
+  );
   if (!auth.ok) return { response: json(auth.status, { error: auth.error }) };
   const denial = scopeDenial({
     tokenWorkspaceId: auth.device.workspaceId,

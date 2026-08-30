@@ -456,6 +456,14 @@ type StoredEvent struct {
 	Raw             json.RawMessage
 }
 
+// SequencedEvent pairs an immutable event with the SQLite append sequence
+// assigned when it landed. The sequence is a local sync cursor only; it is
+// never copied into or confused with the adapter-provided Event.Sequence.
+type SequencedEvent struct {
+	Seq   int64
+	Event *protocol.Event
+}
+
 // AppendEvent inserts an event if its event_id has not been seen before.
 // It returns (false, nil) when the event is a duplicate. Appends are
 // idempotent and preserve out-of-order input by relying on occurred_at for
@@ -529,6 +537,48 @@ FROM events ORDER BY occurred_at, seq`)
 			return nil, err
 		}
 		out = append(out, &ev)
+	}
+	return out, rows.Err()
+}
+
+// ListEventsAfterSeq returns at most limit events in append order after the
+// exclusive cursor and through the inclusive high-water mark. Hosted sync
+// captures the high-water mark once per explicit invocation, so concurrent
+// local capture remains local until the next explicit sync rather than
+// silently widening what the user approved in the current invocation.
+func (d *DB) ListEventsAfterSeq(ctx context.Context, afterSeq, throughSeq int64, limit int) ([]SequencedEvent, error) {
+	if afterSeq < 0 {
+		return nil, fmt.Errorf("after sequence must be non-negative")
+	}
+	if throughSeq < afterSeq {
+		return nil, fmt.Errorf("through sequence %d is before cursor %d", throughSeq, afterSeq)
+	}
+	if limit < 1 || limit > 500 {
+		return nil, fmt.Errorf("event page limit must be between 1 and 500")
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+SELECT seq, raw_json
+FROM events
+WHERE seq > ? AND seq <= ?
+ORDER BY seq
+LIMIT ?`, afterSeq, throughSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]SequencedEvent, 0, limit)
+	for rows.Next() {
+		var seq int64
+		var raw string
+		if err := rows.Scan(&seq, &raw); err != nil {
+			return nil, err
+		}
+		var ev protocol.Event
+		if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+			return nil, fmt.Errorf("decode event at local sequence %d: %w", seq, err)
+		}
+		out = append(out, SequencedEvent{Seq: seq, Event: &ev})
 	}
 	return out, rows.Err()
 }

@@ -11,7 +11,14 @@ name = "handoffgraph-api"
 main = "src/index.ts"
 compatibility_date = "2026-08-23"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = true
+workers_dev = false
+preview_urls = false
+
+# Production custom domain. The staging environment overrides this with an
+# empty routes array and remains isolated on its stable workers.dev hostname.
+routes = [
+  { pattern = "api.handoffgraph.dev", custom_domain = true }
+]
 
 # Public, fixed auth routing values. WorkOS credentials are intentionally not
 # checked in: set WORKOS_CLIENT_ID and WORKOS_API_KEY with `wrangler secret
@@ -21,6 +28,10 @@ workers_dev = true
 APP_ORIGIN = "https://api.handoffgraph.dev"
 LANDING_ORIGIN = "https://handoffgraph.dev"
 WORKOS_REDIRECT_URI = "https://api.handoffgraph.dev/v1/auth/callback"
+# The public beta exposes only the documented Hosted Basic account, device,
+# ingestion, and workstream surface. Ahead-of-gate parity modules stay in the
+# bundle for local development but return 404 in this deployment.
+HOSTED_SURFACE = "basic"
 
 # Enterprise tier (parity rows 48, 51 — SSO, SCIM, data masking, audit export,
 # and the in-product assistant). Deliberately ABSENT rather than set to
@@ -41,27 +52,20 @@ WORKOS_REDIRECT_URI = "https://api.handoffgraph.dev/v1/auth/callback"
 # The assistant additionally needs the gateway configured, since it calls the
 # customer's own model through it: see GATEWAY_SEALING_KEY below.
 
-# Persist content-free invocation logs and a sampled trace stream. Worker code
-# never logs request headers, tokens, bodies, SQL binds, or captured events.
+# Persist only the Worker's explicitly content-free custom logs. Cloudflare's
+# automatic invocation logs and traces include the triggering request URL;
+# AuthKit callback URLs carry a short-lived authorization code and state in the
+# query string, so both automatic streams stay disabled for the beta.
 [observability]
 enabled = true
 
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
-invocation_logs = true
+invocation_logs = false
 
 [observability.traces]
-enabled = true
-head_sampling_rate = 0.01
-
-# Custom domain serving (Cloudflare zone required — see ../deploy/README.md).
-# Once the handoffgraph.dev zone exists in this account, uncomment to serve
-# the API directly on api.handoffgraph.dev:
-#
-# routes = [
-#   { pattern = "api.handoffgraph.dev", custom_domain = true }
-# ]
+enabled = false
 
 # D1 database: workspace-scoped relational state (see migrations/).
 [[d1_databases]]
@@ -70,7 +74,12 @@ database_name = "handoffgraph"
 database_id = "e51cf2d3-d955-4308-8fff-e6405110b1bf"
 migrations_dir = "migrations"
 
-# R2 bucket for content-addressed objects. Four prefixes live here:
+# R2 bucket retained for exact-prefix privacy cleanup. Hosted Basic has no
+# object-producing HTTP, queue, or scheduled path; the writers described below
+# are reachable only on a separately reviewed HOSTED_SURFACE="advanced"
+# deployment. Keeping the environment-specific bucket bound lets deletion fail
+# closed and sweep any pre-existing tenant objects during an upgrade/cutover.
+# Four prefixes may live here on the advanced surface:
 #   artifacts/<workspace_id>/   compacted JSONL tiers of the event spine
 #   exports/<workspace_id>/     user-requested NDJSON extracts
 #   attachments/<workspace_id>/ multimodal uploads (parity row 53); keyed by
@@ -81,17 +90,14 @@ migrations_dir = "migrations"
 binding = "BODIES"
 bucket_name = "handoffgraph-bodies"
 
-# Analytics Engine (parity row 39 substrate): recordIngestDataPoints
-# (src/analytics.ts) mirrors a sampled, lossy rollup of each accepted ingest
-# batch here for AE-native dashboards. Deterministic totals are always read
-# from D1 (GET /v1/analytics/series|summary, POST /v1/analytics/funnel) —
-# this dataset is never the source of truth and ingest never depends on it
-# (fire-and-forget; absence or failure of this binding is a silent no-op).
-# No provisioning step: unlike D1/R2/Queues, an Analytics Engine dataset is
-# created automatically on first write.
-[[analytics_engine_datasets]]
-binding = "ANALYTICS"
-dataset = "handoffgraph_ingest"
+# Analytics Engine (parity row 39 substrate) is intentionally NOT bound in
+# Hosted Basic. Cloudflare retains Analytics Engine rows for three months and
+# exposes no per-workspace deletion primitive, while HandoffGraph promises a
+# tenant-scoped account purge. Deterministic analytics remain fully available
+# from D1 (GET /v1/analytics/series|summary, POST /v1/analytics/funnel), and
+# recordIngestDataPoints is already a silent no-op without this optional
+# binding. Do not enable the mirror until its identifiers and retention policy
+# satisfy the account-deletion contract.
 
 # Outbound webhooks (parity row 47): a cron sweep reads new events past each
 # workspace's cursor and enqueues one delivery message per (endpoint, event)
@@ -105,21 +111,9 @@ dataset = "handoffgraph_ingest"
 # way as the WorkOS credentials above (`wrangler secret put
 # WEBHOOK_SEALING_KEY`, or an ignored .dev.vars entry for local development).
 # Both webhook registration and delivery fail closed while it is unset.
-[[queues.producers]]
-binding = "WEBHOOK_QUEUE"
-queue = "handoffgraph-webhooks"
-
-[[queues.consumers]]
-queue = "handoffgraph-webhooks"
-# webhooksQueue (src/webhooks.ts) rethrows the first delivery failure it
-# hits in a batch rather than ack()/retry()-ing messages individually, so a
-# larger batch would let one bad endpoint force a retry of already-delivered
-# batch-mates too. max_batch_size = 1 keeps each retry scoped to exactly the
-# one message that actually failed.
-max_batch_size = 1
-max_batch_timeout = 5
-max_retries = 3
-dead_letter_queue = "handoffgraph-webhooks-dlq"
+# The queues are provisioned for the later advanced surface but deliberately
+# not bound to Hosted Basic. This prevents webhook payload metadata from
+# entering a non-tenant-selectively-purgeable queue during the account beta.
 
 # Dashboards-as-config (parity rows 39, 40) needs no new binding today: config
 # documents and share-token hashes live in D1 (migration 0008) and the export
@@ -150,9 +144,8 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 #
 #   npx wrangler kv namespace create GATEWAY_KV
 #
-# [[kv_namespaces]]
-# binding = "GATEWAY_KV"
-# id = "<paste the id printed by `wrangler kv namespace create`>"
+# The provisioned namespace is deliberately not bound to Hosted Basic. Enable
+# it together with HOSTED_SURFACE="advanced" only after that release gate.
 #
 # Upstream provider credentials are sealed at rest under GATEWAY_SEALING_KEY,
 # set the same way as the WorkOS and webhook secrets above (`wrangler secret
@@ -172,9 +165,8 @@ dead_letter_queue = "handoffgraph-webhooks-dlq"
 #   npx wrangler kv namespace create handoffgraph-apikeys
 #     -> replace id below with the printed id
 #
-# [[kv_namespaces]]
-# binding = "APIKEY_KV"
-# id = "REPLACE_WITH_KV_NAMESPACE_ID"
+# The provisioned namespace is deliberately not bound to Hosted Basic. Device
+# bearer authentication uses D1 and does not depend on this public-API cache.
 
 # Agent simulations (parity row 31): a user-simulator + judge loop at
 # /v1/simulations, recorded as provenance-labelled events on the spine
@@ -350,3 +342,40 @@ crons = ["*/5 * * * *"]
 # [[migrations]]
 # tag = "v2"
 # new_sqlite_classes = ["AnnotationQueueRoom"]
+
+# ---------------------------------------------------------------------------
+# Isolated staging environment.
+#
+# Staging deliberately stays on workers.dev and has no custom-domain routes.
+# Every bound durable resource is separate from production, so acceptance
+# traffic cannot contaminate production state. Optional KV/queue/Analytics
+# resources are deliberately unbound from Hosted Basic.
+# Secrets are environment-specific and must be installed with
+# `wrangler secret put <NAME> --env staging`; none are stored here.
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "handoffgraph-api-staging"
+workers_dev = true
+preview_urls = false
+routes = []
+
+[env.staging.vars]
+APP_ORIGIN = "https://handoffgraph-api-staging.arbaz-khan.workers.dev"
+LANDING_ORIGIN = "https://handoffgraph-api-staging.arbaz-khan.workers.dev"
+WORKOS_REDIRECT_URI = "https://handoffgraph-api-staging.arbaz-khan.workers.dev/v1/auth/callback"
+HOSTED_SURFACE = "basic"
+
+[env.staging.triggers]
+# Match production maintenance cadence so staging can prove delayed account
+# deletion end to end. Object-producing maintenance is advanced-fenced.
+crons = ["*/5 * * * *"]
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "handoffgraph-staging"
+database_id = "5116cde4-ae30-4eec-b285-e473c918e94b"
+migrations_dir = "migrations"
+
+[[env.staging.r2_buckets]]
+binding = "BODIES"
+bucket_name = "handoffgraph-bodies-staging"

@@ -117,6 +117,7 @@ func Register(app *cli.App) {
 	// to test in isolation without leaving it unreachable from the CLI.
 	RegisterCodexCmd(app)
 	RegisterClaudeCmd(app)
+	RegisterHookCmd(app)
 	RegisterPiCmd(app)
 	RegisterMCPCmd(app)
 	RegisterDetectionCmd(app)
@@ -130,6 +131,7 @@ func Register(app *cli.App) {
 	RegisterDatasetCmd(app)
 	RegisterPromptCmd(app)
 	RegisterResetCmd(app)
+	RegisterSyncCmd(app)
 }
 
 // resolveAdapter looks up the named adapter in the default registry.
@@ -331,7 +333,7 @@ func firstNonEmpty(a, b string) string {
 
 func staleDetail(stale bool) string {
 	if stale {
-		return "derived observations table is behind the event log; run to rebuild it"
+		return "derived observations table is behind the event log; run `handoffgraph index rebuild`"
 	}
 	return "up to date with the event log"
 }
@@ -647,25 +649,39 @@ func fixtureCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 func installCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 	name := stringFlag(fs, "agent")
 	dryRun := boolFlag(fs, "dry-run")
-	_ = stringFlag(fs, "hook-command") // reserved: per-agent commands accept it natively
+	hookCommand := stringFlag(fs, "hook-command")
 	configDir := stringFlag(fs, "config-dir")
 
 	a, err := resolveAdapter(name)
 	if err != nil {
 		return err
 	}
-	// Route the config-dir override to adapters that support it without
-	// widening the shared Adapter interface (per-agent commands accept it
-	// natively; this keeps the generic path useful for tests).
-	if configDir != "" {
-		switch v := a.(type) {
-		case *codex.Codex:
-			v.ConfigDir = configDir
+	// The generic entrypoint must be behaviorally equivalent to each
+	// provider-specific installer. In particular, dry-run still executes all
+	// fail-closed conflict checks, and every advertised override is routed to
+	// the selected provider instead of being silently ignored.
+	switch v := a.(type) {
+	case *codex.Codex:
+		v.ConfigDir = configDir
+		v.HookCommand = hookCommand
+		v.DryRun = dryRun
+	case *claude.Claude:
+		v.ConfigDir = configDir
+		v.HookCommand = hookCommand
+		v.DryRun = dryRun
+	case *pi.Pi:
+		if hookCommand != "" {
+			return fmt.Errorf("install: agent pi does not support --hook-command")
 		}
-	}
-	if dryRun {
-		fmt.Fprintf(c.Stdout, "install: agent %s ok (dry run — no changes written)\n", name)
-		return nil
+		v.AgentDir = configDir
+		if dryRun {
+			dir := v.ResolvedAgentDir()
+			if err := v.InstallExtension(ctx, dir, pi.InstallOptions{DryRun: true}); err != nil {
+				return fmt.Errorf("install: pi: %w", err)
+			}
+			fmt.Fprintln(c.Stdout, "install: agent pi ok (dry run — no changes written)")
+			return nil
+		}
 	}
 	err = a.Install(ctx, adapter.ScopeUser)
 	switch {
@@ -675,6 +691,10 @@ func installCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 		return fmt.Errorf("install: %w", err)
 	case err != nil:
 		return fmt.Errorf("install: %s: %w", name, err)
+	}
+	if dryRun {
+		fmt.Fprintf(c.Stdout, "install: agent %s ok (dry run — no changes written)\n", name)
+		return nil
 	}
 
 	trailer := fmt.Sprintf(" (config: %s)", configDir)
@@ -694,6 +714,7 @@ type detectSessionOut struct {
 	Path            string `json:"path"`
 	StartedAt       string `json:"started_at"`
 	EndedAt         string `json:"ended_at"`
+	LastEventAt     string `json:"last_event_at"`
 	Model           string `json:"model"`
 }
 
@@ -889,21 +910,33 @@ func sessionsDetect(ctx context.Context, c *cli.Context, agentFilter string, asJ
 		}
 	}
 
-	refs, err := a.Detect(ctx, ".")
+	refs, err := a.Detect(ctx, "")
 	if errors.Is(err, adapter.ErrNotDetected) {
 		refs = nil // nothing on disk: an empty listing, not an error
 	} else if err != nil {
 		return fmt.Errorf("sessions: %w", err)
 	}
 
-	// Newest first; Path breaks ties deterministically (same ordering rule
-	// the adapters themselves apply). Sorted before formatting so both text
-	// and JSON output stay deterministic.
+	// Newest first using the timestamp the provider actually supplies:
+	// Codex reports StartedAt, while Claude and Pi report LastEventAt. Path
+	// and native id break ties deterministically. Sort before formatting so
+	// both text and JSON output stay deterministic.
 	sort.Slice(refs, func(i, j int) bool {
-		if !refs[i].StartedAt.Equal(refs[j].StartedAt) {
-			return refs[i].StartedAt.After(refs[j].StartedAt)
+		iTime := refs[i].StartedAt
+		if iTime.IsZero() {
+			iTime = refs[i].LastEventAt
 		}
-		return refs[i].Path < refs[j].Path
+		jTime := refs[j].StartedAt
+		if jTime.IsZero() {
+			jTime = refs[j].LastEventAt
+		}
+		if !iTime.Equal(jTime) {
+			return iTime.After(jTime)
+		}
+		if refs[i].Path != refs[j].Path {
+			return refs[i].Path < refs[j].Path
+		}
+		return refs[i].NativeID < refs[j].NativeID
 	})
 
 	out := make([]detectSessionOut, 0, len(refs))
@@ -914,6 +947,7 @@ func sessionsDetect(ctx context.Context, c *cli.Context, agentFilter string, asJ
 			Path:            ref.Path,
 			StartedAt:       formatRFC3339OrEmpty(ref.StartedAt),
 			EndedAt:         formatRFC3339OrEmpty(ref.EndedAt),
+			LastEventAt:     formatRFC3339OrEmpty(ref.LastEventAt),
 			Model:           ref.Model,
 		})
 	}
@@ -932,7 +966,11 @@ func sessionsDetect(ctx context.Context, c *cli.Context, agentFilter string, asJ
 		if model == "" {
 			model = "-"
 		}
-		fmt.Fprintf(c.Stdout, "%s\t%s\t%s\t%s\t%s\n", s.Agent, s.NativeSessionID, s.Path, started, model)
+		last := s.LastEventAt
+		if last == "" {
+			last = "-"
+		}
+		fmt.Fprintf(c.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Agent, s.NativeSessionID, s.Path, started, last, model)
 	}
 	return nil
 }

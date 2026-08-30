@@ -810,6 +810,7 @@ describe("alert channel dispatch", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(slackChannel.webhook_url);
     expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.redirect).toBe("manual");
     const body = JSON.parse(calls[0].init.body as string) as Record<string, unknown>;
     expect(Object.keys(body)).toEqual(["text"]);
     expect(body.text).toContain("Error rate too high");

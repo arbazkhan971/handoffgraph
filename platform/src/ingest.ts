@@ -21,6 +21,9 @@ export const MAX_PROVENANCE_BYTES = 8;
 export const MAX_CONTENT_HASH_BYTES = 71; // "sha256:" + 64 lowercase hex digits
 export const MAX_WORKSTREAM_TITLE_BYTES = 200;
 export const MAX_TIMESTAMP_BYTES = 35; // RFC3339Nano with a numeric offset
+export const REDACTION_VERSION = 1;
+export const MAX_REDACTION_FIELDS = 256;
+export const MAX_REDACTION_FIELD_BYTES = 256;
 
 export const DEFAULT_PAGE_LIMIT = 50;
 export const MAX_PAGE_LIMIT = 100;
@@ -33,6 +36,7 @@ export const CONTENT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const RFC3339_PATTERN =
   /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:[Zz]|[+-]\d{2}:\d{2})$/;
 const PROVENANCE_VALUES = new Set(["OBSERVED", "DECLARED", "INFERRED"]);
+const SUCCESSFUL_REDACTION_STATUSES = new Set(["clean", "redacted"]);
 const UTF8_ENCODER = new TextEncoder();
 const DEFAULT_WORKSTREAM_TITLE = "Untitled workstream";
 
@@ -195,6 +199,7 @@ function validateJsonValue(root: unknown): string | null {
 export function validateEventBatch(
   value: unknown,
   tokenWorkspaceId: string,
+  options: { requireRedactionAttestation?: boolean } = {},
 ): Validation<EventBatchEnvelope> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return invalid(400, "envelope must be a JSON object");
@@ -220,8 +225,9 @@ export function validateEventBatch(
     return invalid(413, `batch exceeds ${MAX_EVENTS_PER_BATCH} events`);
   }
   const eventIDs = new Set<string>();
+  const requireRedactionAttestation = options.requireRedactionAttestation !== false;
   for (let i = 0; i < events.length; i++) {
-    const error = validateEvent(events[i], i);
+    const error = validateEvent(events[i], i, requireRedactionAttestation);
     if (error !== null) return invalid(400, error);
     const eventID = (events[i] as Record<string, unknown>).event_id as string;
     if (eventIDs.has(eventID)) {
@@ -238,7 +244,11 @@ export function validateEventBatch(
 }
 
 /** Per-event minimum validation; everything else is preserved verbatim. */
-function validateEvent(value: unknown, index: number): string | null {
+function validateEvent(
+  value: unknown,
+  index: number,
+  requireRedactionAttestation: boolean,
+): string | null {
   const at = `events[${index}]`;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return `${at} must be an object`;
@@ -332,13 +342,35 @@ function validateEvent(value: unknown, index: number): string | null {
       return `${at}.sequence must be a non-negative safe integer`;
     }
   }
-  if (event.redaction !== undefined) {
+  if (requireRedactionAttestation || event.redaction !== undefined) {
     if (event.redaction === null || typeof event.redaction !== "object" || Array.isArray(event.redaction)) {
-      return `${at}.redaction must be an object`;
+      return `${at}.redaction must be an object attesting successful client redaction`;
     }
-    const status = (event.redaction as Record<string, unknown>).status;
+    const redaction = event.redaction as Record<string, unknown>;
+    if (redaction.version !== REDACTION_VERSION) {
+      return `${at}.redaction.version must be ${REDACTION_VERSION}`;
+    }
+    const status = redaction.status;
     if (status === "failed" || status === "REDACTION_FAILED") {
       return `${at}.redaction status forbids sync`;
+    }
+    if (typeof status !== "string" || !SUCCESSFUL_REDACTION_STATUSES.has(status)) {
+      return `${at}.redaction.status must be clean or redacted`;
+    }
+    const fieldsRemoved = redaction.fields_removed;
+    if (fieldsRemoved !== undefined) {
+      if (!Array.isArray(fieldsRemoved) || fieldsRemoved.length > MAX_REDACTION_FIELDS) {
+        return `${at}.redaction.fields_removed must be an array of at most ${MAX_REDACTION_FIELDS} strings`;
+      }
+      for (const field of fieldsRemoved) {
+        if (
+          typeof field !== "string" ||
+          field.length === 0 ||
+          exceedsUtf8Bytes(field, MAX_REDACTION_FIELD_BYTES)
+        ) {
+          return `${at}.redaction.fields_removed entries must be non-empty strings of at most ${MAX_REDACTION_FIELD_BYTES} UTF-8 bytes`;
+        }
+      }
     }
   }
   return null;

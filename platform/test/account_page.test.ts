@@ -40,11 +40,41 @@ describe("renderAccountPage", () => {
     expect(html).toContain("Uploaded lifetime");
     expect(html).toContain("Device-token issuances");
     expect(html).toContain("10 device-token issuances over the account lifetime");
+    expect(html).toContain("handoffgraph sync --preview");
+    expect(html).toContain("handoffgraph sync --accept-redaction");
     expect(html).not.toMatch(/repositor/i);
     expect(html).toContain('<form class="device-form" id="device-form">');
     expect(html).toContain('<label for="device-label">Device label</label>');
     expect(html).toContain('id="device-status" role="status" aria-live="polite"');
     expect(html).toContain('id="sign-out" type="button"');
+    expect(html).toContain('aria-labelledby="deletion-heading"');
+    expect(html).toContain('<form class="device-form danger-form" id="deletion-form">');
+    expect(html).toContain('id="deletion-status" role="status" aria-live="polite"');
+    expect(html).toContain("or refund the limited-beta account issuance");
+    expect(html).toContain('<body data-hosted-surface="advanced">');
+  });
+
+  it("omits advanced team controls and guards team requests in Hosted Basic mode", () => {
+    const html = renderAccountPage({
+      hostedBasic: true,
+      workspaceId: "wsp_basic",
+      members: [{ userId: "usr_hidden", email: "hidden@example.test", role: "owner" }],
+      invites: [{ id: "inv_hidden", email: "invite@example.test", role: "member" }],
+      workspaces: [{ workspaceId: "wsp_hidden", name: "Hidden team" }],
+    });
+    const script = inlineBlock(html, "script");
+
+    expect(html).toContain('<body data-hosted-surface="basic">');
+    expect(html).not.toContain('id="team-title"');
+    expect(html).not.toContain('id="member-list"');
+    expect(html).not.toContain('id="invite-form"');
+    expect(html).not.toContain('id="invite-list"');
+    expect(html).not.toContain('id="workspace-list"');
+    expect(html).not.toContain("hidden@example.test");
+    expect(html).not.toContain("invite@example.test");
+    expect(html).not.toContain("Hidden team");
+    expect(script).toContain('var hostedBasic = document.body.dataset.hostedSurface === "basic"');
+    expect(script).toContain("if (!hostedBasic) {");
   });
 
   it("escapes every server-rendered account, usage, device, and checklist value", () => {
@@ -94,8 +124,20 @@ describe("renderAccountPage", () => {
     expect(script).toContain('credentials: "same-origin"');
     expect(script).toContain('apiFetch("/v1/me")');
     expect(script).toContain('apiFetch("/v1/devices")');
+    expect(script).toContain('apiFetch("/v1/devices/" + encodeURIComponent(deviceID) + "/revoke"');
+    expect(script).toContain('deviceList.addEventListener("click"');
+    expect(script).toContain("trigger.dataset.deviceId");
+    expect(script).toContain('window.confirm(\'Revoke "\' + deviceLabel');
+    expect(script).toContain('Promise.allSettled([refreshDevices(), refreshAccount()])');
     expect(script).toContain('apiFetch("/v1/auth/signout", { method: "POST" })');
-    expect(script).toContain('window.location.assign("/account")');
+    expect(script).toContain('logoutURL.origin !== "https://api.workos.com"');
+    expect(script).toContain('logoutURL.pathname !== "/user_management/sessions/logout"');
+    expect(script).toContain("window.top.location.assign(logoutURL.toString())");
+    expect(script).toContain('apiFetch("/v1/account"');
+    expect(script).toContain('method: "DELETE"');
+    expect(script).toContain('window.confirm("Permanently delete this hosted account and workspace?")');
+    expect(script).toContain('window.location.assign("/account?deletion=requested")');
+    expect(script).not.toContain('window.location.assign("/account")');
     expect(script).toContain("body.device && body.device.token");
     expect(script).toContain('window.addEventListener("pagehide"');
     expect(script).toContain('output.textContent = ""');
@@ -139,13 +181,23 @@ describe("renderAccountPage", () => {
         { label: "Requests", used: -10, limit: -2, unit: "calls" },
         { label: "Events", used: 12, limit: 5, unit: "events" },
       ],
-      devices: [{ id: "dev_01", label: "Laptop", status: "active" }],
+      devices: [
+        { id: "dev_01", label: "Laptop", status: "active" },
+        { id: "dev_02", label: "Retired workstation", status: "revoked" },
+      ],
     });
 
     expect(html).toContain('<progress max="1" value="0"');
     expect(html).toContain('<progress max="5" value="5"');
     expect(html).toContain("dev_01");
     expect(html).toContain("Laptop");
+    expect(html).toContain('data-device-id="dev_01"');
+    expect(html).toContain('data-device-label="Laptop"');
+    expect(html).toContain('aria-label="Revoke Laptop"');
+    expect(html).toContain("dev_02");
+    expect(html).toContain("Retired workstation");
+    expect(html.match(/data-device-id=/g)).toHaveLength(1);
+    expect(html.match(/>Revoke<\/button>/g)).toHaveLength(1);
     expect(html).toContain('<code id="device-token"></code>');
     expect(html).not.toContain('value="dev_');
   });
@@ -233,6 +285,20 @@ describe("renderSignedOutPage", () => {
 
     expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;&amp;&#39;");
     expect(html).not.toContain('<img src=x onerror="alert(1)">');
+  });
+
+  it("renders only actions the effective hosted switches can serve", () => {
+    const unavailable = renderSignedOutPage({ authAvailable: false, signupAvailable: false });
+    expect(unavailable).not.toContain("intent=signup");
+    expect(unavailable).not.toContain("intent=signin");
+    expect(unavailable).toContain("New accounts closed");
+    expect(unavailable).toContain("Hosted identity unavailable");
+    expect(unavailable).toContain("Hosted identity is not configured on this environment yet.");
+
+    const signinOnly = renderSignedOutPage({ authAvailable: true, signupAvailable: false });
+    expect(signinOnly).not.toContain("intent=signup");
+    expect(signinOnly).toContain("intent=signin");
+    expect(signinOnly).toContain("Existing beta accounts can still sign in.");
   });
 
   it("pins its inline style and has no external dependencies", () => {

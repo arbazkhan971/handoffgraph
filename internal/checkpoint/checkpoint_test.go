@@ -189,7 +189,7 @@ func TestBuildPreservesOrdinaryRemoteAndEvidenceLinksDecisions(t *testing.T) {
 		Payload:       json.RawMessage(`{"decision":"keep the append-only event spine"}`),
 	}
 	events = append(events, decision)
-	remote := "https://github.com/arbazkhan971/handoffgraph.git"
+	remote := "https://github.com/handoffgraph/handoffgraph.git"
 	cp, err := Build(context.Background(), BuildOptions{
 		WorkstreamID: events[0].WorkstreamID,
 		Repo:         &repository.RepoState{Remote: remote, Branch: "feature/issue-1234567890"},

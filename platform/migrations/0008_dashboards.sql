@@ -113,16 +113,16 @@ CREATE INDEX idx_dashboard_versions_workspace_dashboard
 CREATE TRIGGER dashboard_versions_dense_sequence
 BEFORE INSERT ON dashboard_versions
 BEGIN
-    SELECT CASE WHEN NEW.version <> 1 + COALESCE(
+    SELECT (CASE WHEN NEW.version <> 1 + COALESCE(
       (SELECT MAX(version) FROM dashboard_versions WHERE dashboard_id = NEW.dashboard_id), 0
-    ) THEN RAISE(ABORT, 'dashboard version sequence must be dense') END;
+    ) THEN RAISE(ABORT, 'dashboard version sequence must be dense') END);
 
-    SELECT CASE WHEN NOT EXISTS (
+    SELECT (CASE WHEN NOT EXISTS (
       SELECT 1 FROM dashboards
       WHERE id = NEW.dashboard_id
         AND workspace_id = NEW.workspace_id
         AND name = json_extract(NEW.config, '$.name')
-    ) THEN RAISE(ABORT, 'dashboard version must match its dashboard workspace and name') END;
+    ) THEN RAISE(ABORT, 'dashboard version must match its dashboard workspace and name') END);
 END;
 
 -- A published version is evidence: it is what a reviewer approved and what a
@@ -192,8 +192,8 @@ END;
 CREATE TRIGGER dashboard_shares_workspace_match
 BEFORE INSERT ON dashboard_shares
 BEGIN
-    SELECT CASE WHEN NOT EXISTS (
+    SELECT (CASE WHEN NOT EXISTS (
       SELECT 1 FROM dashboards
       WHERE id = NEW.dashboard_id AND workspace_id = NEW.workspace_id
-    ) THEN RAISE(ABORT, 'dashboard share workspace mismatch') END;
+    ) THEN RAISE(ABORT, 'dashboard share workspace mismatch') END);
 END;

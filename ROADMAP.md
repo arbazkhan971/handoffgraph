@@ -1,9 +1,10 @@
 # Roadmap
 
 Condensed from `HANDOFFGRAPH_VERSION_ROADMAP.md`. Each version moves only when
-its acceptance gate passes. The repository now contains the **v0.6.0-level
-local product**; real-session acceptance and the v0.7.0 public-release gate
-remain (updated 2026-08-23).
+its acceptance gate passes. The repository contains the **v0.7.0-beta.1
+release candidate** plus the ahead-of-roadmap Hosted Basic foundation. Real
+cross-provider continuation acceptance and the public-release boundary remain
+(updated 2026-08-30).
 
 Two companion tracks ride alongside this release train (2026-08-28):
 
@@ -24,8 +25,8 @@ Two companion tracks ride alongside this release train (2026-08-28):
 | v0.3.0 | 26–35 | Private alpha | Claude capture + first Claude→Codex proof |
 | v0.4.0 | 36–45 | Private alpha | Pi adapter, local MCP, provider-independent workstreams |
 | v0.5.0 | 46–60 | Design alpha | Local Session Debugger (trace tree, waterfall, detections) |
-| **v0.6.0** | 61–75 | Public alpha | Evidence-selected checkpoint + cross-agent continuation ← **current implementation** |
-| v0.7.0 | 76–90 | Public beta | Installable, documented, open-source launch |
+| v0.6.0 | 61–75 | Public alpha | Evidence-selected checkpoint + cross-agent continuation |
+| **v0.7.0** | 76–90 | Public beta | Installable, documented, open-source launch ← **release candidate** |
 | v0.8.0 | 91–105 | Hosted beta | Redacted Cloudflare sync, private shares, Solo Cloud |
 | v0.9.0 | 106–120 | Team beta | Shared workstreams, comments, votes, presence, billing |
 | v0.10.0 | 121–145 | Team beta | Managed detections, alerts, dashboards, PR evidence |
@@ -36,11 +37,12 @@ Two companion tracks ride alongside this release train (2026-08-28):
 | v0.15.0 | 241–270 | RC | Public API, adapter SDK, migrations, GA hardening |
 | v1.0.0 | 271–300 | GA | Supported production product, path beyond $5K MRR |
 
-The repository also contains an ahead-of-gate **v0.8 hosted Basic
+The repository also contains an ahead-of-gate **v0.8 Hosted Basic
 foundation**: AuthKit-compatible accounts, hashed sessions/device credentials,
-a D1 account/entitlement schema, transactionally enforced quotas, and a
-hosted account UI. It is not a public hosted release; the v0.8 gate below is
-still open.
+a D1 account/entitlement schema, transactionally enforced quotas, explicit
+redacted CLI sync, and a reviewed durable account-deletion path. The isolated
+staging D1 schema is ready, but neither staging auth nor the public production
+service is live; the v0.8 gate below remains open.
 
 ## v0.1.0 acceptance gate
 
@@ -61,8 +63,11 @@ still open.
 - [x] Deterministic re-import idempotency
 - [x] Install/sessions/resume CLI wiring
 - [x] Native resume works (adapter returns `codex resume <id>`; CLI prints it)
-- [ ] 20 real sessions with no config loss
-- [ ] App Server integration
+- [x] 20 real Codex sessions imported twice with stable counts, no config loss,
+      and a clean deep doctor result
+- [x] Stable read-only Codex App Server integration over stdio using only
+      `initialize` and state-DB-only `thread/list`; file-session detection stays
+      unchanged
 
 ## v0.6.0 acceptance gate
 
@@ -72,14 +77,21 @@ still open.
 - [x] Repository drift is checked against the source checkpoint
 - [x] Machine checkpoint reference + MCP `accept_handoff` acknowledgement
 - [x] Deterministic `handoff status` read model over created/accepted events
-- [ ] Real-session acceptance across the supported agent pairs
+- [ ] Real-session acceptance across the six directed supported pairs:
+      Codex→Claude, Claude→Codex, Codex→Pi, Pi→Codex, Claude→Pi, and
+      Pi→Claude. Each proof must import the source transcript twice with a
+      stable count, create a checkpoint, prove preview is write-free, record
+      the handoff, accept it through MCP as the destination provider, and show
+      an `accepted` handoff read model with the exact checkpoint reference.
 
 ## v0.7.0 launch gate
 
 - [x] Tag-triggered cross-platform archives, version injection, and SHA-256 checksums
 - [x] Release process and pre-release source-install documentation
 - [ ] Canonical public repository exists at the declared Go module path
-- [ ] First tagged prerelease and clean-install/upgrade acceptance
+- [ ] First tagged prerelease plus checksummed archive, clean module install,
+      and idempotent reinstall acceptance. There is no previous public stable
+      release, so this first tag has no in-place upgrade baseline.
 
 ## v0.8.0 hosted-beta gate
 
@@ -92,9 +104,19 @@ still open.
 - [x] Fifty-account global beta cost ceiling; Local Core remains account-free
 - [x] Accessible no-build account UI with usage meters and one-time device tokens
 - [ ] Production WorkOS/AuthKit application and real callback acceptance
-- [ ] Turnstile/WAF/rate controls and reviewed account-deletion/privacy path
-- [ ] Explicit CLI sync policy plus pre-upload redaction-preview acceptance
-- [ ] Remote D1 migration, HTTPS custom domain, and cross-tenant live tests
+- [ ] Turnstile plus reviewed WAF/rate controls for signup and device issuance
+- [x] Durable, tenant-scoped account deletion/privacy implementation reviewed
+      and tested across WorkOS, R2, D1, retry, grace-sweep, and resurrection
+      boundaries
+- [x] Explicit CLI sync policy plus first-upload redaction-preview acceptance;
+      upload requires `redaction.version = 1` and status `clean` or `redacted`
+- [x] All 19 migrations applied to and verified on isolated staging D1
+- [x] Production custom-domain routes configured in Wrangler (not yet deployed
+      or cut over)
+- [ ] Production D1 migration, HTTPS domain cutover, and deployed cross-tenant
+      browser/CLI tests
+- [ ] Keep production signup absent/fail-closed until all identity, abuse, and
+      acceptance gates pass
 - [ ] Private shares and any purchasable Solo plan (not implemented)
 
 ## Versioning policy
@@ -113,5 +135,7 @@ Nightly (`v0.x.y-dev.<sha>`), alpha (`v0.x.0-alpha.n`), beta
 
 A version is complete when its acceptance tests pass, there are no open P0
 security/corruption/data-loss defects, upgrade from the previous stable is
-tested, local capture works with the network disabled, cloud failure never
-blocks the agent, and release notes + `doctor` reflect shipped behavior.
+tested when such a release exists (the first public prerelease instead proves
+clean install and idempotent reinstall), local capture works with the network
+disabled, cloud failure never blocks the agent, and release notes + `doctor`
+reflect shipped behavior.

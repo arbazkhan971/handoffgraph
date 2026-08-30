@@ -10,7 +10,7 @@ session-debugging layer for AI coding agents. Go CLI + core; TypeScript
 
 ## Conventions
 
-- Go 1.24+, Apache-2.0. Module path: `github.com/handoffgraph/handoffgraph`.
+- Go 1.25+, Apache-2.0. Module path: `github.com/handoffgraph/handoffgraph`.
 - All durable IDs are ULIDs via `internal/ids`. Never hand-roll IDs.
 - Events are append-only. Do not mutate stored events; derive read models.
 - The graph reducer and trace materializer must stay deterministic: do not

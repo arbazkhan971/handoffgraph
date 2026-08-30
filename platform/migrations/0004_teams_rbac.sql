@@ -75,26 +75,26 @@ CREATE TRIGGER workspace_members_seat_capacity_insert
 BEFORE INSERT ON workspace_members
 WHEN NEW.status = 'active'
 BEGIN
-    SELECT CASE WHEN (
+    SELECT (CASE WHEN (
       SELECT COUNT(*) FROM workspace_members
       WHERE workspace_id = NEW.workspace_id AND status = 'active'
     ) >= (
       SELECT COALESCE(MAX(max_seats), 0) FROM workspace_seats
       WHERE workspace_id = NEW.workspace_id
-    ) THEN RAISE(ABORT, 'workspace seat capacity exceeded') END;
+    ) THEN RAISE(ABORT, 'workspace seat capacity exceeded') END);
 END;
 
 CREATE TRIGGER workspace_members_seat_capacity_reactivate
 BEFORE UPDATE OF status ON workspace_members
 WHEN OLD.status <> 'active' AND NEW.status = 'active'
 BEGIN
-    SELECT CASE WHEN (
+    SELECT (CASE WHEN (
       SELECT COUNT(*) FROM workspace_members
       WHERE workspace_id = NEW.workspace_id AND status = 'active'
     ) >= (
       SELECT COALESCE(MAX(max_seats), 0) FROM workspace_seats
       WHERE workspace_id = NEW.workspace_id
-    ) THEN RAISE(ABORT, 'workspace seat capacity exceeded') END;
+    ) THEN RAISE(ABORT, 'workspace seat capacity exceeded') END);
 END;
 
 -- --------------------------------------------------------------------------
@@ -205,7 +205,7 @@ END;
 CREATE TRIGGER workspace_invites_seat_capacity
 BEFORE INSERT ON workspace_invites
 BEGIN
-    SELECT CASE WHEN (
+    SELECT (CASE WHEN (
       (SELECT COUNT(*) FROM workspace_members
        WHERE workspace_id = NEW.workspace_id AND status = 'active') +
       (SELECT COUNT(*) FROM workspace_invites
@@ -215,7 +215,7 @@ BEGIN
     ) >= (
       SELECT COALESCE(MAX(max_seats), 0) FROM workspace_seats
       WHERE workspace_id = NEW.workspace_id
-    ) THEN RAISE(ABORT, 'workspace seat capacity exceeded') END;
+    ) THEN RAISE(ABORT, 'workspace seat capacity exceeded') END);
 END;
 
 -- An invite's identity (who, where, which role, which token) is fixed at
@@ -279,19 +279,19 @@ CREATE UNIQUE INDEX idx_audit_chain_link ON audit_chain(workspace_id, prev_hash)
 CREATE TRIGGER audit_chain_require_link
 BEFORE INSERT ON audit_chain
 BEGIN
-    SELECT CASE WHEN NEW.prev_hash IS NOT (
+    SELECT (CASE WHEN NEW.prev_hash IS NOT (
       SELECT content_hash FROM audit_chain
       WHERE workspace_id = NEW.workspace_id AND seq = NEW.seq - 1
-    ) THEN RAISE(ABORT, 'audit chain link mismatch') END;
+    ) THEN RAISE(ABORT, 'audit chain link mismatch') END);
 
     -- The link is only meaningful if it names evidence that exists with the
     -- hash being chained, so the event insert must precede it in the batch.
-    SELECT CASE WHEN NOT EXISTS (
+    SELECT (CASE WHEN NOT EXISTS (
       SELECT 1 FROM events
       WHERE workspace_id = NEW.workspace_id
         AND event_id = NEW.event_id
         AND content_hash = 'sha256:' || NEW.content_hash
-    ) THEN RAISE(ABORT, 'audit chain event missing') END;
+    ) THEN RAISE(ABORT, 'audit chain event missing') END);
 END;
 
 CREATE TRIGGER audit_chain_forbid_update

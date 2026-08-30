@@ -37,17 +37,33 @@ const (
 // Capabilities declares what a provider supports. The UI must display
 // missing capabilities honestly instead of manufacturing equivalence.
 type Capabilities struct {
-	NativeResume        bool `json:"native_resume"`
-	NativeFork          bool `json:"native_fork"`
-	CheckpointLaunch    bool `json:"checkpoint_launch"`
-	Hooks               bool `json:"hooks"`
-	ToolEvents          bool `json:"tool_events"`
-	PromptEvents        bool `json:"prompt_events"`
-	CompactionEvents    bool `json:"compaction_events"`
-	DiffEvents          bool `json:"diff_events"`
-	TestExitStatus      bool `json:"test_exit_status"`
-	StructuredStreaming bool `json:"structured_streaming"`
-	SessionEnumeration  bool `json:"session_enumeration"`
+	NativeResume                bool `json:"native_resume"`
+	NativeFork                  bool `json:"native_fork"`
+	CheckpointLaunch            bool `json:"checkpoint_launch"`
+	Hooks                       bool `json:"hooks"`
+	ToolEvents                  bool `json:"tool_events"`
+	PromptEvents                bool `json:"prompt_events"`
+	CompactionEvents            bool `json:"compaction_events"`
+	DiffEvents                  bool `json:"diff_events"`
+	TestExitStatus              bool `json:"test_exit_status"`
+	StructuredStreaming         bool `json:"structured_streaming"`
+	SessionEnumeration          bool `json:"session_enumeration"`
+	AppServerSessionEnumeration bool `json:"app_server_session_enumeration"`
+}
+
+// SessionMetadata carries optional provider-native listing metadata that is
+// not part of HandoffGraph's durable identity. It is descriptive only: callers
+// must not promote these observed native values into canonical HandoffGraph
+// identifiers without going through the normal import path.
+type SessionMetadata struct {
+	NativeGroupID string          `json:"native_group_id,omitempty"`
+	Title         string          `json:"title,omitempty"`
+	Preview       string          `json:"preview,omitempty"`
+	WorkingDir    string          `json:"working_dir,omitempty"`
+	ModelProvider string          `json:"model_provider,omitempty"`
+	CLIVersion    string          `json:"cli_version,omitempty"`
+	NativeSource  json.RawMessage `json:"native_source,omitempty"`
+	Ephemeral     bool            `json:"ephemeral"`
 }
 
 // SessionRef references a provider-native session.
@@ -58,12 +74,13 @@ type SessionRef struct {
 	LastEventAt  time.Time `json:"last_event_at,omitempty"`
 	WorkstreamID string    `json:"workstream_id,omitempty"`
 
-	// Optional listing metadata (Detect --detect mode). Zero values mean
-	// unknown; adapters fill what the provider exposes.
-	Path      string    `json:"path,omitempty"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	EndedAt   time.Time `json:"ended_at,omitempty"`
-	Model     string    `json:"model,omitempty"`
+	// Optional listing metadata. Zero values mean unknown; adapters fill only
+	// what the provider exposes through the selected listing path.
+	Path      string           `json:"path,omitempty"`
+	StartedAt time.Time        `json:"started_at,omitempty"`
+	EndedAt   time.Time        `json:"ended_at,omitempty"`
+	Model     string           `json:"model,omitempty"`
+	Metadata  *SessionMetadata `json:"metadata,omitempty"`
 }
 
 // ExecSpec describes how to launch a native agent process.

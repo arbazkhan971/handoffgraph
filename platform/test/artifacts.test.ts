@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import worker from "../src/index";
+import worker from "./advanced_worker";
 import { sha256Hex } from "../src/auth";
 import type { D1BoundStatement, D1DatabaseLike, D1Statement } from "../src/db";
 import { canonicalJsonStringify } from "../src/ingest";
@@ -136,7 +136,12 @@ function fakeBucket(options: { stream?: boolean } = {}) {
   const objects = new Map<string, { value: string; options?: R2PutOptionsLike }>();
   const puts: string[] = [];
   const deletes: string[] = [];
-  const bucket: R2BucketLike = {
+  const bucket: R2BucketLike & {
+    head(key: string): Promise<{ key: string } | null>;
+  } = {
+    async head(key: string) {
+      return objects.has(key) ? { key } : null;
+    },
     async put(key: string, value: string, putOptions?: R2PutOptionsLike) {
       objects.set(key, { value, options: putOptions });
       puts.push(key);
@@ -1220,7 +1225,9 @@ function routeEnv(options: {
       return { changes: 1 };
     },
   });
-  const env = options.bucket === false ? { DB: mock.db } : { DB: mock.db, BODIES: r2.bucket };
+  const env = options.bucket === false
+    ? { DB: mock.db, BODIES: undefined }
+    : { DB: mock.db, BODIES: r2.bucket };
   return { ...mock, ...r2, env };
 }
 
@@ -1356,15 +1363,15 @@ describe("POST /v1/exports", () => {
     expect(puts).toEqual([]);
   });
 
-  it("answers 503 when object storage is not configured", async () => {
+  it("denies at shared authentication when BODIES is not configured", async () => {
     const { env } = routeEnv({ bucket: false });
     const response = await worker.fetch(
       request("/v1/exports", { method: "POST", headers: authed(), body: '{"full":true}' }),
       env,
       CTX,
     );
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "object storage is not configured" });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
   });
 
   it("fails an oversized export closed and settles the row as error", async () => {

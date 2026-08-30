@@ -94,10 +94,20 @@ func indexCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {
 // table derived alongside it, returning the observation row count.
 func rebuildObservations(ctx context.Context, db *storage.DB, events []*protocol.Event) (int, error) {
 	derived := observations.DeriveAll(events)
+	// The append sequence is assigned by SQLite and is deliberately not
+	// written back into an event's immutable raw_json envelope.  Native
+	// adapters may also carry their own per-session Sequence values, so the
+	// highest Event.Sequence in ListEvents is not the durable log watermark.
+	// Read the database watermark directly or a successful rebuild can still
+	// be reported as stale after importing multiple real sessions.
+	maxSeq, err := db.MaxSeq(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read event-log watermark: %w", err)
+	}
 	if err := db.RebuildObservations(ctx, derived.Rows, derived.Fingerprints,
 		derived.ExceptionGroups, storage.ObsMeta{
 			EventCount: int64(len(events)),
-			MaxSeq:     maxSeq(events),
+			MaxSeq:     maxSeq,
 			RebuiltAt:  time.Now().UTC(),
 		}); err != nil {
 		return 0, err
@@ -122,17 +132,6 @@ func freshenObservations(ctx context.Context, db *storage.DB) error {
 	}
 	_, err = rebuildObservations(ctx, db, events)
 	return err
-}
-
-// maxSeq returns the highest append sequence in the log (0 when empty).
-func maxSeq(events []*protocol.Event) int64 {
-	var max int64
-	for _, ev := range events {
-		if ev.Sequence > max {
-			max = ev.Sequence
-		}
-	}
-	return max
 }
 
 func queryCmd(ctx context.Context, c *cli.Context, fs *flag.FlagSet) error {

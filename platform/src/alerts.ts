@@ -1285,6 +1285,9 @@ function alertText(rule: AlertRuleRow, payload: AlertFiredPayload): string {
 async function dispatchSlack(url: string, text: string, fetcher: FetchLike): Promise<void> {
   const response = await fetcher(url, {
     method: "POST",
+    // Slack incoming-webhook URLs are validated at registration. A redirect
+    // is a failed channel delivery, never authority to contact another host.
+    redirect: "manual",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text }),
   });

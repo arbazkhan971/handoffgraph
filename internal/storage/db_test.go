@@ -110,6 +110,54 @@ func TestOutOfOrderInput(t *testing.T) {
 	}
 }
 
+func TestListEventsAfterSeqUsesAppendCursorAndHighWatermark(t *testing.T) {
+	db, _ := openTempDB(t)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
+	// Deliberately append in the opposite order from occurred_at. The hosted
+	// cursor is the durable append sequence, never event time or the adapter's
+	// source-local Sequence field.
+	first := newEvent("ws_1", "ses_1", string(protocol.EventTraceCompleted), base.Add(time.Hour))
+	first.Sequence = 99
+	second := newEvent("ws_1", "ses_1", string(protocol.EventTraceStarted), base)
+	second.Sequence = 0
+	third := newEvent("ws_1", "ses_1", string(protocol.EventSessionEnded), base.Add(2*time.Hour))
+	for _, ev := range []*protocol.Event{first, second, third} {
+		if _, err := db.AppendEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := db.ListEventsAfterSeq(ctx, 0, 2, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || page[0].Seq != 1 || page[0].Event.EventID != first.EventID || page[1].Seq != 2 || page[1].Event.EventID != second.EventID {
+		t.Fatalf("page = %+v, want append sequences 1 and 2", page)
+	}
+	next, err := db.ListEventsAfterSeq(ctx, 1, 3, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next) != 1 || next[0].Seq != 2 || next[0].Event.EventID != second.EventID {
+		t.Fatalf("next = %+v, want sequence 2", next)
+	}
+}
+
+func TestListEventsAfterSeqRejectsInvalidBounds(t *testing.T) {
+	db, _ := openTempDB(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		after, through int64
+		limit          int
+	}{{-1, 0, 1}, {2, 1, 1}, {0, 1, 0}, {0, 1, 501}} {
+		if _, err := db.ListEventsAfterSeq(ctx, tc.after, tc.through, tc.limit); err == nil {
+			t.Fatalf("ListEventsAfterSeq(%d, %d, %d) succeeded", tc.after, tc.through, tc.limit)
+		}
+	}
+}
+
 func TestTenThousandEventIngestionNoLoss(t *testing.T) {
 	db, _ := openTempDB(t)
 	ctx := context.Background()

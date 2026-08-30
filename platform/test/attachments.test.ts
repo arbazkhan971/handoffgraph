@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import worker from "../src/index";
+import worker from "./advanced_worker";
 import { sha256Hex } from "../src/auth";
 import type { D1BoundStatement, D1DatabaseLike, D1RunResultLike, D1Statement } from "../src/db";
 import { canonicalJsonStringify } from "../src/ingest";

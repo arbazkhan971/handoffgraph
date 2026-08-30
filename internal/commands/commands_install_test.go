@@ -122,6 +122,79 @@ func TestInstallDryRunNoWrite(t *testing.T) {
 	}
 }
 
+func TestInstallDryRunStillPerformsConflictChecks(t *testing.T) {
+	isolateDataDir(t)
+	app := newRegisteredApp(t)
+	cfgDir := t.TempDir()
+	path := filepath.Join(cfgDir, "config.toml")
+	original := []byte("[hooks\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runRegisteredApp(app, "install", "--agent", "codex", "--dry-run", "--config-dir", cfgDir)
+	if err == nil {
+		t.Fatal("dry-run accepted an unparseable provider config")
+	}
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("dry-run changed config: %q", after)
+	}
+}
+
+func TestInstallRoutesHookCommandAndClaudeConfigDir(t *testing.T) {
+	isolateDataDir(t)
+	app := newRegisteredApp(t)
+	codexDir := t.TempDir()
+	claudeDir := t.TempDir()
+
+	if _, _, err := runRegisteredApp(app, "install", "--agent", "codex", "--config-dir", codexDir, "--hook-command", "/bin/hfg-codex"); err != nil {
+		t.Fatalf("generic codex install: %v", err)
+	}
+	codexConfig, err := os.ReadFile(filepath.Join(codexDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(codexConfig), "/bin/hfg-codex") {
+		t.Fatalf("codex --hook-command was not routed: %s", codexConfig)
+	}
+
+	if _, _, err := runRegisteredApp(app, "install", "--agent", "claude", "--config-dir", claudeDir, "--hook-command", "/bin/hfg-claude"); err != nil {
+		t.Fatalf("generic claude install: %v", err)
+	}
+	claudeConfig, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(claudeConfig), "/bin/hfg-claude") {
+		t.Fatalf("claude --hook-command/config-dir was not routed: %s", claudeConfig)
+	}
+}
+
+func TestInstallRoutesPiConfigDirAndRejectsHookCommand(t *testing.T) {
+	isolateDataDir(t)
+	app := newRegisteredApp(t)
+	agentDir := t.TempDir()
+
+	out, _, err := runRegisteredApp(app, "install", "--agent", "pi", "--dry-run", "--config-dir", agentDir)
+	if err != nil {
+		t.Fatalf("generic pi dry-run: %v", err)
+	}
+	if !strings.Contains(out, "dry run") {
+		t.Fatalf("pi dry-run output=%q", out)
+	}
+	if _, err := os.Stat(filepath.Join(agentDir, "extensions", "handoffgraph")); !os.IsNotExist(err) {
+		t.Fatalf("pi dry-run wrote extension (stat err=%v)", err)
+	}
+
+	if _, _, err := runRegisteredApp(app, "install", "--agent", "pi", "--config-dir", agentDir, "--hook-command", "/bin/unsupported"); err == nil {
+		t.Fatal("pi accepted unsupported --hook-command")
+	}
+}
+
 func TestInstallIdempotent(t *testing.T) {
 	isolateDataDir(t)
 	app := newRegisteredApp(t)

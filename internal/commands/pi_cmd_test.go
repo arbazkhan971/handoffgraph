@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/handoffgraph/handoffgraph/internal/cli"
+	"github.com/handoffgraph/handoffgraph/internal/ids"
+	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
 
 // The tests in this file exercise `handoffgraph pi ...` through the public
@@ -35,6 +37,39 @@ func runPiApp(t *testing.T, app *cli.App, name string, args ...string) (string, 
 	c := &cli.Context{Stdout: &out, Stderr: &errBuf}
 	err := app.Run(context.Background(), c, name, args)
 	return out.String(), errBuf.String(), err
+}
+
+func TestPiSubcommandHelpIsScopedAndSuccessful(t *testing.T) {
+	out, stderr, err := runPiApp(t, newPiApp(t), "pi", "sessions", "--help")
+	if err != nil {
+		t.Fatalf("help returned error: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("help stderr=%q", stderr)
+	}
+	if !strings.Contains(out, "-sessions-dir") || strings.Contains(out, "-agent-dir") || strings.Contains(out, "-dry-run") {
+		t.Fatalf("unscoped sessions help: %q", out)
+	}
+}
+
+func TestPiNormalizeHelpIsScopedAndSuccessful(t *testing.T) {
+	out, stderr, err := runPiApp(t, newPiApp(t), "pi", "normalize", "--help")
+	if err != nil {
+		t.Fatalf("help returned error: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("help stderr=%q", stderr)
+	}
+	for _, flag := range []string{"-workstream", "-session", "-import", "-json"} {
+		if !strings.Contains(out, flag) {
+			t.Errorf("normalize help missing %s: %q", flag, out)
+		}
+	}
+	for _, unrelated := range []string{"-agent-dir", "-sessions-dir", "-dry-run"} {
+		if strings.Contains(out, unrelated) {
+			t.Errorf("normalize help contains unrelated %s: %q", unrelated, out)
+		}
+	}
 }
 
 // writePiSession writes one native Pi transcript for sessions detection.
@@ -199,5 +234,194 @@ func TestPiCmdSessionsEmptyDir(t *testing.T) {
 	}
 	if !strings.Contains(out, "no pi sessions found") {
 		t.Errorf("empty sessions output = %q", out)
+	}
+}
+
+func piNormalizeFixturePath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "testdata", "fixtures", "pi_native_all.jsonl")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("Pi native fixture: %v", err)
+	}
+	return path
+}
+
+func TestPiCmdNormalizeJSONLAndJSON(t *testing.T) {
+	app := newPiApp(t)
+	path := piNormalizeFixturePath(t)
+
+	jsonl, stderr, err := runPiApp(t, app, "pi", "normalize", path)
+	if err != nil {
+		t.Fatalf("pi normalize: %v stderr=%s", err, stderr)
+	}
+	events := decodeNormalizedJSONL(t, jsonl)
+	if len(events) != 17 {
+		t.Fatalf("normalized events = %d, want 17", len(events))
+	}
+	if events[0].Kind != protocol.EventSessionStarted || events[6].Kind != protocol.EventToolStarted {
+		t.Fatalf("unexpected event mapping: first=%s seventh=%s", events[0].Kind, events[6].Kind)
+	}
+
+	indented, _, err := runPiApp(t, app, "pi", "normalize", path, "--json")
+	if err != nil {
+		t.Fatalf("pi normalize --json: %v", err)
+	}
+	var array []protocol.Event
+	if err := json.Unmarshal([]byte(indented), &array); err != nil {
+		t.Fatalf("normalize JSON array: %v\n%s", err, indented)
+	}
+	if len(array) != len(events) {
+		t.Fatalf("JSON events = %d, JSONL events = %d", len(array), len(events))
+	}
+	for i := range array {
+		if array[i].EventID != events[i].EventID || array[i].Sequence != events[i].Sequence {
+			t.Errorf("event %d differs between JSON and JSONL", i+1)
+		}
+	}
+
+	// Interspersed flags work before the subcommand, before the file, and
+	// after the file without treating flag values as positional paths.
+	workstream := ids.Workstream()
+	associated, _, err := runPiApp(t, app, "pi", "normalize", "--workstream", workstream, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterFile, _, err := runPiApp(t, app, "pi", "normalize", path, "--workstream", workstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, _, err := runPiApp(t, app, "pi", "--workstream", workstream, "normalize", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if associated != afterFile || associated != outer {
+		t.Fatal("normalize output changed across supported flag positions")
+	}
+	assertNativeAssociation(t, decodeNormalizedJSONL(t, associated), protocol.ProviderPi, workstream)
+}
+
+func TestPiCmdNormalizeFlagValidation(t *testing.T) {
+	path := piNormalizeFixturePath(t)
+	app := newPiApp(t)
+	tests := []struct {
+		name     string
+		args     []string
+		wantPart string
+	}{
+		{name: "missing file", args: []string{"normalize"}, wantPart: "usage"},
+		{name: "extra file", args: []string{"normalize", path, path}, wantPart: "usage"},
+		{name: "invalid workstream", args: []string{"normalize", path, "--workstream", "ws_invalid"}, wantPart: "valid ws_"},
+		{name: "invalid session", args: []string{"normalize", path, "--session", "ses_invalid"}, wantPart: "valid ses_"},
+		{name: "import needs workstream", args: []string{"normalize", path, "--import"}, wantPart: "requires --workstream"},
+		{name: "json import conflict", args: []string{"normalize", path, "--workstream", ids.Workstream(), "--import", "--json"}, wantPart: "mutually exclusive"},
+		{name: "normalize flag after sessions", args: []string{"sessions", "--sessions-dir", t.TempDir(), "--workstream", ids.Workstream()}, wantPart: "flag provided but not defined"},
+		{name: "normalize flag before sessions", args: []string{"--session", ids.Session(), "sessions", "--sessions-dir", t.TempDir()}, wantPart: "only valid with normalize"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := runPiApp(t, app, "pi", test.args...)
+			if err == nil || !strings.Contains(err.Error(), test.wantPart) {
+				t.Fatalf("error = %v, want %q", err, test.wantPart)
+			}
+		})
+	}
+}
+
+func TestPiNormalizeImportTwiceAndCheckpointSource(t *testing.T) {
+	isolateDataDir(t)
+	app := newRegisteredApp(t)
+	workstreamOut, _, err := runRegisteredApp(app, "workstream", "new", "pi-native-acceptance")
+	if err != nil {
+		t.Fatalf("create workstream: %v", err)
+	}
+	workstream := strings.TrimSpace(workstreamOut)
+	path := piNormalizeFixturePath(t)
+
+	out, _, err := runRegisteredApp(app, "pi", "normalize", path, "--workstream", workstream, "--import")
+	if err != nil {
+		t.Fatalf("first Pi import: %v", err)
+	}
+	if !strings.Contains(out, "imported 17 new event(s), 0 already present") {
+		t.Fatalf("first import output = %q", out)
+	}
+	out, _, err = runRegisteredApp(app, "pi", "normalize", path, "--workstream", workstream, "--import")
+	if err != nil {
+		t.Fatalf("second Pi import: %v", err)
+	}
+	if !strings.Contains(out, "imported 0 new event(s), 17 already present") {
+		t.Fatalf("second import output = %q", out)
+	}
+
+	checkpointJSON, _, err := runRegisteredApp(app, "checkpoint", "--workstream", workstream, "--objective", "Pi native checkpoint")
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	var checkpoint protocol.Checkpoint
+	if err := json.Unmarshal([]byte(checkpointJSON), &checkpoint); err != nil {
+		t.Fatalf("checkpoint JSON: %v\n%s", err, checkpointJSON)
+	}
+	if len(checkpoint.SourceSessions) != 1 {
+		t.Fatalf("checkpoint source sessions = %+v", checkpoint.SourceSessions)
+	}
+	source := checkpoint.SourceSessions[0]
+	if source.Provider != protocol.ProviderPi || source.NativeSessionID != "pi-native-golden" || source.SessionID == "" {
+		t.Fatalf("Pi checkpoint source = %+v", source)
+	}
+}
+
+func writePiNativeFragment(t *testing.T, nativeID, timestamp, marker string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), marker+".jsonl")
+	data := strings.Join([]string{
+		`{"type":"session","id":"` + nativeID + `","timestamp":"` + timestamp + `","marker":"` + marker + `"}`,
+		`{"type":"custom","id":"` + marker + `","timestamp":"` + timestamp + `","marker":"` + marker + `"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestPiNormalizeAllowsSharedProviderNativeAcrossDistinctCanonicalSessions(t *testing.T) {
+	isolateDataDir(t)
+	app := newRegisteredApp(t)
+	workstreamOut, _, err := runRegisteredApp(app, "workstream", "new", "pi-shared-native")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workstream := strings.TrimSpace(workstreamOut)
+	nativeID := "pi-native-shared"
+	firstPath := writePiNativeFragment(t, nativeID, "2026-08-30T11:00:00Z", "first")
+	secondPath := writePiNativeFragment(t, nativeID, "2026-08-30T11:00:01Z", "second")
+	firstSession := ids.Session()
+	secondSession := ids.Session()
+
+	if _, _, err := runRegisteredApp(app, "pi", "normalize", firstPath, "--workstream", workstream, "--session", firstSession, "--import"); err != nil {
+		t.Fatalf("first shared-native import: %v", err)
+	}
+	if _, _, err := runRegisteredApp(app, "pi", "normalize", secondPath, "--workstream", workstream, "--session", secondSession, "--import"); err != nil {
+		t.Fatalf("second shared-native import: %v", err)
+	}
+
+	checkpointJSON, _, err := runRegisteredApp(app, "checkpoint", "--workstream", workstream, "--objective", "shared native regression")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint protocol.Checkpoint
+	if err := json.Unmarshal([]byte(checkpointJSON), &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if len(checkpoint.SourceSessions) != 2 {
+		t.Fatalf("source sessions = %+v, want two canonical sessions", checkpoint.SourceSessions)
+	}
+	seen := map[string]bool{}
+	for _, source := range checkpoint.SourceSessions {
+		if source.Provider != protocol.ProviderPi || source.NativeSessionID != nativeID {
+			t.Errorf("source = %+v", source)
+		}
+		seen[source.SessionID] = true
+	}
+	if !seen[firstSession] || !seen[secondSession] {
+		t.Fatalf("canonical sessions = %+v", seen)
 	}
 }

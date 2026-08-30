@@ -47,6 +47,7 @@ export interface AccountWorkspaceView {
 }
 
 export interface AccountPageData {
+  hostedBasic?: boolean;
   displayName?: string;
   email?: string;
   workspaceName?: string;
@@ -64,6 +65,8 @@ export interface AccountPageData {
 
 export interface SignedOutPageData {
   message?: string;
+  authAvailable?: boolean;
+  signupAvailable?: boolean;
 }
 
 const ACCOUNT_STYLES = `
@@ -192,7 +195,9 @@ a { color: inherit; }
 .button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
 .button.primary { background: var(--acid); }
 .button.dark { background: var(--ink); color: #fff; }
+.button.danger { background: var(--danger); color: #fff; }
 .button:disabled { cursor: wait; opacity: .6; transform: none; }
+.button.disabled { cursor: not-allowed; opacity: .68; box-shadow: none; transform: none; }
 
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
 
@@ -316,6 +321,11 @@ dd { margin: .35rem 0 0; font-weight: 760; }
 .members-card { grid-column: span 7; }
 .invites-card { grid-column: span 5; }
 .workspaces-card { grid-column: 1 / -1; }
+.danger-card { grid-column: 1 / -1; border-color: var(--danger); box-shadow: 5px 5px 0 var(--danger); }
+.danger-card > p { max-width: 850px; }
+.danger-card code { font: 750 .72rem/1.5 var(--mono); overflow-wrap: anywhere; }
+.danger-list { margin: 1rem 0; padding-left: 1.2rem; color: var(--muted); }
+.danger-form { max-width: 760px; }
 
 .plan-top { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
 
@@ -373,6 +383,8 @@ progress::-moz-progress-bar { background: var(--violet); }
 .device-item strong, .device-item code { display: block; min-width: 0; }
 .device-item code { margin-top: .2rem; color: var(--muted); font: 650 .64rem/1.4 var(--mono); overflow-wrap: anywhere; }
 .device-meta { color: var(--muted); font: 700 .61rem/1.4 var(--mono); text-align: right; }
+.device-actions { display: flex; align-items: center; justify-content: flex-end; gap: .65rem; }
+.device-revoke { min-height: 38px; padding: .55rem .7rem; }
 .device-empty { padding: 1rem; border: 1px dashed var(--line); color: var(--muted); }
 
 .device-form {
@@ -523,6 +535,7 @@ progress::-moz-progress-bar { background: var(--violet); }
   .device-form, .invite-form { grid-template-columns: 1fr; }
   .device-item { grid-template-columns: 1fr; }
   .device-meta { text-align: left; }
+  .device-actions { justify-content: space-between; }
   .account-footer { flex-direction: column; }
 }
 
@@ -536,6 +549,7 @@ const ACCOUNT_SCRIPT = `
   "use strict";
 
   var csrfCookieName = "__Host-hfg_csrf";
+  var hostedBasic = document.body.dataset.hostedSurface === "basic";
 
   function readCookie(name) {
     var parts = document.cookie ? document.cookie.split(";") : [];
@@ -666,14 +680,31 @@ const ACCOUNT_SCRIPT = `
       item.className = "device-item";
       var identity = document.createElement("div");
       var label = document.createElement("strong");
-      label.textContent = firstText(device.label, "Unnamed device");
+      var labelText = firstText(device.label, "Unnamed device");
+      label.textContent = labelText;
       var id = document.createElement("code");
-      id.textContent = firstText(device.id, device.device_id, "ID pending");
+      var deviceID = firstText(device.id, device.device_id);
+      id.textContent = firstText(deviceID, "ID pending");
       identity.append(label, id);
+      var revoked = device.revoked_at !== null && device.revoked_at !== undefined;
+      var statusText = firstText(device.status, revoked ? "revoked" : "active");
+      var actions = document.createElement("div");
+      actions.className = "device-actions";
       var meta = document.createElement("span");
       meta.className = "device-meta";
-      meta.textContent = firstText(device.status, "active");
-      item.append(identity, meta);
+      meta.textContent = statusText;
+      actions.appendChild(meta);
+      if (deviceID && statusText.trim().toLowerCase() === "active") {
+        var revoke = document.createElement("button");
+        revoke.className = "button device-revoke";
+        revoke.type = "button";
+        revoke.dataset.deviceId = deviceID;
+        revoke.dataset.deviceLabel = labelText;
+        revoke.setAttribute("aria-label", "Revoke " + labelText);
+        revoke.textContent = "Revoke";
+        actions.appendChild(revoke);
+      }
+      item.append(identity, actions);
       list.appendChild(item);
     });
   }
@@ -708,6 +739,13 @@ const ACCOUNT_SCRIPT = `
 
   function setTeamStatus(message, tone) {
     var status = document.getElementById("team-status");
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone || "";
+  }
+
+  function setDeletionStatus(message, tone) {
+    var status = document.getElementById("deletion-status");
     if (!status) return;
     status.textContent = message;
     status.dataset.tone = tone || "";
@@ -925,6 +963,49 @@ const ACCOUNT_SCRIPT = `
   }
 
   var deviceForm = document.getElementById("device-form");
+  var deviceList = document.getElementById("device-list");
+  if (deviceList) {
+    deviceList.addEventListener("click", async function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== "function") return;
+      var trigger = target.closest("[data-device-id]");
+      if (!trigger || !deviceList.contains(trigger)) return;
+      var deviceID = trigger.dataset.deviceId;
+      if (!deviceID) return;
+      var deviceLabel = firstText(trigger.dataset.deviceLabel, "this device");
+      if (!window.confirm('Revoke "' + deviceLabel + '"? Its token will stop syncing immediately.')) return;
+
+      trigger.disabled = true;
+      setStatus("Revoking " + deviceLabel + "…", "");
+      try {
+        await apiFetch("/v1/devices/" + encodeURIComponent(deviceID) + "/revoke", {
+          method: "POST"
+        });
+      } catch (error) {
+        trigger.disabled = false;
+        setStatus(
+          error instanceof Error ? error.message : "The device could not be revoked.",
+          "error"
+        );
+        return;
+      }
+
+      trigger.textContent = "Revoked";
+      delete trigger.dataset.deviceId;
+      var row = trigger.closest(".device-item");
+      var meta = row ? row.querySelector(".device-meta") : null;
+      if (meta) meta.textContent = "revoked";
+      setStatus(deviceLabel + " revoked. Its device token can no longer sync.", "success");
+      var refreshed = await Promise.allSettled([refreshDevices(), refreshAccount()]);
+      if (refreshed.some(function (result) { return result.status === "rejected"; })) {
+        setStatus(
+          deviceLabel + " was revoked, but the account state could not be refreshed. Reload this page.",
+          "error"
+        );
+      }
+    });
+  }
+
   if (deviceForm) {
     deviceForm.addEventListener("submit", async function (event) {
       event.preventDefault();
@@ -961,6 +1042,46 @@ const ACCOUNT_SCRIPT = `
     });
   }
 
+  var deletionForm = document.getElementById("deletion-form");
+  if (deletionForm) {
+    var deletionInput = document.getElementById("deletion-confirmation");
+    var deletionSubmit = document.getElementById("deletion-submit");
+    var phraseNode = document.getElementById("deletion-confirmation-phrase");
+    var deletionPhrase = phraseNode ? phraseNode.textContent || "" : "";
+    var syncDeletionButton = function () {
+      var value = deletionInput && "value" in deletionInput ? deletionInput.value : "";
+      if (deletionSubmit) deletionSubmit.disabled = value !== deletionPhrase;
+    };
+    if (deletionInput) deletionInput.addEventListener("input", syncDeletionButton);
+    syncDeletionButton();
+    deletionForm.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      var value = deletionInput && "value" in deletionInput ? deletionInput.value : "";
+      if (value !== deletionPhrase) {
+        setDeletionStatus("Type the confirmation phrase exactly.", "error");
+        if (deletionInput) deletionInput.focus();
+        return;
+      }
+      if (!window.confirm("Permanently delete this hosted account and workspace?")) return;
+      if (deletionSubmit) deletionSubmit.disabled = true;
+      setDeletionStatus("Revoking credentials and starting the private-data purge…", "");
+      try {
+        await apiFetch("/v1/account", {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ confirmation: value })
+        });
+        window.location.assign("/account?deletion=requested");
+      } catch (error) {
+        setDeletionStatus(
+          error instanceof Error ? error.message : "Account deletion could not be started.",
+          "error"
+        );
+        syncDeletionButton();
+      }
+    });
+  }
+
   window.addEventListener("pagehide", function () {
     var output = document.getElementById("device-token");
     var result = document.getElementById("token-result");
@@ -977,8 +1098,18 @@ const ACCOUNT_SCRIPT = `
     signOut.addEventListener("click", async function () {
       signOut.disabled = true;
       try {
-        await apiFetch("/v1/auth/signout", { method: "POST" });
-        window.location.assign("/account");
+        var body = await apiFetch("/v1/auth/signout", { method: "POST" });
+        var logoutURL = new URL(firstText(body && body.logout_url, ""));
+        if (
+          logoutURL.origin !== "https://api.workos.com" ||
+          logoutURL.pathname !== "/user_management/sessions/logout" ||
+          logoutURL.username !== "" ||
+          logoutURL.password !== "" ||
+          logoutURL.hash !== ""
+        ) {
+          throw new Error("The sign-out destination was invalid.");
+        }
+        window.top.location.assign(logoutURL.toString());
       } catch (_) {
         signOut.disabled = false;
         setStatus("Sign out failed. Please try again.", "error");
@@ -990,8 +1121,10 @@ const ACCOUNT_SCRIPT = `
     var results = await Promise.allSettled([refreshAccount(), refreshDevices()]);
     if (results[0].status === "rejected") setStatus("Account details could not be refreshed.", "error");
     if (results[1].status === "rejected") setStatus("Devices could not be refreshed.", "error");
-    await acceptPendingInvite();
-    await refreshTeam();
+    if (!hostedBasic) {
+      await acceptPendingInvite();
+      await refreshTeam();
+    }
   }
 
   void refreshAll();
@@ -1000,8 +1133,8 @@ const ACCOUNT_SCRIPT = `
 
 // Tests recompute these hashes from the exact constants above. Keep them in
 // sync whenever either inline block changes.
-const STYLE_CSP_HASH = "sha256-xXx3NNvaQPo3MnrfY7dNxJSyBiq+6Wa51yij0+aYVkY=";
-const SCRIPT_CSP_HASH = "sha256-q4TR2K6TUy4YxQJVLYYVIw8lKHnVSUBsbThv8Znovpc=";
+const STYLE_CSP_HASH = "sha256-XadL2GtcwqU2wT3mVlcf+srMZMJTKCdUCFaMp2veTqY=";
+const SCRIPT_CSP_HASH = "sha256-4INW7eCrv1sG5Jl/CBAi1AzoOsSZ3UxxeY1EJyT8jik=";
 
 function escapeHTML(value: unknown): string {
   return String(value ?? "")
@@ -1053,7 +1186,10 @@ function deviceRows(devices: AccountDeviceView[] | undefined): string {
     const label = text(device.label, "Unnamed device");
     const id = text(device.id, "ID pending");
     const status = text(device.status, "active");
-    return `<li class="device-item"><div><strong>${escapeHTML(label)}</strong><code>${escapeHTML(id)}</code></div><span class="device-meta">${escapeHTML(status)}</span></li>`;
+    const revoke = status.trim().toLowerCase() === "active" && device.id
+      ? `<button class="button device-revoke" type="button" data-device-id="${escapeHTML(device.id)}" data-device-label="${escapeHTML(label)}" aria-label="Revoke ${escapeHTML(label)}">Revoke</button>`
+      : "";
+    return `<li class="device-item"><div><strong>${escapeHTML(label)}</strong><code>${escapeHTML(id)}</code></div><div class="device-actions"><span class="device-meta">${escapeHTML(status)}</span>${revoke}</div></li>`;
   }).join("");
 }
 
@@ -1102,8 +1238,8 @@ function setupRows(setup: SetupItemView[] | undefined, deviceCount: number): str
     : [
         { label: "Install the local CLI", detail: "Keep capture local and account-free.", complete: false },
         { label: "Create a device token", detail: "Use one scoped token per machine.", complete: deviceCount > 0 },
-        { label: "Review redaction", detail: "Preview what can leave the machine.", complete: false },
-        { label: "Sync the first batch", detail: "Only validated, policy-approved events are accepted.", complete: false },
+        { label: "Review redaction", detail: "Run handoffgraph sync --preview before any upload.", complete: false },
+        { label: "Sync the first batch", detail: "Run handoffgraph sync --accept-redaction after approving the preview.", complete: false },
       ];
 
   return source.map((item) => `<li data-complete="${item.complete === true ? "true" : "false"}"><strong>${escapeHTML(text(item.label, "Setup step"))}</strong><span>${escapeHTML(text(item.detail, "Not completed yet."))}</span></li>`).join("");
@@ -1141,6 +1277,7 @@ function brandHeader(account: boolean): string {
 
 /** Render the signed-in hosted account shell with safely escaped initial data. */
 export function renderAccountPage(data: AccountPageData = {}): string {
+  const hostedBasic = data.hostedBasic === true;
   const displayName = text(data.displayName, "Your account");
   const email = text(data.email, "Email unavailable");
   const workspaceName = text(data.workspaceName, "Hosted workspace");
@@ -1152,9 +1289,39 @@ export function renderAccountPage(data: AccountPageData = {}): string {
   const members = data.members;
   const invites = data.invites;
   const workspaces = data.workspaces;
+  const teamSection = hostedBasic ? "" : `
+  <section class="section" aria-labelledby="team-title">
+    <div class="section-head"><div><p class="kicker">Team</p><h2 id="team-title">Onboard people, not machines.</h2></div><p>Roles are owner, admin, member, and viewer. Invites are single-use links bound to one address, and every membership change is appended to the workspace audit trail.</p></div>
+    <div class="grid">
+      <article class="card members-card" aria-labelledby="members-heading">
+        <h3 id="members-heading">Members</h3>
+        <ul class="device-list" id="member-list">${memberRows(members)}</ul>
+        <form class="device-form invite-form" id="invite-form">
+          <div class="field"><label for="invite-email">Invite by email</label><input id="invite-email" name="email" type="email" maxlength="254" autocomplete="off" placeholder="teammate@example.com" required></div>
+          <div class="field"><label for="invite-role">Role</label><select id="invite-role" name="role"><option value="member" selected>member</option><option value="admin">admin</option><option value="viewer">viewer</option></select></div>
+          <button class="button primary" id="invite-submit" type="submit">Send invite</button>
+          <p class="form-hint" id="invite-hint">Ownership is never granted by a link. The invite URL is returned once.</p>
+          <p class="status" id="team-status" role="status" aria-live="polite"></p>
+          <div class="token-result" id="invite-result" role="region" aria-label="New invite link" hidden><p>Send this link to the invited address now. It is not saved in this browser and disappears when you leave the page.</p><code id="invite-link"></code></div>
+        </form>
+      </article>
+      <article class="card invites-card" id="invites-card" aria-labelledby="invites-heading">
+        <h3 id="invites-heading">Pending invites</h3>
+        <ul class="device-list" id="invite-list">${inviteRows(invites)}</ul>
+        <p>Each link works once, for the invited address only, and expires after seven days.</p>
+      </article>
+      <article class="card workspaces-card" aria-labelledby="workspaces-heading">
+        <h3 id="workspaces-heading">Your workspaces</h3>
+        <ul class="device-list" id="workspace-list">${workspaceRows(workspaces)}</ul>
+      </article>
+    </div>
+  </section>`;
+  const relationshipWarning = hostedBasic
+    ? ""
+    : "<li>If another workspace still references this account, deletion stops before the purge; contact support to resolve that link.</li>";
 
   return `${documentStart("Account · HandoffGraph", true)}
-<body>
+<body data-hosted-surface="${hostedBasic ? "basic" : "advanced"}">
 ${brandHeader(true)}
 <main id="main" class="shell">
   <section class="hero" aria-labelledby="account-title">
@@ -1211,29 +1378,21 @@ ${brandHeader(true)}
     </div>
   </section>
 
-  <section class="section" aria-labelledby="team-title">
-    <div class="section-head"><div><p class="kicker">Team</p><h2 id="team-title">Onboard people, not machines.</h2></div><p>Roles are owner, admin, member, and viewer. Invites are single-use links bound to one address, and every membership change is appended to the workspace audit trail.</p></div>
+${teamSection}
+
+  <section class="section" aria-labelledby="privacy-title">
+    <div class="section-head"><div><p class="kicker">Privacy controls</p><h2 id="privacy-title">Delete the hosted copy.</h2></div><p>Local HandoffGraph data stays on your machines. This action affects only this hosted account and its personal workspace.</p></div>
     <div class="grid">
-      <article class="card members-card" aria-labelledby="members-heading">
-        <h3 id="members-heading">Members</h3>
-        <ul class="device-list" id="member-list">${memberRows(members)}</ul>
-        <form class="device-form invite-form" id="invite-form">
-          <div class="field"><label for="invite-email">Invite by email</label><input id="invite-email" name="email" type="email" maxlength="254" autocomplete="off" placeholder="teammate@example.com" required></div>
-          <div class="field"><label for="invite-role">Role</label><select id="invite-role" name="role"><option value="member" selected>member</option><option value="admin">admin</option><option value="viewer">viewer</option></select></div>
-          <button class="button primary" id="invite-submit" type="submit">Send invite</button>
-          <p class="form-hint" id="invite-hint">Ownership is never granted by a link. The invite URL is returned once.</p>
-          <p class="status" id="team-status" role="status" aria-live="polite"></p>
-          <div class="token-result" id="invite-result" role="region" aria-label="New invite link" hidden><p>Send this link to the invited address now. It is not saved in this browser and disappears when you leave the page.</p><code id="invite-link"></code></div>
+      <article class="card danger-card" aria-labelledby="deletion-heading">
+        <h3 id="deletion-heading">Delete account and workspace</h3>
+        <p>This is permanent. It revokes every browser session and device token, then removes the workspace’s D1 rows and R2 objects. It does not delete local event stores or refund the limited-beta account issuance.</p>
+        <ul class="danger-list"><li>Export anything you need before continuing.</li><li>This deletes only the hosted personal workspace; local stores stay on your machines.</li>${relationshipWarning}</ul>
+        <form class="device-form danger-form" id="deletion-form">
+          <div class="field"><label for="deletion-confirmation">Type <code id="deletion-confirmation-phrase">DELETE ${escapeHTML(workspaceId)}</code></label><input id="deletion-confirmation" name="confirmation" type="text" autocomplete="off" spellcheck="false" required></div>
+          <button class="button danger" id="deletion-submit" type="submit" disabled>Delete permanently</button>
+          <p class="form-hint">A transient storage failure leaves a locked deletion job for automatic retry; it never widens the purge to another workspace.</p>
+          <p class="status" id="deletion-status" role="status" aria-live="polite"></p>
         </form>
-      </article>
-      <article class="card invites-card" id="invites-card" aria-labelledby="invites-heading">
-        <h3 id="invites-heading">Pending invites</h3>
-        <ul class="device-list" id="invite-list">${inviteRows(invites)}</ul>
-        <p>Each link works once, for the invited address only, and expires after seven days.</p>
-      </article>
-      <article class="card workspaces-card" aria-labelledby="workspaces-heading">
-        <h3 id="workspaces-heading">Your workspaces</h3>
-        <ul class="device-list" id="workspace-list">${workspaceRows(workspaces)}</ul>
       </article>
     </div>
   </section>
@@ -1258,6 +1417,19 @@ export function renderSignedOutPage(data: SignedOutPageData = {}): string {
     data.message,
     "Sign in to manage hosted sync, scoped device tokens, and beta usage. The local CLI remains account-free.",
   );
+  const authAvailable = data.authAvailable ?? true;
+  const signupAvailable = authAvailable && (data.signupAvailable ?? true);
+  const signupAction = signupAvailable
+    ? '<a class="button primary" href="/v1/auth/start?intent=signup&amp;return_to=%2Faccount">Create hosted account</a>'
+    : '<span class="button disabled" aria-disabled="true">New accounts closed</span>';
+  const signinAction = authAvailable
+    ? '<a class="button dark" href="/v1/auth/start?intent=signin&amp;return_to=%2Faccount">Sign in</a>'
+    : '<span class="button disabled" aria-disabled="true">Hosted identity unavailable</span>';
+  const accessNote = !authAvailable
+    ? "Hosted identity is not configured on this environment yet."
+    : signupAvailable
+      ? "Paid tiers are preview-only. Signing in does not start a subscription."
+      : "New-account access is closed. Existing beta accounts can still sign in.";
   return `${documentStart("Sign in · HandoffGraph", false)}
 <body>
 ${brandHeader(false)}
@@ -1266,8 +1438,8 @@ ${brandHeader(false)}
     <p class="kicker">Hosted beta</p>
     <h1 id="signed-out-title">Keep the thread.<span>Control the cloud.</span></h1>
     <p>${escapeHTML(message)}</p>
-    <div class="signed-out-actions"><a class="button primary" href="/v1/auth/start?intent=signup&amp;return_to=%2Faccount">Create hosted account</a><a class="button dark" href="/v1/auth/start?intent=signin&amp;return_to=%2Faccount">Sign in</a><a class="button dark" href="/">Use HandoffGraph locally</a></div>
-    <p><small>Paid tiers are preview-only. Signing in does not start a subscription.</small></p>
+    <div class="signed-out-actions">${signupAction}${signinAction}<a class="button dark" href="/">Use HandoffGraph locally</a></div>
+    <p><small>${escapeHTML(accessNote)}</small></p>
   </section>
 </main>
 </body>

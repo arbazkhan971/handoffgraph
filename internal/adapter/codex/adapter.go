@@ -3,9 +3,9 @@
 // It captures OpenAI Codex CLI sessions into the local event spine:
 //
 //   - Install/Uninstall delegate to integrations/codex, the merge-safe
-//     installer for the managed [hooks.<event>] tables in
+//     installer for Codex HooksToml matcher-group arrays in
 //     ~/.codex/config.toml (additive, marker-scoped, fail-closed on
-//     collisions, idempotent, timestamped backup before the first
+//     ambiguous ownership, idempotent, timestamped backup before the first
 //     modification of an existing file);
 //   - Normalize converts one documented Codex hook payload into canonical
 //     events with deterministic event ids (same payload, same ids);
@@ -29,6 +29,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -50,10 +51,12 @@ type Codex struct {
 	// ConfigDir overrides ~/.codex for Install/Uninstall (then
 	// HFG_CODEX_CONFIG_DIR).
 	ConfigDir string
-	// HookCommand is the base command installed for each managed hook
-	// event, written as `<command> --event <event>`. Empty resolves to the
-	// current executable.
+	// HookCommand is the complete command installed for each managed hook
+	// event. Empty resolves to `<current executable> hook codex`.
 	HookCommand string
+	// HookCommandWindows overrides Codex's commandWindows field. On Windows,
+	// an empty value resolves to the same cmd.exe-safe default as HookCommand.
+	HookCommandWindows string
 	// DryRun makes Install/Uninstall validate without writing.
 	DryRun bool
 }
@@ -84,6 +87,10 @@ func (c *Codex) Capabilities() adapter.Capabilities {
 		TestExitStatus:      false,
 		StructuredStreaming: false,
 		SessionEnumeration:  true,
+		// App Server support is deliberately narrower than structured live
+		// streaming: HandoffGraph only performs stable, read-only session
+		// enumeration over stdio. File-based Detect remains available.
+		AppServerSessionEnumeration: true,
 	}
 }
 
@@ -111,21 +118,22 @@ func (c *Codex) sessionsDir() string {
 	return filepath.Join(home, ".codex", "sessions")
 }
 
-// hookCommand resolves the base hook command to install, defaulting to the
-// current executable (same convention as the claude lane).
-func (c *Codex) hookCommand() string {
+// hookCommand resolves the complete stdin hook command. The executable path
+// is shell-quoted because Codex executes configured command strings through a
+// shell and os.Executable may contain whitespace or metacharacters.
+func (c *Codex) hookCommand() (string, error) {
 	if c.HookCommand != "" {
-		return c.HookCommand
+		return c.HookCommand, nil
 	}
 	if exe, err := os.Executable(); err == nil {
-		return exe
+		return adapter.DefaultHookCommand(exe, c.Name())
 	}
-	return "handoffgraph"
+	return adapter.DefaultHookCommand("handoffgraph", c.Name())
 }
 
 // legacyHooksEntry is the entry name legacy HandoffGraph versions used for
 // their single [hooks.handoffgraph] table (see docs/adapter-codex.md). The
-// current installer manages per-event [hooks.<event>] tables instead.
+// current installer manages current CamelCase event matcher-group arrays.
 const legacyHooksEntry = "handoffgraph"
 
 // refuseLegacyHooksTable fails closed when the config already holds a
@@ -136,11 +144,19 @@ const legacyHooksEntry = "handoffgraph"
 // The check is read-only. An unparseable file is deliberately left to the
 // installer, which reports it fail-closed with its own precise message.
 func refuseLegacyHooksTable(dir string) error {
-	data, err := os.ReadFile(filepath.Join(dir, codexhooks.ConfigFile))
+	path := filepath.Join(dir, codexhooks.ConfigFile)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		return fmt.Errorf("codex install: stat config: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("codex install: %s is not a regular file; refusing to read it", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return fmt.Errorf("codex install: read config: %w", err)
 	}
 	var cfg map[string]any
@@ -170,11 +186,11 @@ func mapInstallError(op string, err error) error {
 
 // Install registers HandoffGraph hooks in ~/.codex/config.toml via
 // integrations/codex: merge-safe (every byte outside our marker-carrying
-// blocks is preserved verbatim), fail-closed (an entry name already taken
-// by user configuration is never overwritten), idempotent (installing an
-// identical configuration is a no-op) and dry-run-safe. Only user scope is
-// supported; codex has no project-scoped hook configuration, so project
-// scope fails with ErrUnsupported rather than fabricating support.
+// blocks is preserved verbatim), additive (user matcher groups remain in
+// their original order), fail-closed on ambiguous markers or an unmarked
+// exact-command collision, idempotent and dry-run-safe. Only user scope is
+// supported; codex has no project-scoped hook configuration, so project scope
+// fails with ErrUnsupported rather than fabricating support.
 //
 // Stub-era marker comments ("# managed-by: handoffgraph") written by the
 // v0.2 stub are inert TOML comments: they neither conflict with the merge
@@ -190,9 +206,18 @@ func (c *Codex) Install(ctx context.Context, scope adapter.InstallScope) error {
 	if err := refuseLegacyHooksTable(dir); err != nil {
 		return err
 	}
+	command, err := c.hookCommand()
+	if err != nil {
+		return fmt.Errorf("codex install: resolve hook command: %w", err)
+	}
+	commandWindows := c.HookCommandWindows
+	if commandWindows == "" && runtime.GOOS == "windows" {
+		commandWindows = command
+	}
 	if _, err := codexhooks.Install(dir, codexhooks.Options{
-		Command: c.hookCommand(),
-		DryRun:  c.DryRun,
+		Command:        command,
+		CommandWindows: commandWindows,
+		DryRun:         c.DryRun,
 	}); err != nil {
 		return mapInstallError("codex install", err)
 	}
@@ -285,51 +310,84 @@ func (c *Codex) Detect(ctx context.Context, dir string) ([]adapter.SessionRef, e
 	return refs, nil
 }
 
-// Normalize converts one documented Codex hook payload into canonical
-// events. Unknown payload fields are preserved via Event.Unknown. Event
-// ids are deterministic: a hook payload carrying a session id always
-// derives the same evt_<ulid> from (provider, session id, sequence,
-// content hash), so re-delivering the same payload is idempotent in the
-// event store. A payload without a session id cannot be scoped without
-// risking cross-session collisions, so those events get fresh random ids
-// (unique evidence, at the cost of idempotency for that event only).
+// Normalize converts one Codex hook callback into canonical events. Current
+// Codex payloads are discriminated by hook_event_name (CamelCase); the legacy
+// lowercase type dialect remains accepted for compatibility. Unknown fields
+// are preserved via Event.Unknown. Session-scoped event ids incorporate the
+// canonical native payload, making exact callback retries immutable and
+// idempotent even though Codex hook payloads do not carry timestamps.
 func (c *Codex) Normalize(ctx context.Context, raw json.RawMessage) ([]protocol.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var p codexHook
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, fmt.Errorf("codex normalize: %w", err)
+	if len(raw) == 0 {
+		return nil, errors.New("codex normalize: empty payload")
 	}
 	var view map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &view); err != nil {
-		return nil, fmt.Errorf("codex normalize: %w", err)
+		return nil, fmt.Errorf("codex normalize: payload is not a JSON object: %w", err)
 	}
-	now := time.Now().UTC()
+	if view == nil {
+		return nil, errors.New("codex normalize: payload is not a JSON object")
+	}
+	if value, present := view["hook_event_name"]; present {
+		var hookName string
+		if json.Unmarshal(value, &hookName) != nil || hookName == "" {
+			return nil, errors.New("codex normalize: hook_event_name must be a non-empty string")
+		}
+	}
+	var p codexHook
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("codex normalize: decode payload fields: %w", err)
+	}
+
+	var native any
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	if err := dec.Decode(&native); err != nil {
+		return nil, fmt.Errorf("codex normalize: decode native payload: %w", err)
+	}
+	canonicalNative, err := content.CanonicalJSON(native)
+	if err != nil {
+		return nil, fmt.Errorf("codex normalize: canonicalize native payload: %w", err)
+	}
+	nativeHash := content.HashBytes(canonicalNative)
+
+	var occurredAt time.Time
+	if _, present := view["timestamp"]; present {
+		parsed, ok := parseRolloutTime(p.Timestamp)
+		if !ok {
+			return nil, errors.New("codex normalize: timestamp is not valid RFC3339")
+		}
+		occurredAt = parsed
+	}
+	consumed := legacyHookPayloadConsumed
+	if p.HookEventName != "" {
+		consumed = currentHookPayloadConsumed
+	}
 	var seq int64
 	mk := func(kind protocol.EventKind, payload []byte) protocol.Event {
 		seq++
 		ev := protocol.Event{
 			SchemaVersion:   protocol.SchemaVersionEvent,
 			Sequence:        seq,
-			OccurredAt:      now,
-			ObservedAt:      now,
+			OccurredAt:      occurredAt,
+			ObservedAt:      occurredAt,
 			NativeSessionID: p.SessionID,
 			Provider:        c.Name(),
+			Model:           p.Model,
 			Kind:            kind,
 			Provenance:      protocol.ProvenanceObserved,
 			Payload:         payload,
 			ContentHash:     content.HashBytes(payload),
 		}
 		if p.SessionID != "" {
-			// Hook payloads carry no timestamp, so the derivation key uses
-			// a zero time: the id stays a pure function of content.
-			ev.EventID = deriveEventID(p.SessionID, seq, time.Time{}, ev.ContentHash)
+			ev.EventID = deriveEventID(p.SessionID, seq, occurredAt, ev.ContentHash+"|"+nativeHash)
 		} else {
 			ev.EventID = ids.Event()
 		}
 		for k, v := range view {
-			if !hookPayloadConsumed[k] {
+			if !consumed[k] {
 				if ev.Unknown == nil {
 					ev.Unknown = make(map[string]json.RawMessage)
 				}
@@ -338,11 +396,98 @@ func (c *Codex) Normalize(ctx context.Context, raw json.RawMessage) ([]protocol.
 		}
 		return ev
 	}
+
+	if p.HookEventName != "" {
+		source := "hook:" + p.HookEventName
+		payload := func(values map[string]any) []byte {
+			if values == nil {
+				values = map[string]any{}
+			}
+			values["source_kind"] = source
+			return mustJSON(values)
+		}
+		switch p.HookEventName {
+		case "SessionStart":
+			kind := protocol.EventSessionStarted
+			if p.Source == "resume" {
+				kind = protocol.EventSessionResumed
+			}
+			return []protocol.Event{mk(kind, payload(map[string]any{"source": p.Source}))}, nil
+		case "UserPromptSubmit":
+			message, lossless, err := normalizedHookText(p.Prompt, false)
+			if err != nil {
+				return nil, fmt.Errorf("codex normalize: prompt: %w", err)
+			}
+			if lossless {
+				consumed = withConsumedField(consumed, "prompt")
+			}
+			return []protocol.Event{mk(protocol.EventPromptSubmitted, payload(map[string]any{
+				"message": message,
+				"turn_id": p.TurnID,
+			}))}, nil
+		case "PreToolUse":
+			return []protocol.Event{mk(protocol.EventToolStarted, payload(map[string]any{
+				"tool_name":   p.ToolName,
+				"tool_use_id": p.ToolUseID,
+				"turn_id":     p.TurnID,
+				"tool_input":  rawOrNull(p.ToolInput),
+			}))}, nil
+		case "PostToolUse":
+			kind := protocol.EventToolCompleted
+			values := map[string]any{
+				"tool_name":     p.ToolName,
+				"tool_use_id":   p.ToolUseID,
+				"turn_id":       p.TurnID,
+				"tool_input":    rawOrNull(p.ToolInput),
+				"tool_response": rawOrNull(p.ToolResponse),
+			}
+			if failed, reason := codexToolResponseFailed(p.ToolResponse); failed {
+				kind = protocol.EventToolFailed
+				if reason != "" {
+					values["error"] = truncateText(reason, rolloutMaxText)
+				}
+			}
+			return []protocol.Event{mk(kind, payload(values))}, nil
+		case "PreCompact", "PostCompact":
+			phase := "post"
+			if p.HookEventName == "PreCompact" {
+				phase = "pre"
+			}
+			return []protocol.Event{mk(protocol.EventSessionCompacted, payload(map[string]any{
+				"phase":   phase,
+				"trigger": p.Trigger,
+				"turn_id": p.TurnID,
+			}))}, nil
+		case "Stop":
+			// Codex Stop means the current response/turn stopped, not that the
+			// native session ended. Preserve that distinction in the trace kind.
+			lastMessage, lossless, err := normalizedHookText(p.LastAssistantMessage, true)
+			if err != nil {
+				return nil, fmt.Errorf("codex normalize: last_assistant_message: %w", err)
+			}
+			if lossless {
+				consumed = withConsumedField(consumed, "last_assistant_message")
+			}
+			return []protocol.Event{mk(protocol.EventTraceCompleted, payload(map[string]any{
+				"trace_id":               p.TurnID,
+				"stop_hook_active":       p.StopHookActive,
+				"last_assistant_message": lastMessage,
+			}))}, nil
+		case "SessionEnd":
+			// Not configurable in Codex 0.144.3 HooksToml, but tolerated for
+			// forward/native compatibility when a provider emits it directly.
+			return []protocol.Event{mk(protocol.EventSessionEnded, payload(map[string]any{"reason": p.Reason}))}, nil
+		default:
+			// PermissionRequest and subagent lifecycle callbacks currently have
+			// no lossless dedicated hfg.event.v1 kind. Keep the complete native
+			// object as observed log evidence instead of guessing.
+			return []protocol.Event{mk(protocol.EventLogObserved, canonicalNative)}, nil
+		}
+	}
+
 	switch {
 	case p.Type == "session.start":
-		ev := mk(protocol.EventSessionStarted, nil)
-		ev.Model = p.Model
-		return []protocol.Event{ev}, nil
+		return []protocol.Event{mk(protocol.EventSessionStarted, nil)}, nil
 	case p.Type == "session.end":
 		return []protocol.Event{mk(protocol.EventSessionEnded, nil)}, nil
 	case p.Type == "tool.pre":
@@ -408,29 +553,124 @@ var _ adapter.Adapter = (*Codex)(nil)
 
 // codexHook mirrors the documented Codex hook payload fields.
 type codexHook struct {
-	Type      string          `json:"type"`
-	SessionID string          `json:"session_id"`
-	Cwd       string          `json:"cwd"`
-	Model     string          `json:"model"`
-	ToolName  string          `json:"tool_name"`
-	ToolInput json.RawMessage `json:"tool_input"`
-	ToolUseID string          `json:"tool_use_id"`
-	TurnID    string          `json:"turn_id"`
-	ExitCode  *int            `json:"exit_code"`
+	Type                 string          `json:"type"`
+	HookEventName        string          `json:"hook_event_name"`
+	SessionID            string          `json:"session_id"`
+	Timestamp            string          `json:"timestamp"`
+	Cwd                  string          `json:"cwd"`
+	Model                string          `json:"model"`
+	Prompt               json.RawMessage `json:"prompt"`
+	ToolName             string          `json:"tool_name"`
+	ToolInput            json.RawMessage `json:"tool_input"`
+	ToolResponse         json.RawMessage `json:"tool_response"`
+	ToolUseID            string          `json:"tool_use_id"`
+	TurnID               string          `json:"turn_id"`
+	ExitCode             *int            `json:"exit_code"`
+	Source               string          `json:"source"`
+	Trigger              string          `json:"trigger"`
+	StopHookActive       bool            `json:"stop_hook_active"`
+	LastAssistantMessage json.RawMessage `json:"last_assistant_message"`
+	Reason               string          `json:"reason"`
 }
 
-// hookPayloadConsumed lists the hook payload fields consumed by the
+// legacyHookPayloadConsumed lists the legacy hook fields consumed by the
 // mapping above; everything else is preserved in Event.Unknown.
-var hookPayloadConsumed = map[string]bool{
+var legacyHookPayloadConsumed = map[string]bool{
 	"type":        true,
 	"session_id":  true,
-	"cwd":         true,
 	"model":       true,
 	"tool_name":   true,
 	"tool_input":  true,
 	"tool_use_id": true,
 	"turn_id":     true,
 	"exit_code":   true,
+}
+
+// currentHookPayloadConsumed lists current 0.144.3 fields represented in the
+// canonical event envelope or payload. Provider fields not listed here (for
+// example transcript_path, permission_mode, agent_id and agent_type) stay in
+// Event.Unknown rather than being silently discarded.
+var currentHookPayloadConsumed = map[string]bool{
+	"hook_event_name":  true,
+	"session_id":       true,
+	"timestamp":        true,
+	"model":            true,
+	"tool_name":        true,
+	"tool_input":       true,
+	"tool_response":    true,
+	"tool_use_id":      true,
+	"turn_id":          true,
+	"source":           true,
+	"trigger":          true,
+	"stop_hook_active": true,
+	"reason":           true,
+}
+
+func withConsumedField(base map[string]bool, field string) map[string]bool {
+	copy := make(map[string]bool, len(base)+1)
+	for key, value := range base {
+		copy[key] = value
+	}
+	copy[field] = true
+	return copy
+}
+
+// normalizedHookText preserves null separately from the empty string and
+// reports whether the canonical payload contains the complete native value.
+// When truncation is necessary, callers keep the raw provider field in
+// Event.Unknown so normalization never destroys observed evidence.
+func normalizedHookText(raw json.RawMessage, nullable bool) (any, bool, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		if nullable {
+			return nil, true, nil
+		}
+		return "", true, nil
+	}
+	if trimmed == "null" {
+		if !nullable {
+			return nil, false, errors.New("must be a string")
+		}
+		return nil, true, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		if nullable {
+			return nil, false, errors.New("must be a string or null")
+		}
+		return nil, false, errors.New("must be a string")
+	}
+	truncated := truncateText(value, rolloutMaxText)
+	return truncated, truncated == value, nil
+}
+
+func codexToolResponseFailed(raw json.RawMessage) (bool, string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, ""
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return false, ""
+	}
+	readBool := func(key string) bool {
+		var value bool
+		return json.Unmarshal(object[key], &value) == nil && value
+	}
+	readString := func(key string) string {
+		var value string
+		_ = json.Unmarshal(object[key], &value)
+		return value
+	}
+	if reason := readString("error"); reason != "" {
+		return true, reason
+	}
+	if readBool("is_error") {
+		return true, "is_error"
+	}
+	if readBool("interrupted") {
+		return true, "interrupted"
+	}
+	return false, ""
 }
 
 // parseRolloutTime parses an RFC3339 timestamp with optional fractional

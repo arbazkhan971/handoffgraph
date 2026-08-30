@@ -135,6 +135,26 @@ func Load(dir string) (*Config, error) {
 	return &cfg, nil
 }
 
+// LoadUser loads only defaults and the user-scoped configuration. It is the
+// safe loader for globally installed provider hooks: their current working
+// directory is controlled by whichever repository the provider is running
+// in, so consulting repository configuration there would let an untrusted
+// checkout redirect captured prompt and tool payloads to an attacker-chosen
+// database path.
+func LoadUser() (*Config, error) {
+	cfg := Default()
+	userPath := filepath.Join(UserDataDir(), "config.toml")
+	if _, err := os.Stat(userPath); err == nil {
+		if err := mergeFile(userPath, &cfg); err != nil {
+			return nil, fmt.Errorf("load user config %s: %w", userPath, err)
+		}
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
 // FindRepoConfig walks up from dir looking for .handoffgraph.toml.
 // It returns "" if none is found.
 func FindRepoConfig(dir string) (string, error) {

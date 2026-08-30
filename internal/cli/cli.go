@@ -7,6 +7,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -58,11 +59,20 @@ func (a *App) Run(ctx context.Context, c *Context, name string, args []string) e
 	fs.SetOutput(c.Stderr)
 	fs.Usage = func() {
 		fmt.Fprintf(c.Stdout, "Usage: %s %s %s\n\n%s\n", a.Name, name, cmd.Usage, cmd.Summary)
+		if cmd.Flags != nil {
+			fmt.Fprintln(c.Stdout, "\nFlags:")
+			fs.SetOutput(c.Stdout)
+			fs.PrintDefaults()
+			fs.SetOutput(c.Stderr)
+		}
 	}
 	if cmd.Flags != nil {
 		cmd.Flags(fs)
 	}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	return cmd.Run(ctx, c, fs)

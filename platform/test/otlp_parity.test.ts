@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { convertOtlpExport, otlpEventID, otlpSessionID, type HfgEvent } from "../src/otlp";
 import { decodeExportRequest } from "../src/otlp_proto";
-import { default as worker } from "../src/index";
+import { default as worker } from "./advanced_worker";
 import { sha256Hex } from "../src/auth";
 
 /**
@@ -316,7 +316,7 @@ describe("intValue and bytesValue edge cases", () => {
 // ---- per-event observed_at (replay across differently-composed batches) ----
 
 const DEVICE_TOKEN = "hfgd_test_token";
-const TOKEN_WORKSPACE = "wsp_01TESTWORKSPACE0000000000000";
+const TOKEN_WORKSPACE = `wsp_01J${"A".repeat(23)}`;
 const DEVICE_ID = "dev_01TESTDEVICE000000000000000000";
 const TOKEN_HASH = await sha256Hex(DEVICE_TOKEN);
 const CTX = {} as never;

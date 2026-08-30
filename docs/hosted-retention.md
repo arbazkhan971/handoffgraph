@@ -15,22 +15,29 @@ Everything below follows from that.
 
 | Layer | Table / location | Retention |
 | --- | --- | --- |
-| Spine | `events` (D1) | **Forever.** Append-only; never updated, never deleted. |
-| Cold tier | `artifacts/<workspace_id>/*.jsonl` (R2) | **Forever.** Immutable objects. |
-| Cold-tier index | `artifact_file_list` (D1) | **Forever.** Rows are immutable and undeletable. |
-| Exports | `exports/<workspace_id>/*.ndjson` (R2) + `exports` (D1) | Kept; terminal manifests are immutable. |
+| Spine | `events` (D1) | **For the workspace lifetime.** Append-only in ordinary operation; never TTL'd. |
+| Cold tier | `artifacts/<workspace_id>/*.jsonl` (R2) | **For the workspace lifetime.** Immutable and never TTL'd. |
+| Cold-tier index | `artifact_file_list` (D1) | **For the workspace lifetime.** Rows are immutable outside account deletion. |
+| Exports | `exports/<workspace_id>/*.ndjson` (R2) + `exports` (D1) | Kept for the workspace lifetime; terminal manifests are immutable. |
 | Derived read models | `traces`, `spans`, and later projections | **TTL-eligible.** Rebuildable by replaying the spine. |
 
 The rule is enforced in the schema, not only in application code. Migration
 0006 installs `events_reject_update` and `events_reject_delete`, so any
-statement that tries to slim the spine — from this sweep or any future one —
-aborts the transaction instead of silently destroying evidence. The artifact
-index carries the same guards (`artifact_file_list_reject_update`,
-`artifact_file_list_reject_delete`).
+statement that tries to slim the spine — from this sweep or any ordinary future
+path — aborts the transaction instead of silently destroying evidence. The
+artifact index carries the same update/delete guards.
+
+Migration 0018 adds the one explicit privacy exception: after an authenticated
+owner confirms permanent deletion, a durable `workspace_deletions` tombstone
+allows DELETEs for that exact workspace only. Update immutability is never
+relaxed, and the tombstone cannot authorize another tenant. Resurrection guards
+then reject new rows for the deleting workspace. The exception exists so the
+service can honor account deletion without weakening append-only evidence in
+normal operation.
 
 ## Artifact tiering (compaction)
 
-A scheduled sweep (`*/10 * * * *`, `artifactsScheduled`) copies runs of spine
+A scheduled sweep (`*/5 * * * *`, `artifactsScheduled`) copies runs of spine
 rows into compacted JSONL objects on R2 and records each object in
 `artifact_file_list`.
 
@@ -92,9 +99,20 @@ future edit adds `events`, `artifact_file_list`, or `exports` to the target
 list, the sweep refuses to touch them.
 
 **What retention never does:** it never deletes an event, never deletes an
-artifact index row, and never deletes an R2 object. Purging a workspace's cold
-storage is an explicit operator action that has to drop the immutability trigger
-first — it is deliberately not something a TTL can reach.
+artifact index row, and never deletes an R2 object. Only the separately
+authenticated, owner-confirmed `DELETE /v1/account` privacy workflow can purge
+the tombstoned workspace's D1 rows and exact R2 prefixes; it does not change a
+retention policy or drop an immutability trigger. That privacy workflow first
+deletes the WorkOS user and invalidates only the tenant's captured API/gateway
+KV cache keys. It purges D1 transactionally, then waits at least five minutes
+before repeating KV invalidation and proving R2 empty. Any external-store or
+transaction failure leaves the tombstone pending for retry.
+
+Analytics Engine and Queues are deliberately unbound from the Hosted Basic
+deployment. Analytics Engine has no tenant-selective row deletion operation,
+and a queue purge affects the whole queue rather than one workspace. Enabling
+either advanced surface requires a separately reviewed retention/deletion
+contract; they are not part of the Basic retention path described here.
 
 ### Rebuilding after a sweep
 
@@ -134,7 +152,7 @@ binding = "BODIES"
 bucket_name = "handoffgraph-bodies"
 
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/5 * * * *"]
 ```
 
 Create the bucket once with `npx wrangler r2 bucket create handoffgraph-bodies`.

@@ -94,22 +94,45 @@ from a transcript is `OBSERVED`.
 
 #### Codex hook installation contract
 
-The Codex adapter manages exactly one table in the Codex CLI config
-(`~/.codex/config.toml`): `[hooks.handoffgraph]`, containing the hook command
-plus six events (`session.started`, `prompt.submitted`,
-`assistant.completed`, `tool.completed`, `command.completed`,
-`session.ended`). The merge is fail-closed:
+The Codex adapter adds one marker-owned matcher group under `[hooks]` for each
+of Codex 0.144.3's ten case-sensitive events: `PermissionRequest`,
+`PostCompact`, `PostToolUse`, `PreCompact`, `PreToolUse`, `SessionStart`,
+`Stop`, `SubagentStart`, `SubagentStop`, and `UserPromptSubmit`. `Stop` maps
+to trace completion, not session end. The merge is fail-closed:
 
 | Situation | Behavior |
 |---|---|
 | Config unparseable | Never modified |
-| Existing managed hook differs from desired | `ErrHookConflict`; never overwritten |
-| Unrelated keys or tables present | Preserved byte-for-byte |
-| Managed table already matches | No-op (install is idempotent) |
+| User groups, including the same event | Preserved byte-for-byte; managed group appended |
+| Unmarked exact HandoffGraph command | `ErrHookConflict` to prevent double capture |
+| Ambiguous/duplicate managed markers | `ErrHookConflict`; never modified |
+| Exact managed groups already match | No-op (install is idempotent) |
 | `--dry-run` | All checks run, nothing written |
 
-Writes are atomic: temp file plus rename. Uninstall removes only the managed
-table.
+Writes and backups are atomic and symlink-safe. Uninstall removes only the
+marker-owned regions; neither install nor uninstall changes Codex trust state.
+The stdin capture command is bounded, accepts exactly one JSON object matching
+the pinned provider event's required fields and types, appends the normalized
+batch atomically, and is silent on success so it cannot inject hook output into
+the model. Codex's own hook-hash review remains an explicit user approval.
+
+#### Claude hook installation contract
+
+Claude Code 2.1.227 receives one additive group for each of `PostCompact`,
+`PostToolUse`, `PreCompact`, `PreToolUse`, `SessionEnd`, `SessionStart`, `Stop`,
+and `UserPromptSubmit`. `Stop` is trace completion; only `SessionEnd` closes the
+native session. Default handlers have the closed key set `type`, `command`, and
+`args`: the command is the raw absolute executable and args are exactly
+`["hook", "claude"]`, including on Windows.
+
+Because provider rewrites may strip unknown handler keys, Claude ownership is
+external to `settings.json`. A `0600` POSIX sidecar (Windows uses inherited ACL
+semantics) records the exact handler and event set. The installer requires a
+unique exact match before reinstall or uninstall, preserves all other groups,
+and uses guarded atomic settings/manifest writes that recheck both files at
+every transaction edge, plus a recoverable pending transaction. Only a complete
+exact historical seven-event marker set can be migrated or removed; partial,
+malformed, foreign, or already-stripped markers fail closed.
 
 #### Deterministic event IDs and re-import idempotency
 
@@ -213,9 +236,13 @@ public edge abuse controls exist. A hosted workspace without an entitlement
 fails ingest closed; every account created through AuthKit receives a metered
 Basic entitlement atomically.
 
-The hosted foundation is present but not publicly deployed. Automated CLI
-sync policy, Turnstile/WAF, remote migration, production domains, deletion and
-retention operations, private shares, and billing remain gates.
+The hosted foundation is present but not publicly deployed. The explicit-only
+CLI sync now redacts through a fixed local high-water mark, requires
+first-upload preview acceptance, and resumes deterministic batches from a
+durable tenant-scoped cursor; self-service tenant deletion is also implemented.
+Turnstile/WAF, remote migration, production domains, production retention,
+private shares, and billing remain gates. See [hosted-sync.md](hosted-sync.md)
+for the client boundary.
 
 ## Next versions
 
@@ -224,8 +251,8 @@ retention operations, private shares, and billing remain gates.
 - **v0.7.0** Canonical public repository, tagged archives, install and upgrade
   documentation, and open-source launch. Release builds are configured, but no
   native agent invocation is auto-executed.
-- **v0.8.0** Finish explicit/redacted client sync, productionize the existing
-  hosted Basic account/quota foundation, and add private shares.
+- **v0.8.0** Productionize the existing hosted Basic account/quota/sync
+  foundation and add private shares.
 
 See [ROADMAP.md](../ROADMAP.md) for the full release train and
 [adapter-codex.md](adapter-codex.md) for the Codex adapter reference.

@@ -6,7 +6,7 @@ import worker, {
   type D1BoundStatement,
   type D1DatabaseLike,
   type D1Statement,
-} from "../src/index";
+} from "./advanced_worker";
 import {
   BATCH_SCHEMA_VERSION,
   DEFAULT_PAGE_LIMIT,
@@ -19,8 +19,11 @@ import {
   MAX_PAGE_LIMIT,
   MAX_PROVIDER_BYTES,
   MAX_PROVENANCE_BYTES,
+  MAX_REDACTION_FIELD_BYTES,
+  MAX_REDACTION_FIELDS,
   MAX_TIMESTAMP_BYTES,
   MAX_WORKSTREAM_TITLE_BYTES,
+  REDACTION_VERSION,
   buildEventRows,
   buildReceipt,
   buildWorkstreamListResponse,
@@ -85,6 +88,7 @@ function event(overrides: Record<string, unknown> = {}, i = 0): Record<string, u
     provider: "codex",
     provenance: "OBSERVED",
     payload: { exit_code: 1 },
+    redaction: { version: REDACTION_VERSION, status: "clean" },
     ...overrides,
   };
 }
@@ -120,6 +124,9 @@ describe("limits", () => {
     expect(MAX_NATIVE_SESSION_ID_BYTES).toBe(256);
     expect(MAX_PROVENANCE_BYTES).toBe(8);
     expect(MAX_CONTENT_HASH_BYTES).toBe(71);
+    expect(REDACTION_VERSION).toBe(1);
+    expect(MAX_REDACTION_FIELDS).toBe(256);
+    expect(MAX_REDACTION_FIELD_BYTES).toBe(256);
     expect(MAX_WORKSTREAM_TITLE_BYTES).toBe(200);
     expect(MAX_TIMESTAMP_BYTES).toBe(35);
     expect(DEFAULT_PAGE_LIMIT).toBe(50);
@@ -209,9 +216,15 @@ describe("validateEventBatch", () => {
       [{ ...event({}, 1), observed_at: undefined }, "events[1].observed_at must be an RFC 3339 timestamp"],
       [{ ...event({}, 1), sequence: -1 }, "events[1].sequence must be a non-negative safe integer"],
       [{ ...event({}, 1), sequence: 1.5 }, "events[1].sequence must be a non-negative safe integer"],
-      [{ ...event({}, 1), redaction: "failed" }, "events[1].redaction must be an object"],
-      [{ ...event({}, 1), redaction: { status: "failed" } }, "events[1].redaction status forbids sync"],
-      [{ ...event({}, 1), redaction: { status: "REDACTION_FAILED" } }, "events[1].redaction status forbids sync"],
+      [{ ...event({}, 1), redaction: undefined }, "events[1].redaction must be an object attesting successful client redaction"],
+      [{ ...event({}, 1), redaction: "failed" }, "events[1].redaction must be an object attesting successful client redaction"],
+      [{ ...event({}, 1), redaction: { version: 1, status: "failed" } }, "events[1].redaction status forbids sync"],
+      [{ ...event({}, 1), redaction: { version: 1, status: "REDACTION_FAILED" } }, "events[1].redaction status forbids sync"],
+      [{ ...event({}, 1), redaction: { version: 1 } }, "events[1].redaction.status must be clean or redacted"],
+      [{ ...event({}, 1), redaction: { version: 1, status: "done" } }, "events[1].redaction.status must be clean or redacted"],
+      [{ ...event({}, 1), redaction: { version: 2, status: "clean" } }, "events[1].redaction.version must be 1"],
+      [{ ...event({}, 1), redaction: { version: 1, status: "clean", fields_removed: "payload" } }, "events[1].redaction.fields_removed must be an array of at most 256 strings"],
+      [{ ...event({}, 1), redaction: { version: 1, status: "redacted", fields_removed: [""] } }, "events[1].redaction.fields_removed entries must be non-empty strings of at most 256 UTF-8 bytes"],
     ];
     for (const [badEvent, error] of cases) {
       expect(validateEventBatch(envelope({}, [event(), badEvent]), TOKEN_WORKSPACE)).toEqual({
@@ -831,7 +844,10 @@ describe("worker: routing", () => {
     expect(page.headers.get("content-type")).toContain("text/html");
     expect(page.headers.get("cache-control")).toBe("no-store");
     expect(page.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
-    expect(await page.text()).toContain("Create hosted account");
+    const pageHtml = await page.text();
+    expect(pageHtml).toContain("Hosted identity unavailable");
+    expect(pageHtml).not.toContain("intent=signup");
+    expect(pageHtml).not.toContain("intent=signin");
 
     const auth = await worker.fetch(request("/v1/auth/start?intent=signup"), makeEnv(db), CTX);
     expect(auth.status).toBe(503);
@@ -1364,6 +1380,28 @@ describe("worker: POST /v1/event-batches", () => {
     expect(await response.json()).toEqual({
       error: "event_id was already used for different evidence",
     });
+    expect(batches).toHaveLength(1);
+  });
+
+  it("maps a commit-time device-revocation loss to the ordinary 401", async () => {
+    const { db, batches } = mockDb({
+      first: deviceRegistry(),
+      batch: () => {
+        throw new Error("D1_ERROR: active device required: SQLITE_CONSTRAINT");
+      },
+    });
+    const response = await worker.fetch(
+      request("/v1/event-batches", {
+        method: "POST",
+        headers: authed({ "idempotency-key": "revocation-race" }),
+        body: JSON.stringify(envelope()),
+      }),
+      makeEnv(db),
+      CTX,
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
     expect(batches).toHaveLength(1);
   });
 

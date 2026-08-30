@@ -61,6 +61,9 @@ func TestDoctorVerifyFailsUntilObservationsRebuilt(t *testing.T) {
 	if ck.Passed {
 		t.Fatalf("observations_fresh expected to fail before any rebuild: %+v", *ck)
 	}
+	if !strings.Contains(ck.Detail, "handoffgraph index rebuild") {
+		t.Fatalf("observations_fresh must name the repair command: %+v", *ck)
+	}
 
 	// index rebuild materializes the read model; doctor --verify must go
 	// green afterward with no other state change.

@@ -7,9 +7,11 @@
     "test": "vitest run",
     "types": "wrangler types",
     "typecheck": "wrangler types --check && tsc --noEmit",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "deploy:dry": "wrangler deploy --dry-run --outdir dist"
+    "dev": "wrangler dev --env=\"\"",
+    "deploy": "wrangler deploy --env=\"\"",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:dry": "wrangler deploy --env=\"\" --dry-run --outdir dist/production",
+    "deploy:dry:staging": "wrangler deploy --env staging --dry-run --outdir dist/staging"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
@@ -22,6 +24,7 @@
     "workerd@1.20260820.1": true
   },
   "dependencies": {
+    "jose": "^6.2.10",
     "ulid": "^3.0.2"
   }
 }

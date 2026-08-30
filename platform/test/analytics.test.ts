@@ -22,7 +22,7 @@ import worker, {
   type D1BoundStatement,
   type D1DatabaseLike,
   type D1Statement,
-} from "../src/index";
+} from "./advanced_worker";
 import { sha256Hex } from "../src/auth";
 import { canonicalJsonStringify, type IngestEvent } from "../src/ingest";
 import {
@@ -1129,6 +1129,7 @@ function eventBatchEnvelope(): Record<string, unknown> {
         observed_at: "2026-08-21T10:00:01Z",
         provenance: "OBSERVED",
         payload: { span_id: "spn_ae", token_input: 10, token_output: 2 },
+        redaction: { version: 1, status: "clean" },
       },
     ],
   };

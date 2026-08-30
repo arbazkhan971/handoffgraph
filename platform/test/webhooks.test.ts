@@ -959,6 +959,7 @@ describe("webhooksQueue (consumer)", () => {
     await webhooksQueue(batchOf(queueMessage(), 1), { DB: db, WEBHOOK_SEALING_KEY: SEALING_KEY }, fakeFetch);
 
     expect(captured).not.toBeNull();
+    expect(captured!.init.redirect).toBe("manual");
     const expectedBody = canonicalJsonStringify({
       event_id: "evt_1",
       kind: "handoff.created",

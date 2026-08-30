@@ -10,3 +10,12 @@ telemetry_enabled = false
 # Redaction: additional deny paths (glob-supported) and user regex patterns.
 # redact_deny_paths = ["*.secret", "private/*.env"]
 # redact_patterns  = ["my-custom-[a-z0-9]{20}"]
+
+# Explicit hosted sync. These keys are read from the USER config only;
+# repository .handoffgraph.toml files cannot redirect hosted credentials.
+# The official API origin is the default, so hosted_api_url is optional.
+# hosted_api_url = "https://api.handoffgraph.dev"
+# hosted_token_file = "/absolute/path/to/a-mode-0600-device-token"
+#
+# Never put a raw device token in TOML or argv. The other supported source is
+# the process environment variable HFG_DEVICE_TOKEN.

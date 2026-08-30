@@ -4,8 +4,8 @@
 // Claude Code exposes three observation surfaces this adapter builds on:
 //
 //   - hooks: lifecycle events delivered as JSON on stdin (SessionStart,
-//     UserPromptSubmit, PreToolUse, PostToolUse, Stop, PreCompact,
-//     PostCompact) configured in ~/.claude/settings.json; managed
+//     SessionEnd, UserPromptSubmit, PreToolUse, PostToolUse, Stop,
+//     PreCompact, PostCompact) configured in ~/.claude/settings.json; managed
 //     additively and fail-closed by integrations/claude;
 //   - transcripts: session logs stored as JSONL under
 //     ~/.claude/projects/<project>/<session-id>.jsonl, enumerated
@@ -47,8 +47,8 @@ type Claude struct {
 	ConfigDir string
 	// ProjectsDir overrides ~/.claude/projects for Detect.
 	ProjectsDir string
-	// HookCommand is the command installed for each hook event. Empty
-	// resolves to the current executable.
+	// HookCommand is an explicit shell-form command override. Empty resolves
+	// to the current executable with separate `hook claude` arguments.
 	HookCommand string
 	// DryRun makes Install/Uninstall validate without writing.
 	DryRun bool
@@ -147,6 +147,7 @@ func (c *Claude) Detect(ctx context.Context, dir string) ([]adapter.SessionRef, 
 		refs = append(refs, adapter.SessionRef{
 			Provider:    protocol.ProviderClaude,
 			NativeID:    strings.TrimSuffix(d.Name(), ".jsonl"),
+			Path:        path,
 			LastEventAt: info.ModTime().UTC(),
 		})
 		return nil
@@ -166,38 +167,61 @@ func (c *Claude) Detect(ctx context.Context, dir string) ([]adapter.SessionRef, 
 	return refs, nil
 }
 
-// hookCommand resolves the hook command to install, defaulting to the
-// current executable (same convention as the codex lane).
-func (c *Claude) hookCommand() string {
+// hookCommand resolves Claude's schema-native command representation. An
+// explicit override remains a shell-form command for backwards compatibility;
+// the default is a raw executable plus an argv array, which is safe on Windows
+// and does not require cmd.exe quoting.
+func (c *Claude) hookCommand() (command string, args []string, legacy string, err error) {
 	if c.HookCommand != "" {
-		return c.HookCommand
+		return c.HookCommand, nil, c.HookCommand, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "handoffgraph"
+		exe = "handoffgraph"
 	}
-	return exe
+	return defaultHookCommandForExecutable(exe, c.Name())
 }
 
-// Install merges HandoffGraph hook entries into ~/.claude/settings.json via
-// integrations/claude (additive, fail-closed, idempotent, timestamped
-// backup). Only user scope is supported; project scope (.claude/settings.json
-// inside a repository) is deferred and fails with ErrUnsupported rather
-// than fabricating support.
+func defaultHookCommandForExecutable(exe, provider string) (command string, args []string, legacy string, err error) {
+	if exe == "" {
+		exe = "handoffgraph"
+	}
+	// The historical Claude installer used POSIX shellWord syntax on every
+	// platform. Keep that exact representation solely for identifying and
+	// migrating old marker-owned entries; the new handler never executes it.
+	legacy, err = adapter.HookCommandForOS(exe, provider, "linux")
+	if err != nil {
+		return "", nil, "", err
+	}
+	return exe, []string{"hook", provider}, legacy, nil
+}
+
+// Install merges schema-valid HandoffGraph hook entries into
+// ~/.claude/settings.json and records ownership in the private sidecar via
+// integrations/claude (additive, fail-closed, idempotent, timestamped backup).
+// Only user scope is supported; project scope (.claude/settings.json inside a
+// repository) is deferred and fails with ErrUnsupported rather than
+// fabricating support.
 func (c *Claude) Install(ctx context.Context, scope adapter.InstallScope) error {
 	if scope == adapter.ScopeProject {
 		return fmt.Errorf("claude install: project scope: %w (deferred)", ErrUnsupported)
 	}
+	command, args, legacy, err := c.hookCommand()
+	if err != nil {
+		return fmt.Errorf("claude install: resolve hook command: %w", err)
+	}
 	return claudehooks.InstallHooks(claudehooks.Options{
-		ConfigDir:   c.configDir(),
-		HookCommand: c.hookCommand(),
-		DryRun:      c.DryRun,
+		ConfigDir:         c.configDir(),
+		HookCommand:       command,
+		HookArgs:          args,
+		LegacyHookCommand: legacy,
+		DryRun:            c.DryRun,
 	})
 }
 
-// Uninstall removes every marked HandoffGraph hook entry from
-// ~/.claude/settings.json, preserving all user configuration. Only user
-// scope is supported.
+// Uninstall removes only sidecar-owned HandoffGraph hook groups (or an exact
+// historical marker-owned set) from ~/.claude/settings.json, preserving all
+// user configuration. Only user scope is supported.
 func (c *Claude) Uninstall(ctx context.Context, scope adapter.InstallScope) error {
 	if scope == adapter.ScopeProject {
 		return fmt.Errorf("claude uninstall: project scope: %w (deferred)", ErrUnsupported)

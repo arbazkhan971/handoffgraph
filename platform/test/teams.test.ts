@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import worker from "../src/index";
+import worker from "./advanced_worker";
 import { sha256Hex } from "../src/auth";
 import type { D1BoundStatement, D1DatabaseLike, D1Statement } from "../src/db";
 import { EVENT_ID_PATTERN, validateEventBatch } from "../src/ingest";
@@ -35,6 +35,12 @@ const TARGET = `usr_01J${"J".repeat(23)}`;
 const INVITE_ID = `inv_01J${"H".repeat(23)}`;
 const CSRF = "csrf-token-with-at-least-thirty-two-bytes";
 const SESSION_COOKIE_VALUE = `hfg_session_${"x".repeat(40)}`;
+const HEALTHY_DELETION_LEDGER = {
+  async head() {
+    return null;
+  },
+};
+type TeamsTestEnv = TeamsEnv & { BODIES: typeof HEALTHY_DELETION_LEDGER };
 
 interface RecordedStatement {
   sql: string;
@@ -407,12 +413,13 @@ function teamDb(world: World, csrfHash: string, sessionUser: string | null) {
 async function envFor(
   world: World,
   sessionUser: string | null,
-): Promise<{ env: TeamsEnv; batches: RecordedStatement[][]; statements: RecordedStatement[] }> {
+): Promise<{ env: TeamsTestEnv; batches: RecordedStatement[][]; statements: RecordedStatement[] }> {
   const csrfHash = await sha256Hex(CSRF);
   const { db, batches, statements } = teamDb(world, csrfHash, sessionUser);
   return {
     env: {
       DB: db,
+      BODIES: HEALTHY_DELETION_LEDGER,
       APP_ORIGIN,
       LANDING_ORIGIN: "https://handoffgraph.dev",
       WORKOS_CLIENT_ID: "client_test",
@@ -573,6 +580,7 @@ describe("audit event construction", () => {
     const validation = validateEventBatch(
       { schema_version: "hfg.event-batch.v1", events: [records[0].document] },
       TEAM_WS,
+      { requireRedactionAttestation: false },
     );
     expect(validation.ok).toBe(true);
     expect(records[0].document).toMatchObject({
@@ -1307,9 +1315,14 @@ describe("audit trail", () => {
         throw new Error("UNIQUE constraint failed: audit_chain.workspace_id, audit_chain.seq");
       },
     };
+    const env: TeamsTestEnv = {
+      DB: failing,
+      BODIES: HEALTHY_DELETION_LEDGER,
+      APP_ORIGIN,
+    };
     const response = await handleTeamsRoute(
       post("/v1/workspace/invites", { email: "never@example.com" }),
-      { DB: failing, APP_ORIGIN },
+      env,
     );
     expect(response?.status).toBe(503);
     expect(await response?.json()).toMatchObject({

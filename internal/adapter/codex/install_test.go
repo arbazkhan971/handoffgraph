@@ -46,6 +46,62 @@ func decodeCodexConfig(t *testing.T, text string) map[string]any {
 	return cfg
 }
 
+func codexMatcherGroups(t *testing.T, hooks map[string]any, event string) []map[string]any {
+	t.Helper()
+	raw, ok := hooks[event]
+	if !ok {
+		t.Fatalf("hooks.%s is missing: %v", event, hooks)
+	}
+	switch groups := raw.(type) {
+	case []map[string]any:
+		return groups
+	case []any:
+		out := make([]map[string]any, 0, len(groups))
+		for i, rawGroup := range groups {
+			group, ok := rawGroup.(map[string]any)
+			if !ok {
+				t.Fatalf("hooks.%s[%d] = %T, want matcher group", event, i, rawGroup)
+			}
+			out = append(out, group)
+		}
+		return out
+	default:
+		t.Fatalf("hooks.%s = %T, want matcher-group array", event, raw)
+		return nil
+	}
+}
+
+func codexMatcherCommand(t *testing.T, event string, group map[string]any) string {
+	t.Helper()
+	rawHandlers, ok := group["hooks"]
+	if !ok {
+		t.Fatalf("hooks.%s matcher group lacks handlers: %v", event, group)
+	}
+	var handlers []map[string]any
+	switch raw := rawHandlers.(type) {
+	case []map[string]any:
+		handlers = raw
+	case []any:
+		for i, rawHandler := range raw {
+			handler, ok := rawHandler.(map[string]any)
+			if !ok {
+				t.Fatalf("hooks.%s handler %d = %T, want table", event, i, rawHandler)
+			}
+			handlers = append(handlers, handler)
+		}
+	default:
+		t.Fatalf("hooks.%s handlers = %T, want array", event, rawHandlers)
+	}
+	if len(handlers) != 1 || handlers[0]["type"] != "command" {
+		t.Fatalf("hooks.%s handlers = %v, want one command handler", event, handlers)
+	}
+	command, ok := handlers[0]["command"].(string)
+	if !ok {
+		t.Fatalf("hooks.%s command = %T, want string", event, handlers[0]["command"])
+	}
+	return command
+}
+
 func TestCodexInstallFreshConfigDir(t *testing.T) {
 	dir := t.TempDir()
 	if err := installCodexHooks(t, dir); err != nil {
@@ -61,17 +117,28 @@ func TestCodexInstallFreshConfigDir(t *testing.T) {
 		t.Fatalf("config lacks a [hooks] table:\n%s", text)
 	}
 	for _, event := range codexhooks.ManagedEvents {
-		entry, ok := hooks[event].(map[string]any)
-		if !ok {
-			t.Errorf("hooks.%s missing or not a table:\n%s", event, text)
+		groups := codexMatcherGroups(t, hooks, event)
+		if len(groups) != 1 {
+			t.Errorf("hooks.%s groups = %d, want one managed matcher group", event, len(groups))
 			continue
 		}
-		if got := entry["command"]; got != testHookCommand+" --event "+event {
-			t.Errorf("hooks.%s.command = %v, want %q", event, got, testHookCommand+" --event "+event)
+		if got := codexMatcherCommand(t, event, groups[0]); got != testHookCommand {
+			t.Errorf("hooks.%s command = %q, want exact handler %q", event, got, testHookCommand)
 		}
 	}
 	if extra := len(hooks) - len(codexhooks.ManagedEvents); extra != 0 {
 		t.Errorf("install wrote %d unexpected hook entries: %v", extra, hooks)
+	}
+}
+
+func TestCodexLegacyGuardRefusesNonRegularConfigBeforeRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, codexhooks.ConfigFile)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := refuseLegacyHooksTable(dir); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("legacy guard error = %v, want non-regular-file refusal", err)
 	}
 }
 
@@ -89,9 +156,9 @@ func TestCodexInstallIdempotent(t *testing.T) {
 	}
 }
 
-func TestCodexInstallPreservesForeignUserHooks(t *testing.T) {
+func TestCodexInstallPreservesAndAppendsToUserMatcherGroups(t *testing.T) {
 	dir := t.TempDir()
-	user := "model = \"gpt-5\"\n\n# user-owned notification hook\n[hooks.notify]\ncommand = \"/usr/bin/notify-send\"\n"
+	user := "model = \"gpt-5\"\n\n# user-owned pre-tool matcher\n[hooks]\nPreToolUse = [{ matcher = \"Bash\", hooks = [{ type = \"command\", command = \"/usr/bin/notify-send\" }] }]\n"
 	if err := os.WriteFile(filepath.Join(dir, codexhooks.ConfigFile), []byte(user), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +169,7 @@ func TestCodexInstallPreservesForeignUserHooks(t *testing.T) {
 	if !strings.Contains(text, "/usr/bin/notify-send") {
 		t.Errorf("user hook command lost:\n%s", text)
 	}
-	if !strings.Contains(text, "# user-owned notification hook") {
+	if !strings.Contains(text, "# user-owned pre-tool matcher") {
 		t.Errorf("user comment lost:\n%s", text)
 	}
 	cfg := decodeCodexConfig(t, text)
@@ -110,12 +177,20 @@ func TestCodexInstallPreservesForeignUserHooks(t *testing.T) {
 		t.Errorf("user top-level key lost:\n%s", text)
 	}
 	hooks := cfg["hooks"].(map[string]any)
-	if _, ok := hooks["notify"].(map[string]any); !ok {
-		t.Errorf("user [hooks.notify] lost:\n%s", text)
-	}
 	for _, event := range codexhooks.ManagedEvents {
-		if _, ok := hooks[event].(map[string]any); !ok {
-			t.Errorf("managed hooks.%s missing:\n%s", event, text)
+		groups := codexMatcherGroups(t, hooks, event)
+		want := 1
+		if event == "PreToolUse" {
+			want = 2
+			if groups[0]["matcher"] != "Bash" || codexMatcherCommand(t, event, groups[0]) != "/usr/bin/notify-send" {
+				t.Errorf("user hooks.%s matcher moved or changed: %v", event, groups[0])
+			}
+		}
+		if len(groups) != want {
+			t.Errorf("hooks.%s groups = %d, want %d", event, len(groups), want)
+		}
+		if got := codexMatcherCommand(t, event, groups[len(groups)-1]); got != testHookCommand {
+			t.Errorf("managed hooks.%s command = %q, want %q", event, got, testHookCommand)
 		}
 	}
 }
@@ -138,9 +213,9 @@ func TestCodexInstallConflictOnLegacyHandoffgraphTable(t *testing.T) {
 	}
 }
 
-func TestCodexInstallConflictOnUserOwnedManagedEvent(t *testing.T) {
+func TestCodexInstallConflictOnUnmarkedExactCommandCollision(t *testing.T) {
 	dir := t.TempDir()
-	conflict := "[hooks.session_start]\ncommand = \"/user/owned\"\n"
+	conflict := "[hooks]\nPreToolUse = [{ matcher = \"\", hooks = [{ type = \"command\", command = \"" + testHookCommand + "\" }] }]\n"
 	path := filepath.Join(dir, codexhooks.ConfigFile)
 	if err := os.WriteFile(path, []byte(conflict), 0o600); err != nil {
 		t.Fatal(err)
@@ -191,10 +266,11 @@ func TestCodexInstallDefaultHookCommandIsThisExecutable(t *testing.T) {
 		t.Fatalf("install with default hook command: %v", err)
 	}
 	cfg := decodeCodexConfig(t, readCodexConfig(t, dir))
-	entry := cfg["hooks"].(map[string]any)["session_start"].(map[string]any)
-	cmd, _ := entry["command"].(string)
-	if cmd == "" || !strings.HasSuffix(cmd, " --event session_start") {
-		t.Errorf("hooks.session_start.command = %q, want <executable> --event session_start", cmd)
+	hooks := cfg["hooks"].(map[string]any)
+	groups := codexMatcherGroups(t, hooks, "SessionStart")
+	cmd := codexMatcherCommand(t, "SessionStart", groups[len(groups)-1])
+	if cmd == "" || !strings.HasSuffix(cmd, " hook codex") || strings.Contains(cmd, "--event") {
+		t.Errorf("hooks.SessionStart command = %q, want exact <executable> hook codex", cmd)
 	}
 }
 
@@ -215,9 +291,7 @@ func TestCodexInstallLegacyStubMarkerIsInert(t *testing.T) {
 		t.Errorf("stub-era comment lost (must be preserved verbatim):\n%s", text)
 	}
 	cfg := decodeCodexConfig(t, text)
-	if _, ok := cfg["hooks"].(map[string]any)["session_start"].(map[string]any); !ok {
-		t.Errorf("managed entry missing alongside stub comments:\n%s", text)
-	}
+	codexMatcherGroups(t, cfg["hooks"].(map[string]any), "SessionStart")
 }
 
 func TestCodexInstallProjectScopeUnsupported(t *testing.T) {
@@ -229,14 +303,13 @@ func TestCodexInstallProjectScopeUnsupported(t *testing.T) {
 
 func TestCodexUninstallRemovesOnlyManagedEntries(t *testing.T) {
 	dir := t.TempDir()
+	user := "model = \"gpt-5\"\n\n# user bytes must round-trip exactly\n[hooks]\nPreToolUse = [{ matcher = \"Bash\", hooks = [{ type = \"command\", command = \"/usr/bin/notify-send\" }] }]\n"
+	path := filepath.Join(dir, codexhooks.ConfigFile)
+	if err := os.WriteFile(path, []byte(user), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := installCodexHooks(t, dir); err != nil {
 		t.Fatalf("install: %v", err)
-	}
-	// A user-owned hook added after install must survive uninstall.
-	path := filepath.Join(dir, codexhooks.ConfigFile)
-	withUser := readCodexConfig(t, dir) + "\n[hooks.notify]\ncommand = \"/usr/bin/notify-send\"\n"
-	if err := os.WriteFile(path, []byte(withUser), 0o600); err != nil {
-		t.Fatal(err)
 	}
 
 	c := &Codex{ConfigDir: dir}
@@ -247,15 +320,8 @@ func TestCodexUninstallRemovesOnlyManagedEntries(t *testing.T) {
 	if strings.Contains(text, "# hfg:managed") {
 		t.Errorf("managed marker survived uninstall:\n%s", text)
 	}
-	cfg := decodeCodexConfig(t, text)
-	hooks, _ := cfg["hooks"].(map[string]any)
-	for _, event := range codexhooks.ManagedEvents {
-		if _, ok := hooks[event]; ok {
-			t.Errorf("managed hooks.%s survived uninstall:\n%s", event, text)
-		}
-	}
-	if entry, ok := hooks["notify"].(map[string]any); !ok || entry["command"] != "/usr/bin/notify-send" {
-		t.Errorf("user [hooks.notify] lost:\n%s", text)
+	if text != user {
+		t.Errorf("uninstall did not restore user bytes exactly:\nwant:\n%s\ngot:\n%s", user, text)
 	}
 }
 

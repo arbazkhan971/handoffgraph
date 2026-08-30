@@ -13,7 +13,7 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import worker from "../src/index";
+import worker from "./advanced_worker";
 import { sha256Hex } from "../src/auth";
 import type { D1BoundStatement, D1DatabaseLike, D1Statement } from "../src/db";
 import { canonicalJsonStringify } from "../src/ingest";
@@ -53,6 +53,17 @@ const CSRF = "csrf-token-with-at-least-thirty-two-bytes";
 const SESSION_COOKIE_VALUE = `hfg_session_${"x".repeat(40)}`;
 const DEVICE_TOKEN = `hfg_dev_${"y".repeat(40)}`;
 const DEVICE_ID = `dev_01J${"M".repeat(23)}`;
+const HEALTHY_DELETION_LEDGER = {
+  async head() {
+    return null;
+  },
+  async get() {
+    return null;
+  },
+  async put() {
+    return null;
+  },
+};
 
 type Role = "owner" | "admin" | "member" | "viewer";
 
@@ -422,7 +433,7 @@ function applyStatement(world: World, statement: RecordedStatement): void {
 // -- request helpers ------------------------------------------------------------
 
 function envFor(db: D1DatabaseLike, enabled: boolean): EEEnv {
-  const env: EEEnv = { DB: db, APP_ORIGIN };
+  const env: EEEnv = { DB: db, BODIES: HEALTHY_DELETION_LEDGER, APP_ORIGIN };
   if (enabled) env.EE_ENABLED = "true";
   return env;
 }

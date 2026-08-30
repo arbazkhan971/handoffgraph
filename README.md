@@ -10,13 +10,22 @@ Your agent stops. The work should not.
 
 ## Status
 
-**v0.6.0-level local product, pre-release** — test suite race-clean. Implemented: the crash-safe local event spine (append-only events, SQLite, deterministic graph/trace reducers, fail-closed redaction, checkpoints); **Codex, Claude, and Pi adapters** with merge-safe hook installers, native-rollout normalization with deterministic (idempotent) event IDs, and native resume; the **local MCP stdio server** (12 goal-oriented tools: workstream/trace context, checkpoints, decisions, verifications, prompts, scores, file claims, handoff lifecycle); the **deterministic detection pack**; the embedded **Session Debugger UI** (`handoffgraph open`); and **verified cross-agent continuation** (`continue --to`) with repository-drift checks and machine-readable acknowledgement.
+**v0.7.0-beta.1 release candidate** — implemented and under final publication
+validation. The local product includes the crash-safe event spine (append-only
+events, SQLite, deterministic graph/trace reducers, fail-closed redaction,
+checkpoints); **Codex, Claude, and Pi adapters** with merge-safe hook
+installers, native-rollout normalization with deterministic event IDs, and
+native resume; the **local MCP stdio server** (12 goal-oriented tools); the
+**deterministic detection pack**; the embedded **Session Debugger UI**
+(`handoffgraph open`); and **verified cross-agent continuation** (`continue
+--to`) with repository-drift checks and machine-readable acknowledgement.
 
 Since then the local core also gained OTLP/HTTP ingest in both wire flavors, a
 scores primitive, a wide observation index with `signal_source` coalescing and
 exception groups, the `verify` CI gate with result caching, datasets ×
-experiments, an immutable prompt store, and `reset` — 32 commands in all. It
-is still pre-release: no public tag, and installation is from source.
+experiments, an immutable prompt store, explicit redacted hosted `sync`, and
+`reset` — 34 commands in all. The beta remains pre-1.0: interfaces may change
+under the versioning policy, and hosted production is not part of this tag.
 
 The repository also contains an ahead-of-roadmap **private hosted tier** under
 `platform/` — a **Cloudflare-only** Worker (D1, R2, KV, Queues, Workflows,
@@ -45,7 +54,8 @@ implements:
   as exact decimal strings, rate limits, opt-in response cache, provider
   fallback); a hosted MCP endpoint mirroring the local tool contract; a
   public REST API with `pk_`/`sk_` keys, edge-cached rejection, and an
-  OpenAPI 3.1 document.
+  OpenAPI 3.1 document; and an explicit-only local CLI sync with fail-closed
+  first-upload redaction acceptance and crash-safe idempotent resume.
 - **Quality loop** — evals (deterministic checks recorded OBSERVED, LLM judge
   always recorded INFERRED, BYO sealed keys, cron + manual on a durable
   contract); human annotation queues; datasets × experiments and prompt
@@ -57,21 +67,30 @@ implements:
   audit export, and an in-product assistant that answers over our own MCP
   tools with a BYO model and labels every answer INFERRED.
 
-**None of this is publicly deployed, and no paid checkout exists.** Known
-gaps are stated rather than implied: masking is not yet wired into the ingest
-path, SCIM provisioning is a subset, and hosted batch backpressure is
-outstanding. Production identity credentials, edge abuse controls, remote
-migration, domains, deletion/privacy operations, and explicit CLI sync policy
-remain release gates in [ROADMAP.md](ROADMAP.md). Feature status per
+**None of this is serving public production traffic, and no paid checkout
+exists.** An isolated, sign-up-closed staging Worker is deployed only for
+release verification. Known gaps are stated rather than implied: masking is
+not yet wired into the ingest path, SCIM provisioning is a subset, and hosted
+batch backpressure is outstanding. Production identity credentials, edge
+abuse controls, remote migration, domains, and remaining production
+privacy/edge operations remain release gates in [ROADMAP.md](ROADMAP.md).
+Feature status per
 competitor-parity row lives in
 [docs/competitor-analysis.md](docs/competitor-analysis.md) §3.
 
 ## Quickstart
 
-Until the first tagged public release, build the CLI from a source checkout:
+For the published beta, install the exact immutable version:
 
 ```bash
-git clone https://github.com/arbazkhan971/handoffgraph.git
+go install github.com/handoffgraph/handoffgraph/cmd/handoffgraph@v0.7.0-beta.1
+handoffgraph version
+```
+
+To evaluate an unpublished checkout or contribute, build from source:
+
+```bash
+git clone https://github.com/handoffgraph/handoffgraph.git
 cd handoffgraph
 go install ./cmd/handoffgraph
 
@@ -85,37 +104,50 @@ handoffgraph open            # local session debugger UI
 handoffgraph doctor
 ```
 
-After the repository is available at its canonical module path and a release
-has been tagged, installation becomes:
-
-```bash
-go install github.com/handoffgraph/handoffgraph/cmd/handoffgraph@latest
-```
-
 Local-first. No account required.
 
 ## Codex capture (v0.2.0)
 
 Capturing Codex sessions requires a local Codex CLI install. Install the
-observation hooks, then import what they capture:
+observation hooks; each callback is normalized and appended atomically to the
+local event store by the silent `handoffgraph hook codex` handler:
 
 ```bash
 handoffgraph install --agent codex --dry-run   # preview; writes nothing
-handoffgraph install --agent codex             # manage [hooks.handoffgraph] in ~/.codex/config.toml
+handoffgraph install --agent codex             # add marker-scoped groups under [hooks]
 handoffgraph sessions                          # list captured native Codex sessions
 handoffgraph sessions --detect                 # list native Codex sessions found on disk, without importing them
 handoffgraph resume <native-session-id>        # print the native continue command (codex resume <id>)
 ```
 
-Install only ever touches the managed `[hooks.handoffgraph]` table: an
-unparseable config is never modified, an existing differing hook is reported
-as a conflict instead of being overwritten, and unrelated keys are preserved.
-Re-importing the same session produces no duplicate events. `resume` prints
+Install adds one marker-owned matcher group for each of Codex 0.144.3's ten
+CamelCase hook events. Existing user groups for the same event remain in place;
+unparseable or ambiguous configuration and an unmarked duplicate HandoffGraph
+command fail closed. A timestamped backup precedes modification, uninstall
+removes only marker-owned bytes, and an identical reinstall is a no-op. Codex
+reviews hook-specific hashes and may show **Hooks need review** after install;
+approve HandoffGraph there before expecting capture. HandoffGraph never writes
+or bypasses that trust state. Re-importing the same session produces no duplicate events. `resume` prints
 the exact shell-quoted native invocation (`codex resume <id>`) for you to
 run — HandoffGraph never launches agent processes itself; `sessions --detect`
 reads native sessions directly from `~/.codex/sessions` without importing
 them (override the directory with `HFG_CODEX_SESSIONS_DIR`). See
 [docs/adapter-codex.md](docs/adapter-codex.md) for details.
+
+## Claude Code capture
+
+`handoffgraph install --agent claude` installs eight additive Claude Code
+2.1.227 hook groups, including distinct `Stop` (response/trace completion) and
+`SessionEnd` (native-session completion) callbacks. The default handler stores
+the raw absolute HandoffGraph executable and `["hook", "claude"]` as separate
+arguments on every OS. Its settings objects contain only Claude's schema fields;
+ownership lives in a locked, private `.handoffgraph-hooks.json` sidecar under
+`~/.claude`. Exact sidecar checks make reinstall idempotent and make drift,
+duplicates, and marker-stripped legacy commands fail closed. A complete
+historical seven-event marker install migrates safely and gains `SessionEnd`;
+partial or malformed legacy objects are preserved as conflicts. Pending
+install/uninstall digests provide deterministic crash recovery. See
+[docs/adapter-claude.md](docs/adapter-claude.md).
 
 ## Verified continuation (v0.6.0)
 
@@ -171,11 +203,13 @@ Every claim in a checkpoint is linked to evidence: an observed file edit points 
 | `handoffgraph init` | Initialize the local data directory |
 | `handoffgraph doctor [--verify]` | Diagnose config and database health; `--verify` runs the deeper checks |
 | `handoffgraph reset [--hard --yes]` | Clear derived read models and caches; `--hard` wipes the whole data directory (event log included) and fails closed without `--yes` |
+| `handoffgraph sync --preview` / `sync [--accept-redaction]` | Explicit-only hosted transfer: content-free redaction preview, required first-upload acceptance, tenant-scoped deterministic batches, and crash-safe resume; never runs during capture |
 | `handoffgraph status` | Show local capture status |
 | `handoffgraph workstream new <title>` | Create a workstream |
 | `handoffgraph event import <file>` | Import a JSONL event fixture |
+| `handoffgraph <codex|claude> normalize <transcript> --workstream <id> --import` | Normalize and idempotently import one native transcript into an existing workstream; canonical session IDs are provider-scoped and deterministic |
 | `handoffgraph otlp import <file>` / `otlp serve` | Ingest OTLP/HTTP telemetry into the spine — **JSON and protobuf**, same ids either way (idempotent, localhost listener, `--capture full\|metadata\|minimal` fail-closed privacy tiers) |
-| `handoffgraph install --agent codex\|claude\|pi` | Install merge-safe capture hooks (`--dry-run` previews) |
+| `handoffgraph install --agent <codex|claude|pi>` | Install merge-safe capture hooks (`--dry-run` runs every conflict check without writing) |
 | `handoffgraph sessions [--agent <name>] [--json]` | List native sessions derived from captured events, or detect native sessions on disk (`--detect`) |
 | `handoffgraph resume <native-session-id>` | Print the native resume invocation; never execute it |
 | `handoffgraph continue --to <agent> --workstream <id> [--preview]` | Prepare or record a verified continuation and print its native invocation |
@@ -245,6 +279,8 @@ internal/
   graph/                   workstream graph + deterministic reducer
   trace/                   trace/span materializer
   redact/                  fail-closed redaction v1
+  hostedsync/              explicit hosted batching, preview acceptance,
+                           credential isolation, durable cursor/retry state
   checkpoint/              checkpoint builder + handoff score
   launch/                  continuation payload, drift, acknowledgement read model
   detection/               deterministic session-pathology rules
@@ -267,7 +303,7 @@ platform/                  Private hosted-beta Worker (Cloudflare-only):
                              evals, annotations, playground, simulations,
                              attachments, quality, teams, apikeys, artifacts, mcp
   ee/                        directory-fenced Enterprise line (own LICENSE)
-  migrations/                D1 schema, 0001–0017
+  migrations/                D1 schema, 0001–0019
 platform/ee/               EE line: separate LICENSE, EE_ENABLED-gated
 deploy/dashboards/         Dashboards-as-config examples (PR-reviewable JSON)
 landing/                   Public landing Worker
@@ -291,7 +327,7 @@ node --test landing/*.test.mjs                    # landing Worker
 ## Agent skills
 
 Ship an agent-native surface: `skills/handoffgraph/SKILL.md` (install with
-`npx skills add arbazkhan971/handoffgraph` or copy into your agent's skills
+`npx skills add handoffgraph/handoffgraph` or copy into your agent's skills
 directory) plus `.claude-plugin/plugin.json` declaring the skill and the
 stdio MCP server, so Claude Code / Cursor / Codex can drive the whole
 verify → checkpoint → handoff loop autonomously.

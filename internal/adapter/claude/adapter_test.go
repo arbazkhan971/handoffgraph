@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -88,6 +89,9 @@ func TestDetectEnumeratesTranscripts(t *testing.T) {
 	if refs[0].Provider != protocol.ProviderClaude {
 		t.Errorf("Provider = %q", refs[0].Provider)
 	}
+	if refs[0].Path != filepath.Join(project, "9f3c1a7e-0d2b-4c8e-9a1f-5b6c7d8e9f0a.jsonl") {
+		t.Errorf("Path = %q, want native transcript path", refs[0].Path)
+	}
 	if !refs[0].LastEventAt.After(refs[1].LastEventAt) {
 		t.Error("refs not ordered newest first")
 	}
@@ -163,7 +167,7 @@ func TestInstallProjectScopeUnsupported(t *testing.T) {
 	}
 }
 
-func TestInstallDefaultHookCommandIsExecutable(t *testing.T) {
+func TestInstallDefaultHookCommandInvokesClaudeHandler(t *testing.T) {
 	dir := t.TempDir()
 	c := &Claude{ConfigDir: dir}
 	if err := c.Install(context.Background(), adapter.ScopeUser); err != nil {
@@ -174,13 +178,31 @@ func TestInstallDefaultHookCommandIsExecutable(t *testing.T) {
 	stop := hooks["Stop"].([]any)
 	managed := stop[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
 	cmd, _ := managed["command"].(string)
-	if cmd == "" || cmd == "handoffgraph" {
-		// An empty resolution or the bare fallback is acceptable only when
-		// os.Executable failed; on test binaries it must resolve.
-		exe, err := os.Executable()
-		if err == nil && cmd != exe {
-			t.Errorf("default hook command = %q, want executable path %q", cmd, exe)
+	args, _ := managed["args"].([]any)
+	if !reflect.DeepEqual(args, []any{"hook", "claude"}) {
+		t.Errorf("default hook args = %#v, want [hook claude]", args)
+	}
+	if exe, err := os.Executable(); err == nil {
+		if cmd != exe {
+			t.Errorf("default hook command = %q, want raw executable path %q", cmd, exe)
 		}
+	}
+	if _, exists := managed["x_handoffgraph_managed"]; exists {
+		t.Fatal("default handler contains schema-invalid inline ownership marker")
+	}
+}
+
+func TestDefaultHookSpecUsesRawWindowsPathAndHistoricalPOSIXLegacy(t *testing.T) {
+	exe := `C:\Program Files\HandoffGraph\handoffgraph.exe`
+	command, args, legacy, err := defaultHookCommandForExecutable(exe, protocol.ProviderClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != exe || !reflect.DeepEqual(args, []string{"hook", "claude"}) {
+		t.Fatalf("schema-native default shape is not raw executable + args: %q %#v", command, args)
+	}
+	if legacy != `'C:\Program Files\HandoffGraph\handoffgraph.exe' hook claude` {
+		t.Fatalf("historical legacy syntax = %q", legacy)
 	}
 }
 

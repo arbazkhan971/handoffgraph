@@ -6,6 +6,7 @@
 // device row — values in a request body can never influence it.
 
 import type { D1DatabaseLike } from "./db";
+import { workspaceDeletionBlocksAuthentication } from "./deletion_ledger";
 
 export interface DeviceBinding {
   /** Device id (`dev_<ulid>`). */
@@ -42,9 +43,12 @@ interface DeviceRecord {
  */
 const DEVICE_BY_TOKEN_SQL = `
   /* auth:device-by-token */
-  SELECT id, workspace_id, token_hash, capabilities, revoked_at
-  FROM devices
-  WHERE token_hash = ?1`;
+  SELECT d.id, d.workspace_id, d.token_hash, d.capabilities, d.revoked_at
+  FROM devices AS d
+  JOIN workspaces AS w
+    ON w.id = d.workspace_id AND w.workspace_id = d.workspace_id
+  WHERE d.token_hash = ?1
+    AND w.status = 'active'`;
 
 /**
  * The one D1-backed DeviceLookup. Every route module that authenticates a
@@ -52,11 +56,25 @@ const DEVICE_BY_TOKEN_SQL = `
  * one place decides how a stored row becomes a DeviceBinding, so the
  * capabilities split and the revoked_at contract cannot drift per module.
  */
-export function deviceLookup(db: D1DatabaseLike): DeviceLookup {
+export function deviceLookup(
+  db: D1DatabaseLike,
+  deletionLedgerBinding?: unknown,
+  deletionLedgerRequired = false,
+): DeviceLookup {
   return {
     async byTokenHash(hash) {
       const record = await db.prepare(DEVICE_BY_TOKEN_SQL).bind(hash).first<DeviceRecord>();
       if (record === null) return null;
+      // A deletion prelock makes the workspace non-active before its R2
+      // ledger/job exists, so it is already terminal for device auth even if
+      // the R2 write subsequently fails. D1 Time Travel can separately
+      // restore a pre-deletion device hash; the independent R2 ledger covers
+      // that case. Errors from a configured binding deny like an unknown token.
+      if (await workspaceDeletionBlocksAuthentication(
+        deletionLedgerBinding,
+        record.workspace_id,
+        deletionLedgerRequired,
+      )) return null;
       const binding: DeviceBinding = {
         deviceId: record.id,
         workspaceId: record.workspace_id,

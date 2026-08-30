@@ -19,11 +19,11 @@ import (
 // bodies distinct; the sequence keeps repeated identical payloads distinct
 // within one stream.
 //
-// Callers only reach this helper when the payload identified both its
-// session and its time; payloads missing either get fresh random ids
-// (see buildEvent) because a deterministic key over unknown dimensions
-// would let two different sessions collide on one event id and silently
-// drop evidence on re-import.
+// Callers reach this helper whenever the payload identifies its session.
+// Missing native timestamps remain the zero time, while the canonical native
+// payload hash still makes retries deterministic and keeps distinct callback
+// bodies separate. Payloads without a session get fresh random IDs because a
+// deterministic key over an unknown session could silently merge evidence.
 func deriveEventID(nativeSessionID string, seq int64, occurredAt time.Time, contentHash string) string {
 	ms := occurredAt.UnixMilli()
 	if ms < 0 {

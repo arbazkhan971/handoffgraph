@@ -47,7 +47,7 @@ func TestNormalizeHookPayloads(t *testing.T) {
 	}{
 		{
 			name:      "session start",
-			raw:       hookPayload("SessionStart", `"source":"startup","cwd":"/repo"`),
+			raw:       hookPayload("SessionStart", `"source":"startup","cwd":"/repo","model":"claude-opus-4-1"`),
 			wantKinds: []protocol.EventKind{protocol.EventSessionStarted},
 			check: func(t *testing.T, evs []protocol.Event) {
 				if evs[0].NativeSessionID != sessID {
@@ -57,6 +57,9 @@ func TestNormalizeHookPayloads(t *testing.T) {
 					t.Errorf("OccurredAt = %v", evs[0].OccurredAt)
 				}
 				assertPayload(t, evs[0], "source", "startup")
+				if evs[0].Model != "claude-opus-4-1" {
+					t.Errorf("Model = %q", evs[0].Model)
+				}
 			},
 		},
 		{
@@ -129,7 +132,7 @@ func TestNormalizeHookPayloads(t *testing.T) {
 		{
 			name:      "stop",
 			raw:       hookPayload("Stop", `"stop_hook_active":false`),
-			wantKinds: []protocol.EventKind{protocol.EventSessionEnded},
+			wantKinds: []protocol.EventKind{protocol.EventTraceCompleted},
 		},
 		{
 			name:      "session end",
@@ -300,6 +303,41 @@ func TestNormalizePreservesUnknownFields(t *testing.T) {
 	}
 	if _, ok := back.Unknown["cwd"]; !ok {
 		t.Error("unknown fields lost on round-trip")
+	}
+}
+
+func TestNormalizeUnknownHookPreservesAllNonEnvelopeEvidence(t *testing.T) {
+	raw := `{"hook_event_name":"FutureEvent","session_id":"s","prompt":"must-keep","tool_input":{"x":1}}`
+	events := mustNormalize(t, raw)
+	if len(events) != 1 || events[0].Kind != protocol.EventLogObserved {
+		t.Fatalf("events = %+v, want one log.observed", events)
+	}
+	if got := string(events[0].Unknown["prompt"]); got != `"must-keep"` {
+		t.Errorf("Unknown[prompt] = %s", got)
+	}
+	if got := string(events[0].Unknown["tool_input"]); got != `{"x":1}` {
+		t.Errorf("Unknown[tool_input] = %s", got)
+	}
+}
+
+func TestNormalizeMalformedKnownFieldIsPreservedInsteadOfDiscarded(t *testing.T) {
+	raw := `{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":{"future":"shape"}}`
+	events := mustNormalize(t, raw)
+	if got := string(events[0].Unknown["prompt"]); got != `{"future":"shape"}` {
+		t.Fatalf("malformed prompt evidence = %s", got)
+	}
+}
+
+func TestNormalizeRejectsMalformedPresentHookMetadata(t *testing.T) {
+	for _, raw := range []string{
+		`{"hook_event_name":null,"session_id":"s"}`,
+		`{"hook_event_name":123,"session_id":"s"}`,
+		`{"hook_event_name":"SessionStart","session_id":"s","timestamp":"not-a-time"}`,
+		`{"hook_event_name":"SessionStart","session_id":"s","timestamp":123}`,
+	} {
+		if _, err := New().Normalize(context.Background(), json.RawMessage(raw)); err == nil {
+			t.Errorf("Normalize(%s) succeeded", raw)
+		}
 	}
 }
 

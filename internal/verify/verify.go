@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/handoffgraph/handoffgraph/internal/adapter/codex" // Layering: adapter/codex depends only on adapter/content/ids/protocol (`go list -deps ./internal/adapter/codex`), so verify→codex adds no import cycle.
+	"github.com/handoffgraph/handoffgraph/internal/adapter/pi"
 	"github.com/handoffgraph/handoffgraph/internal/content"
 	"github.com/handoffgraph/handoffgraph/internal/graph"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
@@ -35,8 +35,8 @@ type Result struct {
 	FilesChecked int      `json:"files_checked"`
 	Events       int      `json:"events"`
 	Failures     []string `json:"failures,omitempty"`
-	// NativeVerified lists native-format files (e.g. codex rollout
-	// transcripts) that passed provider-native verification through the
+	// NativeVerified lists native-format files (e.g. provider transcripts)
+	// that passed provider-native verification through the
 	// adapter's Normalize instead of being imported into the event store.
 	NativeVerified []string `json:"native_verified,omitempty"`
 }
@@ -50,9 +50,12 @@ const (
 	// ({"timestamp","type","payload"}), which must go through the codex
 	// adapter's Normalize instead of the event store.
 	FormatNativeCodex = "native-codex"
+	// FormatNativePi starts with Pi's durable session-head record and must go
+	// through the Pi transcript normalizer rather than the canonical importer.
+	FormatNativePi = "native-pi"
 	// FormatUnknown covers files with no recognizable line: neither canonical
-	// nor native codex, they fail verification rather than importing as
-	// degenerate zero-value events.
+	// nor a recognized provider transcript, they fail verification rather
+	// than importing as degenerate zero-value events.
 	FormatUnknown = "unknown"
 )
 
@@ -76,12 +79,17 @@ func classifyJSONL(lines []string) string {
 			EventID       string          `json:"event_id"`
 			Type          string          `json:"type"`
 			Payload       json.RawMessage `json:"payload"`
+			ID            string          `json:"id"`
+			Timestamp     string          `json:"timestamp"`
 		}
 		if json.Unmarshal([]byte(line), &probe) != nil {
 			continue // not JSON at all; keep looking for a parseable line
 		}
 		if probe.SchemaVersion == protocol.SchemaVersionEvent && strings.HasPrefix(probe.EventID, ids.PrefixEvent) {
 			return FormatCanonical
+		}
+		if probe.Type == "session" && probe.ID != "" && probe.Timestamp != "" && probe.SchemaVersion == "" {
+			return FormatNativePi
 		}
 		if probe.Type != "" && len(probe.Payload) > 0 && probe.SchemaVersion == "" {
 			return FormatNativeCodex
@@ -136,21 +144,21 @@ func defaultCodexNormalize(c *codex.Codex) NormalizeFn {
 	}
 }
 
-// verifyNativeCodex verifies a native Codex rollout file through the codex
-// adapter's Normalize — never through the event store: native rollout lines
+// verifyNativeProvider verifies a native provider transcript through its
+// adapter — never through the event store: native transcript lines
 // are NOT canonical events, and importing them as zero-value protocol.Event
 // would collapse every line onto one storage row via event_id UNIQUE dedup.
 //
 // Per-file checks (each reported as a verification failure when violated):
 //   - Normalize succeeds over every parseable line and yields ≥1 event;
-//   - every event carries Provider "codex" and OBSERVED provenance (facts
+//   - every event carries the expected provider and OBSERVED provenance (facts
 //     parsed from a transcript must never be upgraded);
 //   - IDs are stable across two Normalize passes of the same bytes: each
 //     event's compared identity is derived purely from its content via
 //     ids.EventDeterministic (kind + canonical payload), so re-importing the
-//     same rollout is idempotent even though the adapter stamps fresh random
-//     EventIDs on every call.
-func verifyNativeCodex(ctx context.Context, path string, normalize NormalizeFn) []error {
+//     same transcript is idempotent. Adapters whose transcript contract
+//     promises exact EventID determinism are additionally checked byte-for-byte.
+func verifyNativeProvider(ctx context.Context, path string, normalize NormalizeFn, provider, label string, requireStableEventIDs bool) []error {
 	pass := func() ([]protocol.Event, error) {
 		f, err := os.Open(path)
 		if err != nil {
@@ -162,16 +170,17 @@ func verifyNativeCodex(ctx context.Context, path string, normalize NormalizeFn) 
 
 	first, err := pass()
 	if err != nil {
-		return []error{fmt.Errorf("codex normalize: %w", err)}
+		return []error{fmt.Errorf("%s normalize: %w", label, err)}
 	}
 	if len(first) == 0 {
-		return []error{errors.New("codex normalize produced no events")}
+		return []error{fmt.Errorf("%s normalize produced no events", label)}
 	}
 	stableIDs := make([]string, len(first))
+	stableEventIDs := make([]string, len(first))
 	for i := range first {
 		ev := &first[i]
-		if ev.Provider != protocol.ProviderCodex {
-			return []error{fmt.Errorf("event %d: provider = %q, want %q", i+1, ev.Provider, protocol.ProviderCodex)}
+		if ev.Provider != provider {
+			return []error{fmt.Errorf("event %d: provider = %q, want %q", i+1, ev.Provider, provider)}
 		}
 		if ev.Provenance != protocol.ProvenanceObserved {
 			return []error{fmt.Errorf("event %d (%s): provenance = %q, want OBSERVED", i+1, ev.Kind, ev.Provenance)}
@@ -181,11 +190,12 @@ func verifyNativeCodex(ctx context.Context, path string, normalize NormalizeFn) 
 			return []error{fmt.Errorf("event %d (%s): %w", i+1, ev.Kind, kerr)}
 		}
 		stableIDs[i] = id
+		stableEventIDs[i] = ev.EventID
 	}
 
 	second, err := pass()
 	if err != nil {
-		return []error{fmt.Errorf("codex normalize (second pass): %w", err)}
+		return []error{fmt.Errorf("%s normalize (second pass): %w", label, err)}
 	}
 	if len(second) != len(stableIDs) {
 		return []error{fmt.Errorf("normalize passes disagree on event count: %d vs %d", len(stableIDs), len(second))}
@@ -197,6 +207,9 @@ func verifyNativeCodex(ctx context.Context, path string, normalize NormalizeFn) 
 		}
 		if id != stableIDs[i] {
 			return []error{fmt.Errorf("event %d id unstable across passes", i+1)}
+		}
+		if requireStableEventIDs && second[i].EventID != stableEventIDs[i] {
+			return []error{fmt.Errorf("event %d event_id unstable across passes", i+1)}
 		}
 	}
 	return nil
@@ -221,26 +234,34 @@ func contentDerivedID(ev *protocol.Event) (string, error) {
 }
 
 // VerifyOptions tunes Verify. The zero value verifies canonical fixtures
-// through the event store and native codex rollouts through the codex
-// adapter.
+// through the event store and native provider transcripts through their
+// matching adapters.
 type VerifyOptions struct {
 	// NormalizeNative overrides the default codex normalizer used for
 	// native-format files (primarily for adapter-focused tests).
 	NormalizeNative NormalizeFn
+	// NormalizePi overrides the Pi transcript normalizer. It is separate from
+	// NormalizeNative so injecting a Codex stream normalizer cannot accidentally
+	// route Pi fixtures through the wrong provider parser.
+	NormalizePi NormalizeFn
 }
 
 // Verify classifies every .jsonl file under dir and verifies it according to
 // its format: canonical hfg.event.v1 fixtures are imported into a fresh
 // temporary database and must survive ingestion, graph rebuild, and trace
-// materialization deterministically; native codex rollout files are verified
-// through the codex adapter's Normalize instead (never imported into the
-// event store) and reported via Result.NativeVerified. It never writes to
-// the user's real database.
+// materialization deterministically; native provider transcript files are
+// verified through the matching adapter instead (never imported into the
+// event store) and reported via Result.NativeVerified. It never writes to the
+// user's real database.
 func Verify(ctx context.Context, dir string, opts ...VerifyOptions) (*Result, error) {
 	res := &Result{}
-	normalize := defaultCodexNormalize(&codex.Codex{})
+	normalizeCodex := defaultCodexNormalize(&codex.Codex{})
+	normalizePi := (&pi.Pi{}).NormalizeTranscript
 	if len(opts) > 0 && opts[0].NormalizeNative != nil {
-		normalize = opts[0].NormalizeNative
+		normalizeCodex = opts[0].NormalizeNative
+	}
+	if len(opts) > 0 && opts[0].NormalizePi != nil {
+		normalizePi = opts[0].NormalizePi
 	}
 
 	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
@@ -282,7 +303,16 @@ func Verify(ctx context.Context, dir string, opts ...VerifyOptions) (*Result, er
 			// Native provider rollout: verify through the codex adapter,
 			// never through the event store (zero-value import would
 			// collapse every line onto one row via event_id UNIQUE dedup).
-			if errs := verifyNativeCodex(ctx, f, normalize); len(errs) > 0 {
+			if errs := verifyNativeProvider(ctx, f, normalizeCodex, protocol.ProviderCodex, "codex", false); len(errs) > 0 {
+				for _, e := range errs {
+					res.Failures = append(res.Failures, fmt.Sprintf("%s: %v", base, e))
+				}
+				continue
+			}
+			res.NativeVerified = append(res.NativeVerified, base)
+			res.Events += 1 // one verified native transcript per file
+		case FormatNativePi:
+			if errs := verifyNativeProvider(ctx, f, normalizePi, protocol.ProviderPi, "pi", true); len(errs) > 0 {
 				for _, e := range errs {
 					res.Failures = append(res.Failures, fmt.Sprintf("%s: %v", base, e))
 				}
@@ -302,7 +332,7 @@ func Verify(ctx context.Context, dir string, opts ...VerifyOptions) (*Result, er
 			}
 		default: // FormatUnknown: never silently imported as zero-value Events.
 			res.Failures = append(res.Failures,
-				fmt.Sprintf("%s: unrecognized JSONL format (neither %s nor %s)", base, FormatCanonical, FormatNativeCodex))
+				fmt.Sprintf("%s: unrecognized JSONL format (neither %s, %s nor %s)", base, FormatCanonical, FormatNativeCodex, FormatNativePi))
 		}
 	}
 

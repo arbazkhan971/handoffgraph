@@ -220,6 +220,9 @@ async function postSignedPayload(
   const signature = await computeWebhookSignature(secret, timestamp, body);
   return fetcher(url, {
     method: "POST",
+    // URL validation applies to the registered destination. Never let fetch
+    // follow an attacker-controlled redirect to an unvalidated host.
+    redirect: "manual",
     headers: {
       "content-type": "application/json",
       "x-handoffgraph-signature": webhookSignatureHeader(timestamp, signature),

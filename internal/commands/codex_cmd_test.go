@@ -9,7 +9,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/BurntSushi/toml"
+	"github.com/handoffgraph/handoffgraph/internal/adapter"
+	"github.com/handoffgraph/handoffgraph/internal/adapter/codex"
 	"github.com/handoffgraph/handoffgraph/internal/cli"
 	"github.com/handoffgraph/handoffgraph/internal/protocol"
 )
@@ -34,6 +38,19 @@ func runCodexApp(t *testing.T, app *cli.App, args ...string) (string, string, er
 	c := &cli.Context{Stdout: &out, Stderr: &errBuf}
 	err := app.Run(context.Background(), c, "codex", args)
 	return out.String(), errBuf.String(), err
+}
+
+func TestCodexSubcommandHelpIsScopedAndSuccessful(t *testing.T) {
+	out, stderr, err := runCodexApp(t, newCodexApp(t), "app-server-sessions", "--help")
+	if err != nil {
+		t.Fatalf("help returned error: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("help stderr=%q", stderr)
+	}
+	if !strings.Contains(out, "-page-size") || strings.Contains(out, "-workstream") || strings.Contains(out, "-hook-command") {
+		t.Fatalf("unscoped app-server help: %q", out)
+	}
 }
 
 // writeCodexRollout writes one rollout file whose head line carries the
@@ -84,7 +101,7 @@ func TestCodexCmdInstallUninstallLifecycle(t *testing.T) {
 	if !strings.Contains(out, "codex hooks installed for events:") {
 		t.Errorf("install output = %q", out)
 	}
-	if !strings.Contains(out, "session_start") || !strings.Contains(out, "turn_end") {
+	if !strings.Contains(out, "SessionStart") || !strings.Contains(out, "Stop") {
 		t.Errorf("install output lacks managed events: %q", out)
 	}
 	data, err := os.ReadFile(filepath.Join(cfgDir, "config.toml"))
@@ -129,6 +146,26 @@ func TestCodexCmdInstallDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cfgDir, "config.toml")); !os.IsNotExist(err) {
 		t.Error("dry run wrote config.toml")
+	}
+}
+
+func TestCodexCmdDefaultInstallUsesPublicHookHandler(t *testing.T) {
+	cfgDir := t.TempDir()
+	if _, _, err := runCodexApp(t, newCodexApp(t), "install", "--config-dir", cfgDir); err != nil {
+		t.Fatalf("codex default install: %v", err)
+	}
+	var decoded map[string]any
+	if _, err := toml.DecodeFile(filepath.Join(cfgDir, "config.toml"), &decoded); err != nil {
+		t.Fatalf("decode installed Codex config: %v", err)
+	}
+	commands := collectStringFields(decoded, "command")
+	if len(commands) == 0 {
+		t.Fatalf("installed Codex config has no hook commands: %#v", decoded)
+	}
+	for _, command := range commands {
+		if !strings.HasSuffix(command, " hook codex") {
+			t.Errorf("installed Codex command %q does not end in public handler", command)
+		}
 	}
 }
 
@@ -209,6 +246,79 @@ func TestCodexCmdSessionsEmpty(t *testing.T) {
 	}
 	if !strings.Contains(out, "no codex sessions found") {
 		t.Errorf("empty sessions output = %q", out)
+	}
+}
+
+func TestCodexCmdAppServerSessionsIsSeparateAndValidatesUsage(t *testing.T) {
+	app := newCodexApp(t)
+	if _, _, err := runCodexApp(t, app, "app-server-sessions", "unexpected-positional"); err == nil || !strings.Contains(err.Error(), "usage: codex app-server-sessions") {
+		t.Fatalf("positional app-server-sessions error = %v", err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing-codex")
+	_, _, err := runCodexApp(t, app, "--codex-binary", missing, "app-server-sessions", "--page-size", "1", "--max-pages", "1")
+	if err == nil || !strings.Contains(err.Error(), "app-server-sessions") || !strings.Contains(err.Error(), "start") {
+		t.Fatalf("missing app-server binary error = %v", err)
+	}
+
+	// The existing file-backed command remains independently reachable.
+	out, _, err := runCodexApp(t, app, "sessions", "--sessions-dir", t.TempDir())
+	if err != nil || !strings.Contains(out, "no codex sessions found") {
+		t.Fatalf("file sessions after App Server dispatch: out=%q err=%v", out, err)
+	}
+}
+
+func TestWriteCodexAppServerSessionsJSONAndText(t *testing.T) {
+	ref := adapter.SessionRef{
+		Provider:    protocol.ProviderCodex,
+		NativeID:    "018f0f70-7b5c-7000-8000-000000000001",
+		StartedAt:   time.Unix(100, 0).UTC(),
+		LastEventAt: time.Unix(200, 0).UTC(),
+		Metadata: &adapter.SessionMetadata{
+			NativeGroupID: "018f0f70-7b5c-7000-8000-000000000000",
+			Title:         "Read-only listing",
+			Preview:       "Inspect sessions",
+			WorkingDir:    "/repo/with\nnewline",
+			ModelProvider: "openai",
+			CLIVersion:    "0.144.3",
+			NativeSource:  json.RawMessage(`"cli"`),
+		},
+	}
+
+	var jsonOut bytes.Buffer
+	ctx := &cli.Context{Stdout: &jsonOut, Stderr: &bytes.Buffer{}}
+	if err := writeCodexAppServerSessions(ctx, []adapter.SessionRef{ref}, true); err != nil {
+		t.Fatalf("write JSON: %v", err)
+	}
+	var rows []codexAppServerSessionOut
+	if err := json.Unmarshal(jsonOut.Bytes(), &rows); err != nil {
+		t.Fatalf("JSON output: %v\n%s", err, jsonOut.String())
+	}
+	if len(rows) != 1 || rows[0].Transport != codex.AppServerTransport || rows[0].NativeSessionID != ref.NativeID || rows[0].CodexCLIVersion != "0.144.3" {
+		t.Fatalf("rows = %+v", rows)
+	}
+
+	var textOut bytes.Buffer
+	ctx.Stdout = &textOut
+	if err := writeCodexAppServerSessions(ctx, []adapter.SessionRef{ref}, false); err != nil {
+		t.Fatalf("write text: %v", err)
+	}
+	if strings.Count(strings.TrimSpace(textOut.String()), "\n") != 0 || !strings.Contains(textOut.String(), `/repo/with\nnewline`) {
+		t.Fatalf("text output was not single-line escaped: %q", textOut.String())
+	}
+
+	var empty bytes.Buffer
+	ctx.Stdout = &empty
+	if err := writeCodexAppServerSessions(ctx, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(empty.String(), "file-based `codex sessions` is unchanged") {
+		t.Fatalf("empty output = %q", empty.String())
+	}
+
+	ref.Metadata = nil
+	if err := writeCodexAppServerSessions(ctx, []adapter.SessionRef{ref}, true); err == nil {
+		t.Fatal("missing mapped metadata succeeded")
 	}
 }
 

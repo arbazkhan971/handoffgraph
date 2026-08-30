@@ -68,11 +68,12 @@ func TestVerifyFixtureDirWithCorruptFile(t *testing.T) {
 }
 
 // TestClassifyJSONL pins the format-classification contract: canonical
-// hfg.event.v1 envelopes vs native codex rollout records vs anything else
-// (which must never be silently imported).
+// hfg.event.v1 envelopes vs native Codex/Pi records vs anything else (which
+// must never be silently imported).
 func TestClassifyJSONL(t *testing.T) {
 	canonical := `{"schema_version":"hfg.event.v1","event_id":"evt_01J2F7A0000000000000000001","occurred_at":"2026-08-21T12:00:00Z","kind":"workstream.started","provenance":"OBSERVED"}`
 	native := `{"timestamp":"2026-08-21T15:00:00Z","type":"session_meta","payload":{"id":"0f9c7a2e","originator":"codex-cli"}}`
+	nativePi := `{"type":"session","id":"pi-native","timestamp":"2026-08-30T10:00:00Z","future":{"kept":true}}`
 
 	tests := []struct {
 		name  string
@@ -81,6 +82,7 @@ func TestClassifyJSONL(t *testing.T) {
 	}{
 		{"canonical fixture line", []string{canonical}, FormatCanonical},
 		{"native codex fixture line", []string{native}, FormatNativeCodex},
+		{"native pi fixture head", []string{nativePi}, FormatNativePi},
 		{"garbage is unknown", []string{"{not valid json"}, FormatUnknown},
 		{"empty input is unknown", nil, FormatUnknown},
 		{"blank-only input is unknown", []string{"", "   ", ""}, FormatUnknown},
@@ -88,6 +90,16 @@ func TestClassifyJSONL(t *testing.T) {
 		{
 			"type without payload is unknown",
 			[]string{`{"timestamp":"2026-08-21T15:00:00Z","type":"session_meta"}`},
+			FormatUnknown,
+		},
+		{
+			"pi session without id is unknown",
+			[]string{`{"type":"session","timestamp":"2026-08-30T10:00:00Z"}`},
+			FormatUnknown,
+		},
+		{
+			"pi session without timestamp is unknown",
+			[]string{`{"type":"session","id":"pi-native"}`},
 			FormatUnknown,
 		},
 		{
@@ -126,7 +138,9 @@ func repoFixturesDir(t *testing.T) string {
 // TestVerifyRepoGoldenFixtures verifies every top-level golden fixture in
 // testdata/fixtures passes the harness under the right regime: canonical
 // hfg.event.v1 fixtures through the event store plus a deterministic graph
-// root hash, and the NATIVE codex rollouts (codex_session.jsonl,
+// root hash, and provider-native transcripts such as Codex rollouts and Pi
+// sessions through their matching adapter. Codex examples include
+// codex_session.jsonl,
 // codex_session_2.jsonl and later siblings such as codex-fork-resume.jsonl /
 // codex-subagent.jsonl) through the codex adapter's Normalize instead —
 // never imported as degenerate zero-value events.
@@ -187,15 +201,16 @@ func TestVerifyRepoGoldenFixtures(t *testing.T) {
 		t.Errorf("FilesChecked = %d, want %d (every top-level .jsonl swept)", res.FilesChecked, len(files))
 	}
 
-	// Native rollouts must be genuinely verified through the codex adapter —
-	// exactly the files classifyJSONL deems native, never the canonical ones.
+	// Native transcripts must be genuinely verified through their matching
+	// adapters — exactly the files classifyJSONL deems native, never canonical.
 	wantNative := map[string]bool{}
 	for _, path := range files {
 		lines, err := readLines(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if classifyJSONL(lines) == FormatNativeCodex {
+		format := classifyJSONL(lines)
+		if format == FormatNativeCodex || format == FormatNativePi {
 			wantNative[filepath.Base(path)] = false
 		}
 	}
@@ -207,6 +222,9 @@ func TestVerifyRepoGoldenFixtures(t *testing.T) {
 	}
 	if _, ok := wantNative["codex_session_2.jsonl"]; !ok {
 		t.Error("codex_session_2.jsonl not classified as native codex rollout")
+	}
+	if _, ok := wantNative["pi_native_all.jsonl"]; !ok {
+		t.Error("pi_native_all.jsonl not classified as native Pi transcript")
 	}
 	gotNative := map[string]bool{}
 	for _, name := range res.NativeVerified {
@@ -304,6 +322,36 @@ func TestNativeCodexRolloutVerifiedNatively(t *testing.T) {
 	}
 	if res.Events != 1 {
 		t.Errorf("Events = %d, want 1 (the verified transcript itself, not imported lines)", res.Events)
+	}
+}
+
+// TestNativePiTranscriptVerifiedNatively proves the shared harness routes a
+// Pi session to the Pi streaming normalizer, requires exact deterministic
+// event IDs across both passes, and never imports native lines as canonical
+// zero-value events.
+func TestNativePiTranscriptVerifiedNatively(t *testing.T) {
+	src := filepath.Join(repoFixturesDir(t), "pi_native_all.jsonl")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pi_native_all.jsonl"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Verify(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Failures) > 0 {
+		t.Fatalf("native Pi transcript failed verification: %v", res.Failures)
+	}
+	if len(res.NativeVerified) != 1 || res.NativeVerified[0] != "pi_native_all.jsonl" {
+		t.Errorf("NativeVerified = %v, want [pi_native_all.jsonl]", res.NativeVerified)
+	}
+	if res.Events != 1 {
+		t.Errorf("Events = %d, want 1 (the verified transcript, not imported lines)", res.Events)
 	}
 }
 

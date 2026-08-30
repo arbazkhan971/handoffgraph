@@ -1,7 +1,7 @@
-# HANDOVER.md — HandoffGraph (takeover doc; updated for the parity era)
+# HANDOVER.md — HandoffGraph (takeover doc; launch preflight)
 
 > Written for a fresh AI coding agent (originally OpenCode; refreshed
-> 2026-08-28 for the competitor-parity program). Read this first, then
+> 2026-08-31 for the release/Hosted Basic preflight). Read this first, then
 > `docs/architecture.md`, `docs/parity-plan.md`, and
 > `docs/competitor-analysis.md`.
 
@@ -28,7 +28,23 @@ Source documents that drive everything (full product + 300-day plan):
 
 ## 2. Current state (what exists, what works)
 
-**Version: v0.6.0 local core + parity program ~34/55 rows (as of 2026-08-28, commit f1747c4).** v0.6 core: event spine + Codex/Claude/Pi adapters + detection pack + Session Debugger UI + verified cross-agent continuation. Parity program (driven by `docs/parity-plan.md`): OTLP ingest local AND hosted (Worker route `POST /v1/otlp` with Go-parity ids), wide observations read model (ts_bucket + fingerprints), scores primitive, `verify` CI gate, datasets × experiments, prompt store, usage/outcome analytics, capture tiers, agent skills, ingest backpressure. Launch gates unchanged: canonical public repo, 20-real-session acceptance, first tag.
+**Version: untagged v0.7 beta preflight with a v0.6 local core and an
+ahead-of-gate Hosted Basic foundation (2026-08-31 working tree).** The event
+spine, Codex/Claude/Pi adapters, Session Debugger, parity modules, explicit
+hosted sync, and verified continuation are implemented. Twenty real Codex
+sessions were imported twice with the same 45,567-event result and a clean deep
+doctor run. The separate read-only Codex App Server listing path was exercised
+against Codex CLI 0.144.3 and returned deterministic state-DB thread metadata.
+Directed continuation and acknowledgement acceptance is complete across all
+six supported provider handoff pairs.
+
+The Cloudflare zone and isolated staging/production durable resources exist,
+and all 22 migrations are applied and verified on staging D1. Production is
+**not live**: the canonical GitHub organization/repository and first tag do not
+exist, production D1 is not migrated, the public domains still serve the old
+Vercel projects, and WorkOS, Turnstile, WAF/rate controls, domain cutover, and
+deployed browser/CLI acceptance remain launch gates. Production signup stays
+absent and fail-closed.
 
 ### Verified green
 
@@ -61,9 +77,11 @@ Also green: `web/` React+TS+Vite build (dist copied into `internal/webui/dist` f
 | Fixture verification harness (+ golden fixture coverage) | `internal/verify` | ✅ tested |
 | Adapter interface + registry (v0.2.0 groundwork) | `internal/adapter` | ✅ tested |
 | Codex adapter (Detect + Normalize + hook Install/Uninstall + deterministic event IDs; native Resume + StartFromCheckpoint as ExecSpec) | `internal/adapter/codex` | ✅ tested |
+| Codex App Server thread listing (stable stdio, state-DB-only, read-only; file detection unchanged) | `internal/adapter/codex`, `internal/commands` | ✅ tested + real CLI exercised |
 | Claude adapter (Detect + Normalize + merge-safe hooks + native Resume + checkpoint-seeded ExecSpec) | `internal/adapter/claude` | ✅ tested |
 | Pi adapter (Detect + Normalize + merge-safe hooks + native Resume + checkpoint-seeded ExecSpec) | `internal/adapter/pi` | ✅ tested |
 | CLI framework + subcommands (flag helpers, JSONL redact preview) | `internal/cli`, `internal/commands` | ✅ tested |
+| Explicit hosted sync (network-free preview, first-upload acceptance, durable canonical retry batches, tenant-scoped cursor) | `internal/hostedsync`, `internal/config`, `internal/commands` | ✅ tested |
 | Codex CLI wiring (`install`, `sessions`, `resume`; resume prints the shell-quoted `codex resume <id>` invocation) | `internal/commands` | ✅ tested |
 | Cross-agent continuation (bounded payload, drift, append-only status + MCP acknowledgement) | `internal/launch`, `internal/commands`, `internal/mcp` | ✅ tested |
 | OTLP/JSON ingest — `otlp import` + localhost `otlp serve` (deterministic ids, idempotent re-import, fail-closed sanitizer, GenAI/OpenInference/OpenLIT/Langfuse attr mapping, partialSuccess) | `internal/otlp`, `internal/commands` | ✅ tested (docs/otlp.md; protobuf/gRPC pending; capture tiers shipped) |
@@ -93,6 +111,9 @@ redact        --preview <file>
 fixture       verify <dir>
 install       --agent codex|claude|pi [--dry-run --hook-command --config-dir]
               install managed hooks
+codex         install|uninstall|sessions|app-server-sessions|normalize
+              manage the Codex adapter; app-server-sessions is a separate
+              read-only stdio listing path with bounded pagination
 sessions      [--agent] [--json] | --detect [--json]
               list sessions derived from captured events, per provider;
               --detect lists native sessions directly from disk
@@ -100,6 +121,9 @@ sessions      [--agent] [--json] | --detect [--json]
 resume        <id> [--agent codex|claude|pi]
               print the shell-quoted native resume command; HandoffGraph
               never launches agents itself
+sync          [--preview] [--accept-redaction] [--json]
+              explicitly preview/upload pending local events; preview has no
+              network or state writes, and first upload requires acceptance
 continue      --to codex|claude|pi --workstream <id> [--preview]
               resolve the handoff and print (never execute) the native invocation
 handoff       status [--json]  derive created/accepted acknowledgement state
@@ -115,7 +139,7 @@ otlp          import <file> | serve [--addr 127.0.0.1:4318] [--capture tier]
               ingest OTLP/JSON telemetry into the event spine (idempotent;
               capture tiers full/metadata/minimal gate attribute content at
               emit, fail-closed; serve listens on localhost only)
-mcp           serve  run the local eleven-tool MCP stdio server
+mcp           serve  run the local twelve-tool MCP stdio server
 dataset       create <name> --file ... | list   immutable dataset versions
 experiment    run --dataset <name> | list | compare <a> <b>
 prompt        create | label | list | show        versioned prompts + labels
@@ -125,6 +149,21 @@ score         record ... | list ...
 open          serve the embedded debugger UI on localhost
 version
 ```
+
+`handoffgraph codex app-server-sessions [--codex-binary <path>] [--page-size
+<n>] [--max-pages <n>] [--json]` sends only `initialize`, `initialized`, and
+state-DB-only `thread/list` requests over stdio. It never mutates Codex state
+and never replaces `codex sessions`, which continues to detect rollout files
+from disk.
+
+`handoffgraph sync` is the only local-to-hosted network path. Endpoint settings
+come only from the user config or `HFG_HOSTED_API_URL`; entering an untrusted
+repository cannot redirect the device token. Supply the credential via a
+protected token file or `HFG_DEVICE_TOKEN`, never argv. Sync re-runs deep
+fail-closed redaction and uploads only events attested with
+`redaction.version = 1` and status `clean` or `redacted`. The first upload scope
+stops after its content-free preview unless the user reruns with
+`--accept-redaction`.
 
 ---
 
@@ -141,6 +180,7 @@ internal/
   content/                 CanonicalJSON() + Hash()
   object/                  content-addressed compressed object store
   config/                  config.go + load.go (TOML)
+  hostedsync/              explicit redacted hosted transfer + durable cursor
   repository/              Git identity (Detect) + worktree state (State)
   storage/                 db.go (migrations+events), workstream.go, bench_test.go
   ingest/                  spool + JSONL import
@@ -156,9 +196,12 @@ internal/
   adapter/                 provider Adapter interface + Registry (v0.2.0)
     codex/                 Codex adapter: Detect + Normalize + hook Install/Uninstall
                           + deterministic event IDs + Resume/StartFromCheckpoint (ExecSpec)
+                          + stable read-only App Server thread listing
     claude/, pi/           Claude Code and Pi adapters (v0.3.0/v0.4.0 scope, same contract)
 protocol/schema/v1/        event.schema.json, checkpoint.schema.json, trace.schema.json
 docs/                      architecture.md, privacy.md
+platform/                  Cloudflare Hosted Basic + ahead-of-gate modules
+landing/                   Cloudflare landing Worker
 testdata/fixtures/         golden JSONL fixtures (claude, tool success/failure,
                            out-of-order, windows paths, orphan spans, object refs,
                            codex session) + invalid/ subtree (truncated, bad UTF-8)
@@ -241,7 +284,8 @@ Objective, repository state (remote/branch/head/dirty), source sessions, complet
 
 ## 6. Database schema (migrations in `internal/storage/db.go`)
 
-8 migrations, run in a transaction, recorded in `schema_migrations` + `user_version`:
+12 migrations, run in order and recorded in `schema_migrations` +
+`user_version`:
 
 1. `schema_migrations` table
 2. `events` (append-only, `event_id UNIQUE`, indexed by workstream/session/kind)
@@ -251,6 +295,10 @@ Objective, repository state (remote/branch/head/dirty), source sessions, complet
 6. `spans` (read model, indexed trace/parent)
 7. `graph_nodes` + `graph_edges`
 8. `checkpoints`
+9. Wide `span_observations`, fingerprints, and observation snapshot metadata
+10. Promoted observation columns plus native-signal coalescing/shadow state
+11. Derived exception groups
+12. Derived verify-result cache
 
 **Rules:** ordered, idempotent, timestamped backup before destructive migrations, never rewrite raw events during migration, rebuild derived indexes from raw events rather than mutating them.
 
@@ -300,15 +348,21 @@ Expected `checkpoint` output includes: decisions (DECLARED), files (OBSERVED + c
 
 ### Remaining nice-to-haves
 - ~~Consider stable/deterministic event-ID derivation for adapter re-import idempotency~~ — **DONE (2026-08-21):** `internal/ids` deterministic helper derives a stable `evt_<ulid>` from (provider, native session ID, sequence, occurred-at, content hash), so re-importing the same Codex session is idempotent.
-- ~~Codex adapter: hook install/uninstall + `sessions`/`resume` CLI wiring~~ — **DONE (2026-08-21):** managed `[hooks.handoffgraph]` table in `~/.codex/config.toml`, fail-closed with dry-run; `install --agent codex`, `sessions`, `resume` commands wired.
+- ~~Codex adapter: hook install/uninstall + `sessions`/`resume` CLI wiring~~ — **DONE (updated 2026-08-30):** ten additive, marker-owned Codex 0.144.3 matcher groups in `~/.codex/config.toml`, fail-closed dry-run/uninstall, and a bounded silent `hook codex` capture handler; `install --agent codex`, `sessions`, `resume` commands wired.
 - ~~Codex native resume and checkpoint continuation~~ — **DONE:** adapter `Resume` returns the native `ExecSpec` (`codex resume <id>`, empty/dash-prefixed ids rejected); `StartFromCheckpoint` returns an injection-safe checkpoint-seeded spec. The v0.6 `continue` command selects a spec, checks drift, records `handoff.created`, and prints the invocation and bounded payload. It deliberately never launches agent processes itself.
-- Acceptance run over 20 real Codex sessions (no config loss, resume path) still open — targeted for v0.2.x/v0.3.0.
-- Codex App Server integration remains deferred (see §9).
+- ~~Acceptance run over 20 real Codex sessions~~ — **DONE (2026-08-30):**
+  exactly 20 stable real sessions imported twice as 45,567 events both times;
+  deep doctor stayed green and the file-based detection path was preserved.
+- ~~Codex App Server integration~~ — **DONE (2026-08-30):** a separate,
+  bounded, read-only stdio client lists state-DB threads deterministically. It
+  sends only the stable initialization/listing methods and does not replace
+  file-based `codex sessions`.
 
 ### Deliberately deferred (per roadmap)
-- Codex App Server integration and 20-real-session acceptance
-- Remote MCP (v0.11.0); the local eleven-tool MCP server is implemented
-- Cloudflare hosted platform (private repo, v0.8.0+)
+- Remote MCP (v0.11.0); the local twelve-tool MCP server is implemented.
+- Advanced hosted features remain behind the exact
+  `HOSTED_SURFACE="advanced"` fence. Hosted Basic is implemented and its
+  staging schema is ready, but production publication is still gated.
 
 ---
 
@@ -329,12 +383,12 @@ canonical `hfg.event.v1` fixtures go through the event-store import path,
 while native codex rollout fixtures are verified via the adapter's
 `Normalize`.
 Remaining acceptance work, in priority order:
-- App Server integration — the release-hold condition for the milestone.
-- Acceptance run: 20 real sessions, no config loss.
 - Exercise real cross-agent continuations and acknowledgements across the
   supported provider pairs.
 - Transfer or mirror the repository to the canonical module location before
   publishing the first tag; see `docs/releasing.md`.
+- Publish `v0.7.0-beta.1`, then prove clean install and upgrade from the
+  canonical module path.
 
 ### B. Golden fixtures expansion — DONE (2026-08-21)
 Added: Claude tool success/failure, out-of-order delivery, truncated JSONL,
@@ -361,13 +415,16 @@ fixtures live under `testdata/fixtures/invalid/`.
 
 ## 11. Git / repo status
 
-- The repository is on `main`; the current remote is
-  `github.com/arbazkhan971/handoffgraph`.
+- The working tree is prepared for a future canonical remote at
+  `github.com/handoffgraph/handoffgraph`, but that organization/repository has
+  not been created and no transfer or publication should be inferred from the
+  module path. Update the checkout origin only after the owner completes the
+  transfer.
 - The canonical module path is `github.com/handoffgraph/handoffgraph`, but that
   GitHub repository must exist before public `go install ...@version` works.
 - Tag-triggered, checksummed cross-platform releases are defined in
   `.github/workflows/release.yml`; follow `docs/releasing.md` and never reuse a
-  published tag.
+  published tag. No canonical prerelease has been published yet.
 - Local path: `/Users/arbaz/Projects/tools/handoffgraph`
 - The sibling project dirs `/Users/arbaz/Projects/tools/ccrank` and `grok-usage` are unrelated (different owners/licenses).
 
@@ -479,15 +536,15 @@ go test ./... && go test -race ./...
 cd platform && npx tsc --noEmit && npx vitest run   # 176 green
 ```
 
-*(§13 is preserved as written. It describes the state at f1747c4 and its
-counts — 28 commands, 176 vitest, ~34/55 rows — are now historical. Read §14
-for the current state.)*
+*(§13 is preserved as a dated snapshot. Its work queue, launch gates, and
+counts — 28 commands, 176 vitest, ~34/55 rows — are historical; the 20-session
+gate it lists is now complete. Read §14 for current state.)*
 
 ---
 
-## 14. 2026-08-28 ultracode wave — takeover brief
+## 14. 2026-08-28 ultracode wave and 2026-08-30 launch overlay
 
-### Where we are now
+### Where the parity wave landed
 
 **27 commits after `9ed8dda` (head `9bbeede`).** The parity program is
 effectively complete: **~54 of 55 matrix rows are shipped behind a tested
@@ -525,13 +582,13 @@ future edit quietly checkmark them:
 exception groups; 12: verify result cache). Migrations are append-only and
 ordered — never renumber, never edit a shipped one.
 
-**CLI: 32 commands.** Verified from `internal/commands/register_test.go`,
+**CLI: 34 commands.** Verified from `internal/commands/register_test.go`,
 which pins the exact list and asserts the count matches:
 
 ```
-checkpoint claude codex continue detect doctor event fixture graph handoff
+checkpoint claude codex continue detect doctor event fixture graph handoff hook
 init install mcp dataset experiment index open otlp outcomes pi prompt query
-redact reset resume score sessions status traces verify version workstream
+redact reset resume score sessions status sync traces verify version workstream
 ```
 
 New since §13: `reset` (and `doctor --verify`). MCP stays at **12 tools**
@@ -541,9 +598,10 @@ New since §13: `reset` (and `doctor --verify`). MCP stays at **12 tools**
 panel) and `PromptsView` shipped — these were the P2 "UI pending" tails on
 rows 24, 27, 33/34.
 
-**Hosted Worker (`platform/`).** Nineteen source modules, each owning one
-parity area and each with a header comment stating its rows and its design
-provenance — read that header before editing a module:
+**Hosted Worker (`platform/`).** The nineteen parity modules listed below sit
+within the current 28-module `platform/src` surface. Each owns one parity area
+and has a header comment stating its rows and design provenance — read that
+header before editing a module:
 
 ```
 src/ingest.ts        src/otlp.ts        src/otlp_proto.ts   src/observations.ts
@@ -554,9 +612,10 @@ src/artifacts.ts     src/attachments.ts src/teams.ts
 ee/src/ee.ts         ee/src/assistant.ts        (fenced, own LICENSE)
 ```
 
-**D1 migrations 0004–0017**: teams/RBAC, observations+sessions,
+**D1 migrations 0004–0019**: teams/RBAC, observations+sessions,
 artifacts+exports, webhooks, dashboards, alerts, gateway, api_keys, evals,
-annotations, playground, simulations, ee, attachments. One cron
+annotations, playground, simulations, ee, attachments, and the durable
+account-deletion/tombstone path, and commit-time device-revocation fencing. One cron
 (`*/5 * * * *`) drives every sweep through the `scheduled` dispatcher in
 `src/index.ts`.
 
@@ -615,15 +674,40 @@ modes that actually bit, and the resolutions that stuck:
    `go test -race ./...` both exit 0, plus the platform suite when
    `platform/` changed).
 
-### Launch gates (owner: Arbaz, not the agent) — unchanged
+### 2026-08-30 release and Hosted Basic overlay
 
-- Transfer/mirror repo to `github.com/handoffgraph/handoffgraph` (module path).
-- Run ~20 real sessions through the hooks; import as acceptance + golden
-  cassettes (`docs/releasing.md` for the tag process after that).
-- Then tag `v0.7.0-beta.1` (release workflow is already wired).
-- Hosted tier stays **private and undeployed**: production identity
-  credentials, edge abuse controls, remote D1 migration, domains, and
-  deletion/privacy operations are still open (`ROADMAP.md`).
+Completed since the ultracode wave:
+
+- exactly 20 real Codex sessions were imported twice with a stable 45,567
+  events, and deep doctor stayed green;
+- the stable read-only Codex App Server thread-listing integration is complete
+  without changing the rollout-file detection path;
+- explicit hosted sync is implemented with a network/state-free preview,
+  first-upload acceptance, exact durable retry batches, and a server-side
+  requirement for redaction version 1 with status `clean` or `redacted`;
+- account deletion/privacy is implemented, reviewed, and covered across
+  WorkOS, exact R2 prefixes, D1 purge, retry/grace sweeps, and resurrection;
+- all 22 migrations are applied and verified on staging D1; Hosted Basic binds
+  only D1 and R2, and advanced routes enable only for the exact
+  `HOSTED_SURFACE="advanced"` value;
+- the latest platform run is green at 37 files / 1,553 Vitest tests, with
+  typecheck and production/staging Wrangler dry bundles also green.
+
+Remaining launch gates:
+
+- create/transfer the canonical repository at
+  `github.com/handoffgraph/handoffgraph`, publish `v0.7.0-beta.1`, and prove a
+  clean install/upgrade;
+- configure real WorkOS staging/production identity plus Turnstile and
+  WAF/rate controls;
+- deploy and browser-test staging auth, CLI sync, cross-tenant boundaries,
+  quotas, logout, and the full deletion saga;
+- preserve production rollback evidence, migrate production D1, cut the
+  already-configured custom domains from the still-live Vercel projects, and
+  repeat acceptance on public HTTPS;
+- keep `HOSTED_SIGNUP_ENABLED` absent until every preceding gate passes, then
+  retire `handoffgraph-landing` and `handoffgraph-api` on Vercel only after
+  Cloudflare public verification.
 
 ### One competitive fact worth carrying into any launch copy
 

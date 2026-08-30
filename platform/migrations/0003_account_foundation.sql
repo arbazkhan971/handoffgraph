@@ -186,9 +186,9 @@ BEGIN
       AND active_devices < max_devices
       AND used_device_issuances < max_device_issuances;
 
-    SELECT CASE WHEN changes() <> 1
+    SELECT (CASE WHEN changes() <> 1
       THEN RAISE(ABORT, 'device quota exceeded')
-    END;
+    END);
 END;
 
 CREATE TRIGGER devices_release_active_slot
@@ -227,9 +227,9 @@ BEGIN
     SET active_accounts = active_accounts + 1
     WHERE id = 'global' AND active_accounts < max_accounts;
 
-    SELECT CASE WHEN changes() <> 1
+    SELECT (CASE WHEN changes() <> 1
       THEN RAISE(ABORT, 'hosted beta capacity exceeded')
-    END;
+    END);
 END;
 
 CREATE TABLE quota_reservations (
@@ -276,11 +276,11 @@ WHEN NEW.status = 'pending'
      AND idempotency_key = NEW.idempotency_key
  )
 BEGIN
-    SELECT CASE WHEN NOT EXISTS (
+    SELECT (CASE WHEN NOT EXISTS (
       SELECT 1 FROM workspace_entitlements AS entitlement
       WHERE entitlement.workspace_id = NEW.workspace_id
         AND entitlement.status = 'active'
-    ) THEN RAISE(ABORT, 'active entitlement required') END;
+    ) THEN RAISE(ABORT, 'active entitlement required') END);
 
     -- Advance an expired fixed-duration accounting period before checking the
     -- new reservation. This happens inside the same serialized write as the
@@ -298,7 +298,7 @@ BEGIN
     WHERE workspace_id = NEW.workspace_id
       AND period_end <= NEW.created_at;
 
-    SELECT CASE WHEN EXISTS (
+    SELECT (CASE WHEN EXISTS (
       SELECT 1 FROM workspace_entitlements AS entitlement
       WHERE entitlement.workspace_id = NEW.workspace_id
         AND (
@@ -310,7 +310,7 @@ BEGIN
           NEW.event_count > entitlement.max_lifetime_events - entitlement.used_lifetime_events OR
           NEW.body_bytes > entitlement.max_lifetime_bytes - entitlement.used_lifetime_bytes
         )
-    ) THEN RAISE(ABORT, 'quota exceeded') END;
+    ) THEN RAISE(ABORT, 'quota exceeded') END);
 END;
 
 CREATE TRIGGER quota_reservations_allow

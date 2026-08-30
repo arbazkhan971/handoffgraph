@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,8 +25,8 @@ import (
 //     PostToolUse         → tool.completed / tool.failed (response error)
 //     PreCompact          → session.compacted (phase "pre")
 //     PostCompact         → session.compacted (phase "post")
-//     Stop                → session.ended
-//     SessionEnd          → session.ended (tolerated newer event)
+//     Stop                → trace.completed (one assistant response ended)
+//     SessionEnd          → session.ended
 //     anything else       → log.observed (source kind preserved)
 //
 //  2. print-mode stream-json lines (claude -p --output-format stream-json),
@@ -45,11 +46,10 @@ import (
 // Nothing is dropped: native fields not consumed by the mapping are
 // preserved verbatim in Event.Unknown.
 //
-// Normalize is a pure function of its input: the same bytes always produce
-// the same events, including deterministic event IDs (see
-// deterministic.go). Payloads that declare neither a session id nor a
-// timestamp cannot be identified deterministically; their events get fresh
-// random ids instead of risking cross-session collisions on re-import.
+// Normalize is a pure function for session-scoped input: the same payload
+// produces the same immutable events, including when a live hook omits a
+// timestamp (see deterministic.go). Payloads without a session id still get
+// fresh random ids rather than risking cross-session collisions.
 func (c *Claude) Normalize(ctx context.Context, raw json.RawMessage) ([]protocol.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -67,28 +67,56 @@ func (c *Claude) Normalize(ctx context.Context, raw json.RawMessage) ([]protocol
 	if view == nil {
 		return nil, fmt.Errorf("claude normalize: payload is not a JSON object")
 	}
+	if value, present := view["hook_event_name"]; present {
+		var hookName string
+		if json.Unmarshal(value, &hookName) != nil || hookName == "" {
+			return nil, fmt.Errorf("claude normalize: hook_event_name must be a non-empty string")
+		}
+	}
+	if value, present := view["timestamp"]; present {
+		var timestamp string
+		if json.Unmarshal(value, &timestamp) != nil || timestamp == "" {
+			return nil, fmt.Errorf("claude normalize: timestamp must be an RFC3339 string when present")
+		}
+		if _, err := time.Parse(time.RFC3339, timestamp); err != nil {
+			return nil, fmt.Errorf("claude normalize: timestamp is not valid RFC3339: %w", err)
+		}
+	}
 
-	base := baseFields{sessionID: payloadView(view).str("session_id")}
+	var native any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&native); err != nil {
+		return nil, fmt.Errorf("claude normalize: decode native payload: %w", err)
+	}
+	canonicalNative, err := content.CanonicalJSON(native)
+	if err != nil {
+		return nil, fmt.Errorf("claude normalize: canonicalize native payload: %w", err)
+	}
+	base := baseFields{
+		sessionID:  payloadView(view).str("session_id"),
+		nativeHash: content.HashBytes(canonicalNative),
+	}
 	if ts, ok := payloadView(view).time("timestamp"); ok {
 		base.occurredAt = ts
 	}
 
 	var (
-		kinds    []mappedEvent
-		err      error
-		isStream bool
+		kinds      []mappedEvent
+		mappingErr error
+		isStream   bool
 	)
 	if hookName := payloadView(view).str("hook_event_name"); hookName != "" {
-		kinds, err = mapHookPayload(view, hookName)
+		kinds, mappingErr = mapHookPayload(view, hookName)
 	} else {
 		isStream = true
-		kinds, err = mapStreamLine(view)
+		kinds, mappingErr = mapStreamLine(view)
 	}
-	if err != nil {
-		return nil, err
+	if mappingErr != nil {
+		return nil, mappingErr
 	}
 
-	consumed := consumedFields(kinds, isStream, payloadView(view))
+	consumed := consumedFields(isStream, payloadView(view))
 	out := make([]protocol.Event, 0, len(kinds))
 	for i, m := range kinds {
 		ev, err := buildEvent(base, int64(i+1), m, raw, consumed)
@@ -105,6 +133,7 @@ func (c *Claude) Normalize(ctx context.Context, raw json.RawMessage) ([]protocol
 type baseFields struct {
 	sessionID  string
 	occurredAt time.Time
+	nativeHash string
 }
 
 // mappedEvent is one canonical event to build from a payload: the target
@@ -186,7 +215,9 @@ func mapHookPayload(view payloadView, hookName string) ([]mappedEvent, error) {
 		if source != "" {
 			extra["source"] = source
 		}
-		return []mappedEvent{me(kind, extra)}, nil
+		event := me(kind, extra)
+		event.model = view.str("model")
+		return []mappedEvent{event}, nil
 
 	case "UserPromptSubmit":
 		return []mappedEvent{me(protocol.EventPromptSubmitted, map[string]any{
@@ -230,11 +261,15 @@ func mapHookPayload(view payloadView, hookName string) ([]mappedEvent, error) {
 		}
 		return []mappedEvent{me(protocol.EventSessionCompacted, extra)}, nil
 
-	case "Stop", "SessionEnd":
+	case "Stop":
 		extra := map[string]any{}
 		if v, ok := view.bool("stop_hook_active"); ok {
 			extra["stop_hook_active"] = v
 		}
+		return []mappedEvent{me(protocol.EventTraceCompleted, extra)}, nil
+
+	case "SessionEnd":
+		extra := map[string]any{}
 		if reason := view.str("reason"); reason != "" {
 			extra["reason"] = truncate(reason, maxInlineText)
 		}
@@ -461,25 +496,59 @@ func blockOutput(block payloadView) any {
 // consumedFields computes the set of top-level native field names consumed
 // by the mapping, so buildEvent can preserve everything else in
 // Event.Unknown without duplication.
-func consumedFields(kinds []mappedEvent, isStream bool, view payloadView) map[string]bool {
-	consumed := map[string]bool{
-		"session_id": true,
-		"timestamp":  true,
+func consumedFields(isStream bool, view payloadView) map[string]bool {
+	consumed := map[string]bool{}
+	consumeString := func(key string, maxLen int) {
+		raw, present := view[key]
+		if !present {
+			return
+		}
+		var value string
+		if json.Unmarshal(raw, &value) == nil && value != "" && (maxLen == 0 || len(value) <= maxLen) {
+			consumed[key] = true
+		}
+	}
+	consumeBool := func(key string) {
+		if _, ok := view.bool(key); ok {
+			consumed[key] = true
+		}
+	}
+	consumeRaw := func(key string) {
+		if _, present := view[key]; present {
+			consumed[key] = true
+		}
+	}
+
+	consumeString("session_id", 0)
+	if _, present := view["timestamp"]; present {
+		// Normalize validates every present timestamp before this point.
+		consumed["timestamp"] = true
 	}
 	if isStream {
 		consumed["type"] = true
 		consumed["message"] = true
 	} else {
 		consumed["hook_event_name"] = true
-		consumed["prompt"] = true
-		consumed["tool_name"] = true
-		consumed["tool_input"] = true
-		consumed["tool_response"] = true
-		consumed["source"] = true
-		consumed["trigger"] = true
-		consumed["custom_instructions"] = true
-		consumed["stop_hook_active"] = true
-		consumed["reason"] = true
+		switch view.str("hook_event_name") {
+		case "SessionStart":
+			consumeString("source", 0)
+		case "UserPromptSubmit":
+			consumeString("prompt", maxInlineText)
+		case "PreToolUse":
+			consumeString("tool_name", 0)
+			consumeRaw("tool_input")
+		case "PostToolUse":
+			consumeString("tool_name", 0)
+			consumeRaw("tool_input")
+			consumeRaw("tool_response")
+		case "PreCompact", "PostCompact":
+			consumeString("trigger", 0)
+			consumeString("custom_instructions", maxInlineText)
+		case "Stop":
+			consumeBool("stop_hook_active")
+		case "SessionEnd":
+			consumeString("reason", maxInlineText)
+		}
 	}
 	// Stream extras consumed per type.
 	if isStream {
@@ -494,9 +563,10 @@ func consumedFields(kinds []mappedEvent, isStream bool, view payloadView) map[st
 }
 
 // buildEvent materializes one mapped event. Sequence numbers are positions
-// within this payload's expansion. Event IDs are deterministic when the
-// payload identifies its session and time; otherwise fresh (see
-// deterministic.go for the collision rationale).
+// within this payload's expansion. A session-scoped hook is deterministic
+// even when Claude omits a timestamp: zero honestly represents an unknown
+// native time, while the canonical native hash distinguishes otherwise
+// identical mapped payloads (for example separate tool_use_id values).
 func buildEvent(base baseFields, seq int64, m mappedEvent, raw json.RawMessage, consumed map[string]bool) (*protocol.Event, error) {
 	ev := &protocol.Event{
 		SchemaVersion:   protocol.SchemaVersionEvent,
@@ -517,8 +587,8 @@ func buildEvent(base baseFields, seq int64, m mappedEvent, raw json.RawMessage, 
 	ev.Payload = payload
 	ev.ContentHash = content.HashBytes(payload)
 
-	if base.sessionID != "" && !base.occurredAt.IsZero() {
-		ev.EventID = deriveEventID(base.sessionID, seq, base.occurredAt, ev.ContentHash)
+	if base.sessionID != "" {
+		ev.EventID = deriveEventID(base.sessionID, seq, base.occurredAt, ev.ContentHash+"|"+base.nativeHash)
 	} else {
 		ev.EventID = ids.Event()
 	}

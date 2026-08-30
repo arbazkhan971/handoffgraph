@@ -20,8 +20,7 @@ test("landing page ships the product-led handoff story and honest links", () => 
   assert.match(html, /data-demo-stage="checkpointed"/);
   assert.match(html, /data-demo-stage="acknowledged"/);
   assert.match(html, /Printed invocation · not auto-run/);
-  assert.match(html, /github\.com\/arbazkhan971\/handoffgraph/);
-  assert.doesNotMatch(html, /github\.com\/handoffgraph\/handoffgraph/);
+  assert.match(html, /github\.com\/handoffgraph\/handoffgraph/);
   assert.doesNotMatch(html, /<svg\b/i);
   assert.doesNotMatch(html, /<script[^>]+src=/i);
   assert.match(html, /<meta property="og:image" content="https:\/\/handoffgraph\.dev\/og\.png">/);
@@ -55,12 +54,13 @@ test("pricing keeps Local Core free and Hosted Basic explicitly bounded", () => 
   assert.doesNotMatch(html, /metadata-only/i);
 });
 
-test("public signup and sign-in are directly reachable", () => {
-  assert.match(html, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signin">Sign in<\/a>/);
-  assert.match(html, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signup">Sign up free<\/a>/);
+test("public signup and sign-in route through the availability-aware account page", () => {
+  assert.match(html, /href="https:\/\/api\.handoffgraph\.dev\/account">Sign in<\/a>/);
+  assert.match(html, /href="https:\/\/api\.handoffgraph\.dev\/account">Sign up free<\/a>/);
   const basic = planMarkup("hosted-basic");
-  assert.match(basic, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signup">Sign up for Hosted Basic<\/a>/);
-  assert.match(basic, /href="https:\/\/api\.handoffgraph\.dev\/v1\/auth\/start\?intent=signin"/);
+  assert.match(basic, /href="https:\/\/api\.handoffgraph\.dev\/account">Sign up for Hosted Basic<\/a>/);
+  assert.match(basic, /href="https:\/\/api\.handoffgraph\.dev\/account">Already have an account\? Sign in<\/a>/);
+  assert.doesNotMatch(html, /v1\/auth\/start\?intent=(?:signup|signin)/);
 });
 
 test("Solo and Team are visibly non-purchasable previews", () => {

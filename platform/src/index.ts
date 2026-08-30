@@ -31,11 +31,17 @@ import {
   sha256Hex,
 } from "./auth";
 import {
+  accountDeletionEnv,
+  accountDeletionScheduled,
   authenticateAccountSession,
   handleAccountRoute,
   type AccountEnv,
   type SessionAccount,
 } from "./account";
+import {
+  deletionLedgerBinding,
+  deletionLedgerRequired,
+} from "./deletion_ledger";
 import {
   accountPageCSP,
   renderAccountPage,
@@ -122,6 +128,23 @@ const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
 };
 
+interface HostedSurfaceEnv {
+  /**
+   * Deployment fence for the private Hosted Basic beta. The repository also
+   * contains ahead-of-gate parity modules, but they are not part of the Basic
+   * contract and must not become reachable merely because they share this
+   * Worker bundle.
+   */
+  HOSTED_SURFACE?: string;
+}
+
+function advancedHostedSurfaceEnabled(env: HostedSurfaceEnv): boolean {
+  // Configuration drift must reduce privilege. Only the explicit advanced
+  // value enables ahead-of-gate routes and scheduled work; missing, misspelled,
+  // or otherwise unexpected values stay on the Hosted Basic surface.
+  return env.HOSTED_SURFACE === "advanced";
+}
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
@@ -130,10 +153,30 @@ function canonicalResponse(status: number, canonicalJson: string): Response {
   return new Response(canonicalJson, { status, headers: JSON_HEADERS });
 }
 
+function landingDestination(request: Request, configured: string | undefined): string {
+  if (configured === undefined || configured.trim() === "") return "/account";
+  try {
+    const current = new URL(request.url);
+    const destination = new URL(configured, current);
+    // Fragments are not sent in HTTP requests, so they cannot make an
+    // otherwise identical destination escape a server-side redirect loop.
+    if (
+      destination.origin === current.origin &&
+      destination.pathname === current.pathname &&
+      destination.search === current.search
+    ) {
+      return "/account";
+    }
+    return destination.toString();
+  } catch {
+    return "/account";
+  }
+}
+
 // -- routing ----------------------------------------------------------------
 
 export default {
-  async fetch<E extends AccountEnv>(
+  async fetch<E extends AccountEnv & HostedSurfaceEnv>(
     request: Request,
     env: E,
     _ctx: ExecutionContext,
@@ -144,7 +187,7 @@ export default {
         return jsonResponse(200, { status: "ok" });
       }
       if (request.method === "GET" && pathname === "/") {
-        const destination = env.LANDING_ORIGIN ?? "/account";
+        const destination = landingDestination(request, env.LANDING_ORIGIN);
         return new Response(null, {
           status: 303,
           headers: { location: destination, "cache-control": "no-store" },
@@ -158,44 +201,46 @@ export default {
       }
       const accountResponse = await handleAccountRoute(request, env);
       if (accountResponse !== null) return accountResponse;
-      const teamsResponse = await handleTeamsRoute(request, env);
-      if (teamsResponse !== null) return teamsResponse;
-      const artifactsResponse = await handleArtifactsRoute(request, env);
-      if (artifactsResponse !== null) return artifactsResponse;
-      const attachmentsResponse = await handleAttachmentsRoute(request, env);
-      if (attachmentsResponse !== null) return attachmentsResponse;
-      const webhooksResponse = await handleWebhooksRoute(request, env);
-      if (webhooksResponse !== null) return webhooksResponse;
-      const dashboardsResponse = await handleDashboardsRoute(request, env);
-      if (dashboardsResponse !== null) return dashboardsResponse;
-      const alertsResponse = await handleAlertsRoute(request, env);
-      if (alertsResponse !== null) return alertsResponse;
-      const gatewayResponse = await handleGatewayRoute(request, env);
-      if (gatewayResponse !== null) return gatewayResponse;
-      const apiKeysResponse = await handleApiKeysRoute(request, env);
-      if (apiKeysResponse !== null) return apiKeysResponse;
-      const mcpResponse = await handleMcpRoute(request, env);
-      if (mcpResponse !== null) return mcpResponse;
-      const observationsResponse = await handleObservationsRoute(request, env);
-      if (observationsResponse !== null) return observationsResponse;
-      const analyticsResponse = await handleAnalyticsRoute(request, env);
-      if (analyticsResponse !== null) return analyticsResponse;
-      const qualityResponse = await handleQualityRoute(request, env);
-      if (qualityResponse !== null) return qualityResponse;
-      const simulationsResponse = await handleSimulationsRoute(request, env);
-      if (simulationsResponse !== null) return simulationsResponse;
-      const evalsResponse = await handleEvalsRoute(request, env);
-      if (evalsResponse !== null) return evalsResponse;
-      const annotationsResponse = await handleAnnotationsRoute(request, env);
-      if (annotationsResponse !== null) return annotationsResponse;
-      // After quality.ts: that module owns GET /v1/prompts* and returns null
-      // for POST, which is how POST /v1/prompts/{name}/labels reaches here.
-      const playgroundResponse = await handlePlaygroundRoute(request, env);
-      if (playgroundResponse !== null) return playgroundResponse;
-      const eeResponse = await handleEERoute(request, env);
-      if (eeResponse !== null) return eeResponse;
-      if (request.method === "POST" && pathname === "/v1/otlp") {
-        return await handleOtlpExport(request, env);
+      if (advancedHostedSurfaceEnabled(env)) {
+        const teamsResponse = await handleTeamsRoute(request, env);
+        if (teamsResponse !== null) return teamsResponse;
+        const artifactsResponse = await handleArtifactsRoute(request, env);
+        if (artifactsResponse !== null) return artifactsResponse;
+        const attachmentsResponse = await handleAttachmentsRoute(request, env);
+        if (attachmentsResponse !== null) return attachmentsResponse;
+        const webhooksResponse = await handleWebhooksRoute(request, env);
+        if (webhooksResponse !== null) return webhooksResponse;
+        const dashboardsResponse = await handleDashboardsRoute(request, env);
+        if (dashboardsResponse !== null) return dashboardsResponse;
+        const alertsResponse = await handleAlertsRoute(request, env);
+        if (alertsResponse !== null) return alertsResponse;
+        const gatewayResponse = await handleGatewayRoute(request, env);
+        if (gatewayResponse !== null) return gatewayResponse;
+        const apiKeysResponse = await handleApiKeysRoute(request, env);
+        if (apiKeysResponse !== null) return apiKeysResponse;
+        const mcpResponse = await handleMcpRoute(request, env);
+        if (mcpResponse !== null) return mcpResponse;
+        const observationsResponse = await handleObservationsRoute(request, env);
+        if (observationsResponse !== null) return observationsResponse;
+        const analyticsResponse = await handleAnalyticsRoute(request, env);
+        if (analyticsResponse !== null) return analyticsResponse;
+        const qualityResponse = await handleQualityRoute(request, env);
+        if (qualityResponse !== null) return qualityResponse;
+        const simulationsResponse = await handleSimulationsRoute(request, env);
+        if (simulationsResponse !== null) return simulationsResponse;
+        const evalsResponse = await handleEvalsRoute(request, env);
+        if (evalsResponse !== null) return evalsResponse;
+        const annotationsResponse = await handleAnnotationsRoute(request, env);
+        if (annotationsResponse !== null) return annotationsResponse;
+        // After quality.ts: that module owns GET /v1/prompts* and returns null
+        // for POST, which is how POST /v1/prompts/{name}/labels reaches here.
+        const playgroundResponse = await handlePlaygroundRoute(request, env);
+        if (playgroundResponse !== null) return playgroundResponse;
+        const eeResponse = await handleEERoute(request, env);
+        if (eeResponse !== null) return eeResponse;
+        if (request.method === "POST" && pathname === "/v1/otlp") {
+          return await handleOtlpExport(request, env);
+        }
       }
       if (request.method === "POST" && pathname === "/v1/event-batches") {
         return await handleEventBatches(request, env);
@@ -218,9 +263,12 @@ export default {
     }
   },
 
-  // Cron dispatcher (see wrangler.toml [triggers]). Sweeps are derived-model
-  // maintenance and platform-observation only: compaction copies the spine
-  // into object storage, retention slims rebuildable read models, the webhook
+  // Cron dispatcher (see wrangler.toml [triggers]). Privacy deletion is the
+  // only Hosted Basic sweep. Every object-producing or advanced derived-model
+  // sweep stays behind the exact advanced-surface fence: deletion must never
+  // race a Basic compactor that can publish tenant bytes after its final R2
+  // proof. In the advanced surface, compaction copies the spine into object
+  // storage, retention slims rebuildable read models, the webhook
   // sweep fans out deliveries, the alerts sweep evaluates threshold rules and
   // APPENDS alert.fired events, and the evals sweep starts due cron eval
   // configs and APPENDS score.recorded events (the two sweeps that write to the
@@ -228,11 +276,22 @@ export default {
   // try/catch with content-free logging — hosted maintenance must never affect
   // ingest or local capture, and one failing sweep must never starve the
   // others.
-  async scheduled<E extends ArtifactsEnv>(
+  async scheduled<E extends ArtifactsEnv & HostedSurfaceEnv>(
     controller: ScheduledController,
     env: E,
     _ctx: ExecutionContext,
   ): Promise<void> {
+    try {
+      await accountDeletionScheduled(accountDeletionEnv(env));
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "scheduled dispatch failed",
+        sweep: "account-deletions",
+        cron: controller.cron,
+        error_type: error instanceof Error ? error.name : "unknown",
+      }));
+    }
+    if (!advancedHostedSurfaceEnabled(env)) return;
     try {
       await artifactsScheduled(env);
     } catch (error) {
@@ -279,6 +338,10 @@ export default {
   // and rethrown (never swallowed) so Cloudflare Queues applies its own
   // retry/dead-letter policy for the failing message.
   async queue(batch: MessageBatch<unknown>, env: Env, _ctx: ExecutionContext): Promise<void> {
+    // No queue is part of Hosted Basic. Keep the code-level boundary
+    // fail-closed too, so a future accidental binding cannot bypass the
+    // checked-in deployment fence.
+    if (!advancedHostedSurfaceEnabled(env)) return;
     try {
       if (batch.queue === "handoffgraph-webhooks") {
         await webhooksQueue(batch, env);
@@ -296,8 +359,9 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-function accountPageData(session: SessionAccount): AccountPageData {
+function accountPageData(session: SessionAccount, hostedBasic = false): AccountPageData {
   return {
+    hostedBasic,
     displayName: session.displayName ?? "Your account",
     email: session.email,
     workspaceName: session.workspaceName,
@@ -350,12 +414,24 @@ function accountPageData(session: SessionAccount): AccountPageData {
   };
 }
 
-async function handleAccountPage(request: Request, env: AccountEnv): Promise<Response> {
-  const session = await authenticateAccountSession(request, env.DB);
+async function handleAccountPage(
+  request: Request,
+  env: AccountEnv & HostedSurfaceEnv,
+): Promise<Response> {
+  const session = await authenticateAccountSession(request, env);
   const signedIn = session !== null;
+  const deletionRequested = new URL(request.url).searchParams.get("deletion") === "requested";
+  const authAvailable = [env.WORKOS_CLIENT_ID, env.WORKOS_API_KEY, env.WORKOS_REDIRECT_URI]
+    .every((value) => typeof value === "string" && value.length > 0);
   const html = signedIn
-    ? renderAccountPage(accountPageData(session))
-    : renderSignedOutPage();
+    ? renderAccountPage(accountPageData(session, !advancedHostedSurfaceEnabled(env)))
+    : renderSignedOutPage({
+        ...(deletionRequested ? {
+          message: "Hosted account deletion was accepted. Credentials are revoked and the private workspace purge is being finalized.",
+        } : {}),
+        authAvailable,
+        signupAvailable: authAvailable && env.HOSTED_SIGNUP_ENABLED === "true",
+      });
   return new Response(html, {
     status: 200,
     headers: {
@@ -496,7 +572,12 @@ async function handleOtlpExport(request: Request, env: { DB: D1DatabaseLike }): 
       events,
     }),
   });
-  const response = await handleEventBatches(synthetic, env);
+  // This is a server-generated advanced-only conversion path, not the Hosted
+  // Basic client-sync boundary. The external /v1/event-batches route keeps the
+  // default strict requirement for an explicit successful-redaction record.
+  const response = await handleEventBatches(synthetic, env, {
+    requireRedactionAttestation: false,
+  });
   if (response.status !== 200) return response;
   if (wantsProtobuf) {
     // The response flavor mirrors the request flavor, as OTLP/HTTP requires:
@@ -652,8 +733,16 @@ const UPSERT_WORKSTREAM_SQL = `
 async function handleEventBatches(
   request: Request,
   env: { DB: D1DatabaseLike; ANALYTICS?: AnalyticsEngineDatasetLike },
+  options: { requireRedactionAttestation?: boolean } = {},
 ): Promise<Response> {
-  const auth = await authenticate(request.headers.get("authorization"), deviceLookup(env.DB));
+  const auth = await authenticate(
+    request.headers.get("authorization"),
+    deviceLookup(
+      env.DB,
+      deletionLedgerBinding(env),
+      deletionLedgerRequired(env),
+    ),
+  );
   if (!auth.ok) return jsonResponse(auth.status, { error: auth.error });
   const { device } = auth;
 
@@ -686,7 +775,7 @@ async function handleEventBatches(
     return jsonResponse(400, { error: "request body is not valid JSON" });
   }
 
-  const validation = validateEventBatch(parsed, device.workspaceId);
+  const validation = validateEventBatch(parsed, device.workspaceId, options);
   if (!validation.ok) return jsonResponse(validation.status, { error: validation.error });
   const envelope = validation.value;
   const requestHash = await sha256Hex(canonicalJsonStringify(envelope));
@@ -784,6 +873,18 @@ async function handleEventBatches(
   try {
     await env.DB.batch(statements);
   } catch (error) {
+    // Migration 0019 is the commit-time authorization boundary. If owner
+    // revocation serialized first, its trigger aborts this whole D1 batch so
+    // quota, receipt, events, and projections all roll back together. Map the
+    // stable internal trigger message to the same indistinguishable response
+    // as initial device authentication, before considering a cached winner.
+    if (
+      error instanceof Error &&
+      (error.message.includes("active device required") ||
+        error.message.includes("workspace deletion in progress"))
+    ) {
+      return jsonResponse(401, { error: "unauthorized" });
+    }
     // Lost a race against a concurrent batch with the same key: the winner's
     // receipt is authoritative.
     const winner = await env.DB.prepare(IDEMPOTENCY_RECEIPT_SQL)
@@ -850,7 +951,14 @@ async function handleListWorkstreams(
   request: Request,
   env: { DB: D1DatabaseLike },
 ): Promise<Response> {
-  const auth = await authenticate(request.headers.get("authorization"), deviceLookup(env.DB));
+  const auth = await authenticate(
+    request.headers.get("authorization"),
+    deviceLookup(
+      env.DB,
+      deletionLedgerBinding(env),
+      deletionLedgerRequired(env),
+    ),
+  );
   if (!auth.ok) return jsonResponse(auth.status, { error: auth.error });
 
   const denial = scopeDenial({
@@ -872,6 +980,24 @@ async function handleListWorkstreams(
       : await env.DB.prepare(WORKSTREAMS_PAGE_AFTER_SQL)
           .bind(auth.device.workspaceId, cursor.createdAt, cursor.id, fetchLimit)
           .all<WorkstreamRow>();
+
+  // The owner deletion prelock can commit after the initial bearer lookup
+  // but while this read is paused in D1. Reauthorize immediately before any
+  // tenant rows leave the Worker. If the prelock or revocation won, the active
+  // workspace/device join now fails and the fetched rows are discarded.
+  const finalAuth = await authenticate(
+    request.headers.get("authorization"),
+    deviceLookup(
+      env.DB,
+      deletionLedgerBinding(env),
+      deletionLedgerRequired(env),
+    ),
+  );
+  if (
+    !finalAuth.ok ||
+    finalAuth.device.deviceId !== auth.device.deviceId ||
+    finalAuth.device.workspaceId !== auth.device.workspaceId
+  ) return jsonResponse(401, { error: "unauthorized" });
 
   return jsonResponse(200, buildWorkstreamListResponse(result.results, limit));
 }

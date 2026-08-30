@@ -7,12 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	claudehooks "github.com/handoffgraph/handoffgraph/integrations/claude"
-	"github.com/handoffgraph/handoffgraph/internal/adapter"
 	"github.com/handoffgraph/handoffgraph/internal/cli"
 	"github.com/handoffgraph/handoffgraph/internal/config"
 	"github.com/handoffgraph/handoffgraph/internal/ids"
@@ -42,6 +42,19 @@ func runClaude(t *testing.T, args ...string) (string, string, error) {
 	c := &cli.Context{Stdout: &out, Stderr: &errBuf}
 	err := app.Run(context.Background(), c, "claude", args)
 	return out.String(), errBuf.String(), err
+}
+
+func TestClaudeSubcommandHelpIsScopedAndSuccessful(t *testing.T) {
+	out, stderr, err := runClaude(t, "resume", "--help")
+	if err != nil {
+		t.Fatalf("help returned error: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("help stderr=%q", stderr)
+	}
+	if !strings.Contains(out, "-fork") || strings.Contains(out, "-config-dir") || strings.Contains(out, "-workstream") {
+		t.Fatalf("unscoped resume help: %q", out)
+	}
 }
 
 // claudeIsolateDataDir points HFG_DATA_DIR at a directory the test owns.
@@ -138,6 +151,42 @@ func TestClaudeInstallDryRun(t *testing.T) {
 	}
 }
 
+func TestClaudeDefaultInstallUsesPublicHookHandler(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := runClaude(t, "install", "--config-dir", dir); err != nil {
+		t.Fatalf("claude default install: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("read installed Claude config: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode installed Claude config: %v", err)
+	}
+	commands := collectStringFields(decoded, "command")
+	if len(commands) == 0 {
+		t.Fatalf("installed Claude config has no hook commands: %#v", decoded)
+	}
+	for _, command := range commands {
+		if strings.Contains(command, " hook claude") {
+			t.Errorf("installed Claude command %q is shell-combined instead of raw", command)
+		}
+	}
+	hooks := decoded["hooks"].(map[string]any)
+	for _, event := range claudehooks.HookEvents {
+		groups := hooks[event].([]any)
+		handler := groups[len(groups)-1].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+		gotArgs, _ := handler["args"].([]any)
+		if !reflect.DeepEqual(gotArgs, []any{"hook", "claude"}) {
+			t.Errorf("hooks.%s args = %#v", event, gotArgs)
+		}
+		if _, exists := handler["x_handoffgraph_managed"]; exists {
+			t.Errorf("hooks.%s contains forbidden marker", event)
+		}
+	}
+}
+
 func TestClaudeInstallConflictSurfacesCleanly(t *testing.T) {
 	dir := t.TempDir()
 	if _, _, err := runClaude(t, "install", "--config-dir", dir, "--hook-command", "/bin/first"); err != nil {
@@ -217,7 +266,7 @@ func TestClaudeSessionsDetect(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rows); err != nil {
 		t.Fatalf("decode JSON: %v\n%s", err, out)
 	}
-	if len(rows) != 1 || rows[0].NativeSessionID != "9f3c1a7e" || rows[0].LastEventAt == "" {
+	if len(rows) != 1 || rows[0].NativeSessionID != "9f3c1a7e" || rows[0].Path != filepath.Join(projects, "9f3c1a7e.jsonl") || rows[0].LastEventAt == "" {
 		t.Fatalf("rows = %+v", rows)
 	}
 }
@@ -233,53 +282,62 @@ func TestClaudeSessionsEmptyDatabaseMessageFree(t *testing.T) {
 	}
 }
 
-func TestClaudeResumeExecsResumeSpec(t *testing.T) {
-	var gotSpec adapter.ExecSpec
-	orig := claudeRunSpec
-	claudeRunSpec = func(ctx context.Context, spec adapter.ExecSpec) error {
-		gotSpec = spec
-		return nil
+func TestEmitClaudeDetectedSessionTextCompatibilityAndJSONPathEscaping(t *testing.T) {
+	row := claudeSessionOut{
+		Agent:           protocol.ProviderClaude,
+		NativeSessionID: "native-safe",
+		Path:            "/tmp/project/with\ttab/and\nnewline.jsonl",
+		LastEventAt:     "2026-08-30T18:00:00Z",
 	}
-	t.Cleanup(func() { claudeRunSpec = orig })
+	var textOut bytes.Buffer
+	ctx := &cli.Context{Stdout: &textOut, Stderr: &bytes.Buffer{}}
+	if err := emitClaudeSessions(ctx, []claudeSessionOut{row}, false); err != nil {
+		t.Fatal(err)
+	}
+	wantLegacy := "claude\tnative-safe\t0\t\t2026-08-30T18:00:00Z\n"
+	if textOut.String() != wantLegacy {
+		t.Fatalf("detected text output = %q, want legacy five columns %q", textOut.String(), wantLegacy)
+	}
 
-	if _, _, err := runClaude(t, "resume", "9f3c1a7e"); err != nil {
+	var jsonOut bytes.Buffer
+	ctx.Stdout = &jsonOut
+	if err := emitClaudeSessions(ctx, []claudeSessionOut{row}, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(jsonOut.String(), "with\ttab") || strings.Contains(jsonOut.String(), "and\nnewline") {
+		t.Fatalf("JSON path contains raw control characters: %q", jsonOut.String())
+	}
+	var decoded []claudeSessionOut
+	if err := json.Unmarshal(jsonOut.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded) != 1 || decoded[0].Path != row.Path {
+		t.Fatalf("decoded path = %+v", decoded)
+	}
+}
+
+func TestClaudeResumePrintsResumeSpecWithoutLaunching(t *testing.T) {
+	out, _, err := runClaude(t, "resume", "9f3c1a7e")
+	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if gotSpec.Command != "claude" {
-		t.Errorf("Command = %q", gotSpec.Command)
-	}
-	if strings.Join(gotSpec.Args, " ") != "--resume 9f3c1a7e" {
-		t.Errorf("Args = %v", gotSpec.Args)
+	if out != "claude --resume 9f3c1a7e\n" {
+		t.Errorf("resume output = %q", out)
 	}
 }
 
 func TestClaudeResumeForkAddsForkSession(t *testing.T) {
-	var gotSpec adapter.ExecSpec
-	orig := claudeRunSpec
-	claudeRunSpec = func(ctx context.Context, spec adapter.ExecSpec) error {
-		gotSpec = spec
-		return nil
-	}
-	t.Cleanup(func() { claudeRunSpec = orig })
-
-	if _, _, err := runClaude(t, "resume", "9f3c1a7e", "--fork"); err != nil {
+	out, _, err := runClaude(t, "resume", "9f3c1a7e", "--fork")
+	if err != nil {
 		t.Fatalf("resume --fork: %v", err)
 	}
-	want := "--resume 9f3c1a7e --fork-session"
-	if strings.Join(gotSpec.Args, " ") != want {
-		t.Errorf("Args = %v, want %s", gotSpec.Args, want)
+	want := "claude --resume 9f3c1a7e --fork-session\n"
+	if out != want {
+		t.Errorf("resume --fork output = %q, want %q", out, want)
 	}
 }
 
 func TestClaudeResumeRejectsBadIDs(t *testing.T) {
-	called := false
-	orig := claudeRunSpec
-	claudeRunSpec = func(ctx context.Context, spec adapter.ExecSpec) error {
-		called = true
-		return nil
-	}
-	t.Cleanup(func() { claudeRunSpec = orig })
-
 	for _, args := range [][]string{{"resume"}, {"resume", "--fork"}, {"resume", "--dangerous"}} {
 		// A bare "--dangerous" is parsed as a flag by the flag package, so
 		// send it through as an explicit id via a trailing marker.
@@ -289,9 +347,6 @@ func TestClaudeResumeRejectsBadIDs(t *testing.T) {
 		if _, _, err := runClaude(t, args...); err == nil {
 			t.Errorf("resume %v = nil error, want usage/validation error", args)
 		}
-	}
-	if called {
-		t.Error("runner invoked despite validation failure")
 	}
 }
 
