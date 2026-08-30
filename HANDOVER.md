@@ -410,7 +410,7 @@ fixtures live under `testdata/fixtures/invalid/`.
 
 ## 10. Conventions (from AGENTS.md — follow strictly)
 
-- Go 1.24+, Apache-2.0, module `github.com/handoffgraph/handoffgraph`.
+- Go 1.25+, Apache-2.0, module `github.com/handoffgraph/handoffgraph`.
 - IDs via `internal/ids`; never hand-roll.
 - Events append-only; derive read models, don't mutate.
 - Reducers deterministic; sort before emitting.

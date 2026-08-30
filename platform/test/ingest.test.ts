@@ -824,6 +824,71 @@ describe("worker: routing", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "ok" });
     expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("x-handoffgraph-worker-version")).toBeNull();
+    expect(response.headers.get("x-handoffgraph-worker-tag")).toBeNull();
+  });
+
+  it("exposes validated Worker version metadata without changing /healthz JSON", async () => {
+    const { db } = mockDb();
+    const response = await worker.fetch(
+      request("/healthz"),
+      {
+        ...makeEnv(db),
+        CF_VERSION_METADATA: {
+          id: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+          tag: "git-5e5b2009e4de",
+          timestamp: "2026-08-31T12:00:00.000Z",
+        },
+      },
+      CTX,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-handoffgraph-worker-version"))
+      .toBe("095f00a7-23a7-43b7-a227-e4c97cab5f22");
+    expect(response.headers.get("x-handoffgraph-worker-tag")).toBe("git-5e5b2009e4de");
+    expect(await response.json()).toEqual({ status: "ok" });
+  });
+
+  it("fails closed on malformed Worker version metadata headers", async () => {
+    const { db } = mockDb();
+    const invalidIdResponse = await worker.fetch(
+      request("/healthz"),
+      {
+        ...makeEnv(db),
+        CF_VERSION_METADATA: {
+          id: "not-a-cloudflare-version-id",
+          tag: "git-main",
+          timestamp: "2026-08-31T12:00:00.000Z",
+        },
+      },
+      CTX,
+    );
+
+    expect(invalidIdResponse.status).toBe(200);
+    expect(invalidIdResponse.headers.get("x-handoffgraph-worker-version")).toBeNull();
+    expect(invalidIdResponse.headers.get("x-handoffgraph-worker-tag")).toBeNull();
+    expect(await invalidIdResponse.json()).toEqual({ status: "ok" });
+
+    const invalidTagResponse = await worker.fetch(
+      request("/healthz"),
+      {
+        ...makeEnv(db),
+        CF_VERSION_METADATA: {
+          id: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+          tag: "git-main\r\nx-forged: true",
+          timestamp: "2026-08-31T12:00:00.000Z",
+        },
+      },
+      CTX,
+    );
+
+    expect(invalidTagResponse.status).toBe(200);
+    expect(invalidTagResponse.headers.get("x-handoffgraph-worker-version"))
+      .toBe("095f00a7-23a7-43b7-a227-e4c97cab5f22");
+    expect(invalidTagResponse.headers.get("x-handoffgraph-worker-tag")).toBeNull();
+    expect(invalidTagResponse.headers.get("x-forged")).toBeNull();
+    expect(await invalidTagResponse.json()).toEqual({ status: "ok" });
   });
 
   it("answers 404 for unknown paths and methods", async () => {

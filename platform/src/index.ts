@@ -128,6 +128,13 @@ const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
 };
 
+const WORKER_VERSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const WORKER_VERSION_TAG_PATTERN =
+  /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
+const WORKER_VERSION_HEADER = "x-handoffgraph-worker-version";
+const WORKER_VERSION_TAG_HEADER = "x-handoffgraph-worker-tag";
+
 interface HostedSurfaceEnv {
   /**
    * Deployment fence for the private Hosted Basic beta. The repository also
@@ -136,6 +143,8 @@ interface HostedSurfaceEnv {
    * Worker bundle.
    */
   HOSTED_SURFACE?: string;
+  /** Runtime-assigned by Cloudflare's version metadata binding. */
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
 
 function advancedHostedSurfaceEnabled(env: HostedSurfaceEnv): boolean {
@@ -147,6 +156,22 @@ function advancedHostedSurfaceEnabled(env: HostedSurfaceEnv): boolean {
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+}
+
+function healthResponse(env: HostedSurfaceEnv): Response {
+  const headers = new Headers(JSON_HEADERS);
+  const metadata = env.CF_VERSION_METADATA;
+  // Treat metadata as an external runtime boundary: a malformed ID suppresses
+  // the whole identity, and a malformed tag suppresses only the optional tag.
+  // This keeps untrusted bytes out of response headers without changing the
+  // stable liveness JSON contract.
+  if (metadata !== undefined && WORKER_VERSION_ID_PATTERN.test(metadata.id)) {
+    headers.set(WORKER_VERSION_HEADER, metadata.id);
+    if (WORKER_VERSION_TAG_PATTERN.test(metadata.tag)) {
+      headers.set(WORKER_VERSION_TAG_HEADER, metadata.tag);
+    }
+  }
+  return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers });
 }
 
 function canonicalResponse(status: number, canonicalJson: string): Response {
@@ -184,7 +209,7 @@ export default {
     const { pathname } = new URL(request.url);
     try {
       if (request.method === "GET" && pathname === "/healthz") {
-        return jsonResponse(200, { status: "ok" });
+        return healthResponse(env);
       }
       if (request.method === "GET" && pathname === "/") {
         const destination = landingDestination(request, env.LANDING_ORIGIN);

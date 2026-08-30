@@ -34,7 +34,14 @@ describe("Hosted Basic deployment configuration", () => {
     expect([...config.matchAll(/^bucket_name = "([^"]+)"$/gm)].map((match) => match[1]))
       .toEqual(["handoffgraph-bodies", "handoffgraph-bodies-staging"]);
     expect([...config.matchAll(/^binding = "([^"]+)"$/gm)].map((match) => match[1]))
-      .toEqual(["DB", "BODIES", "DB", "BODIES"]);
+      .toEqual([
+        "CF_VERSION_METADATA",
+        "DB",
+        "BODIES",
+        "CF_VERSION_METADATA",
+        "DB",
+        "BODIES",
+      ]);
     expect([...config.matchAll(/^APP_ORIGIN = "([^"]+)"$/gm)].map((match) => match[1]))
       .toEqual([
         "https://api.handoffgraph.dev",
@@ -50,6 +57,12 @@ describe("Hosted Basic deployment configuration", () => {
         "https://api.handoffgraph.dev/v1/auth/callback",
         "https://handoffgraph-api-staging.arbaz-khan.workers.dev/v1/auth/callback",
       ]);
+  });
+
+  it("binds runtime version metadata in both non-inherited environments", () => {
+    expect(config).toMatch(/^\[version_metadata\]\nbinding = "CF_VERSION_METADATA"$/m);
+    expect(config).toMatch(/^\[env\.staging\.version_metadata\]\nbinding = "CF_VERSION_METADATA"$/m);
+    expect(config.match(/^binding = "CF_VERSION_METADATA"$/gm)).toHaveLength(2);
   });
 
   it("keeps staging workers.dev-only and production on the exact custom domain", () => {
