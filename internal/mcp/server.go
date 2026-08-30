@@ -266,9 +266,22 @@ type initializeParams struct {
 }
 
 type initializeClientInfo struct {
-	Name    string `json:"name"`
-	Title   string `json:"title,omitempty"`
-	Version string `json:"version,omitempty"`
+	Icons       []initializeClientIcon `json:"icons,omitempty"`
+	Name        string                 `json:"name"`
+	Title       string                 `json:"title,omitempty"`
+	Version     string                 `json:"version,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	WebsiteURL  string                 `json:"websiteUrl,omitempty"`
+}
+
+// initializeClientIcon mirrors the current MCP Icon metadata shape. Client
+// implementation metadata is informational and is deliberately not used to
+// vary server behavior.
+type initializeClientIcon struct {
+	Src      string   `json:"src"`
+	MimeType string   `json:"mimeType,omitempty"`
+	Sizes    []string `json:"sizes,omitempty"`
+	Theme    string   `json:"theme,omitempty"`
 }
 
 func (s *Server) handleInitialize(params json.RawMessage) (any, *rpcError) {

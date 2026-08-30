@@ -182,6 +182,31 @@ func TestInitializeResult(t *testing.T) {
 	}
 }
 
+// TestInitializeAcceptsCurrentImplementationMetadata pins compatibility with
+// MCP clients that send the complete Implementation metadata shape. This
+// metadata is informational; accepting it must not relax tool argument
+// validation.
+func TestInitializeAcceptsCurrentImplementationMetadata(t *testing.T) {
+	s, _, _ := newTestServer(t)
+	responses := serveLines(t, s,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.227","description":"Anthropic's agentic coding tool","websiteUrl":"https://claude.ai/code","icons":[{"src":"https://claude.ai/favicon.png","mimeType":"image/png","sizes":["64x64"],"theme":"dark"}]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_workstream_context","arguments":{"workstream_id":"ws_1","extra":true}}}`,
+	)
+	if len(responses) != 2 {
+		t.Fatalf("got %d responses, want 2: %v", len(responses), responses)
+	}
+
+	_, _, code, msg := decodeResponse(t, responses[0])
+	if code != 0 {
+		t.Fatalf("initialize failed: %d %s", code, msg)
+	}
+
+	_, _, code, msg = decodeResponse(t, responses[1])
+	if code != CodeInvalidParams || !strings.Contains(msg, `unknown field "extra"`) {
+		t.Fatalf("tools/call error = %d %q, want strict unknown-argument rejection", code, msg)
+	}
+}
+
 // TestInitializeDefaultProtocol checks the fallback protocol version and
 // strict validation of initialize params.
 func TestInitializeParams(t *testing.T) {
