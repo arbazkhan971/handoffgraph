@@ -43,7 +43,9 @@ jobs:
         run: bash .github/scripts/check-action-pins.sh
 
       - name: Test release tag policy
-        run: bash .github/scripts/validate-release-tag.test.sh
+        run: |
+          bash .github/scripts/validate-release-tag.test.sh
+          bash .github/scripts/verify-release-assets.test.sh
 
       - name: Validate canonical repository, SemVer tag, and main HEAD
         shell: bash
@@ -54,6 +56,13 @@ jobs:
             "${GITHUB_REF_NAME}" \
             "${GITHUB_SHA}" \
             origin/main
+
+      - name: Require immutable releases on the canonical repository
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: >-
+          bash .github/scripts/verify-release-assets.sh
+          --require-immutable-releases "${GITHUB_REPOSITORY}"
 
       - name: Require reviewed release notes for this tag
         run: test -s "docs/releases/${GITHUB_REF_NAME}.md"
@@ -106,22 +115,22 @@ jobs:
           version: "v2.17.1"
           args: release --snapshot --clean
 
-      - name: Verify snapshot archives and checksums
+      - name: Verify snapshot release assets
         shell: bash
         run: |
-          (cd dist && sha256sum --check checksums.txt)
-          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d ' ')" = 6
-          archive="$(find dist -maxdepth 1 -type f -name 'handoffgraph_*_linux_amd64.tar.gz' -print -quit)"
-          test -n "${archive}"
-          mkdir "${RUNNER_TEMP}/handoffgraph-release-smoke"
-          tar -xzf "${archive}" -C "${RUNNER_TEMP}/handoffgraph-release-smoke"
-          "${RUNNER_TEMP}/handoffgraph-release-smoke/handoffgraph" version | grep -Eq '^handoffgraph v[^[:space:]]+$'
+          snapshot_assets="${RUNNER_TEMP}/handoffgraph-snapshot-assets"
+          mkdir "${snapshot_assets}"
+          cp dist/checksums.txt dist/*.tar.gz dist/*.zip "${snapshot_assets}/"
+          snapshot_tag="v$(jq -r '.version' dist/metadata.json)"
+          bash .github/scripts/verify-release-assets.sh \
+            "${snapshot_tag}" \
+            "${snapshot_assets}"
 
   publish:
-    name: Publish checksummed release archives
+    name: Verify draft and publish immutable release
     needs: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
@@ -147,7 +156,14 @@ jobs:
             "${GITHUB_SHA}" \
             origin/main
 
-      - name: Publish checksummed release archives
+      - name: Reconfirm immutable releases before uploading the draft
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: >-
+          bash .github/scripts/verify-release-assets.sh
+          --require-immutable-releases "${GITHUB_REPOSITORY}"
+
+      - name: Upload checksummed release draft
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
@@ -155,3 +171,128 @@ jobs:
           args: release --clean --release-notes=docs/releases/${{ github.ref_name }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify downloaded draft assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version_without_build="${GITHUB_REF_NAME%%+*}"
+          expected_prerelease=false
+          if [[ "${version_without_build}" == *-* ]]; then
+            expected_prerelease=true
+          fi
+
+          draft_ready=false
+          for attempt in {1..10}; do
+            if release_json="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+              2>/dev/null)" && \
+              jq -e \
+                --arg tag "${GITHUB_REF_NAME}" \
+                --argjson prerelease "${expected_prerelease}" \
+                '.draft == true and .prerelease == $prerelease and .tag_name == $tag' \
+                >/dev/null <<<"${release_json}"; then
+              draft_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${draft_ready}" != true ]]; then
+            echo "release draft did not reach the expected state" >&2
+            exit 1
+          fi
+
+          release_assets="${RUNNER_TEMP}/handoffgraph-release-assets"
+          mkdir "${release_assets}"
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir "${release_assets}"
+          bash .github/scripts/verify-release-assets.sh \
+            "${GITHUB_REF_NAME}" \
+            "${release_assets}"
+
+      - name: Prove two clean canonical module installs
+        shell: bash
+        run: |
+          install_root="${RUNNER_TEMP}/handoffgraph-module-install"
+          install_bin="${install_root}/bin"
+          mkdir -p "${install_bin}"
+          expected_version="handoffgraph ${GITHUB_REF_NAME}"
+          module="github.com/handoffgraph/handoffgraph/cmd/handoffgraph@${GITHUB_REF_NAME}"
+          hashes=()
+
+          for attempt in 1 2; do
+            attempt_root="${install_root}/attempt-${attempt}"
+            mkdir -p "${attempt_root}/gomodcache" "${attempt_root}/gocache"
+            GOBIN="${install_bin}" \
+              GOMODCACHE="${attempt_root}/gomodcache" \
+              GOCACHE="${attempt_root}/gocache" \
+              GOFLAGS=-trimpath \
+              GOPROXY=direct \
+              go install "${module}"
+
+            test "$("${install_bin}/handoffgraph" version)" = "${expected_version}"
+            doctor_output="${attempt_root}/doctor.txt"
+            HFG_DATA_DIR="${attempt_root}/data" \
+              "${install_bin}/handoffgraph" doctor >"${doctor_output}"
+            grep -Fx 'status: OK' "${doctor_output}"
+            hashes+=("$(sha256sum "${install_bin}/handoffgraph" | awk '{ print $1 }')")
+          done
+
+          test "${hashes[0]}" = "${hashes[1]}"
+
+      - name: Reconfirm tag and immutable-release gate before promotion
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: |
+          git fetch origin main --no-tags
+          bash .github/scripts/validate-release-tag.sh \
+            "${GITHUB_REPOSITORY}" \
+            "${GITHUB_REF_NAME}" \
+            "${GITHUB_SHA}" \
+            origin/main
+          bash .github/scripts/verify-release-assets.sh \
+            --require-immutable-releases "${GITHUB_REPOSITORY}"
+
+      - name: Publish and verify immutable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version_without_build="${GITHUB_REF_NAME%%+*}"
+          expected_prerelease=false
+          if [[ "${version_without_build}" == *-* ]]; then
+            expected_prerelease=true
+          fi
+
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false \
+            --prerelease="${expected_prerelease}" \
+            --verify-tag
+
+          release_ready=false
+          for attempt in {1..15}; do
+            if release_json="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+              2>/dev/null)" && \
+              jq -e \
+                --arg tag "${GITHUB_REF_NAME}" \
+                --argjson prerelease "${expected_prerelease}" \
+                '.draft == false and .prerelease == $prerelease and .immutable == true and .tag_name == $tag' \
+                >/dev/null <<<"${release_json}"; then
+              release_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${release_ready}" != true ]]; then
+            echo "published release did not become immutable in the expected state" >&2
+            exit 1
+          fi

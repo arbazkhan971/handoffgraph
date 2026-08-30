@@ -54,4 +54,10 @@ changelog:
       - "^chore:"
 
 release:
+  # Keep every upload private until the workflow has re-downloaded and
+  # verified the exact assets and completed clean module installs. Publishing
+  # the draft is the operation that makes GitHub's release immutability lock
+  # the tag and assets.
+  draft: true
+  replace_existing_draft: true
   prerelease: auto
