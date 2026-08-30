@@ -303,7 +303,7 @@ platform/                  Private hosted-beta Worker (Cloudflare-only):
                              evals, annotations, playground, simulations,
                              attachments, quality, teams, apikeys, artifacts, mcp
   ee/                        directory-fenced Enterprise line (own LICENSE)
-  migrations/                D1 schema, 0001–0019
+  migrations/                D1 schema, 0001–0022
 platform/ee/               EE line: separate LICENSE, EE_ENABLED-gated
 deploy/dashboards/         Dashboards-as-config examples (PR-reviewable JSON)
 landing/                   Public landing Worker

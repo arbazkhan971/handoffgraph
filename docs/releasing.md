@@ -20,7 +20,7 @@ durable public API and must match the long-term repository location.
 
 This first public baseline includes syntax-only D1 parser repairs in migrations
 0003, 0004, and 0008. Because an isolated staging database already records
-those migration names, the release gate must prove both a fresh 0001–0019
+those migration names, the release gate must prove both a fresh 0001–0022
 chain and a no-pending/foreign-key-clean existing staging ledger. After the
 first public tag, shipped migration files are immutable; all later changes use
 new numbered migrations.

@@ -110,7 +110,7 @@ service is live; the v0.8 gate below remains open.
       boundaries
 - [x] Explicit CLI sync policy plus first-upload redaction-preview acceptance;
       upload requires `redaction.version = 1` and status `clean` or `redacted`
-- [x] All 19 migrations applied to and verified on isolated staging D1
+- [x] All 22 migrations applied to and verified on isolated staging D1
 - [x] Production custom-domain routes configured in Wrangler (not yet deployed
       or cut over)
 - [ ] Production D1 migration, HTTPS domain cutover, and deployed cross-tenant

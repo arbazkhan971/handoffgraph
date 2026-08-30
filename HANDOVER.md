@@ -35,8 +35,10 @@ hosted sync, and verified continuation are implemented. Twenty real Codex
 sessions were imported twice with the same 45,567-event result and a clean deep
 doctor run. The separate read-only Codex App Server listing path was exercised
 against Codex CLI 0.144.3 and returned deterministic state-DB thread metadata.
-Directed continuation and acknowledgement acceptance is complete across all
-six supported provider handoff pairs.
+Directed continuation and acknowledgement behavior is covered by unit and
+compiled-binary fixture flows for all three destinations. The six-pair
+real-session acceptance matrix remains open; do not treat fixture coverage as
+proof that native Codex, Claude, and Pi sessions completed that manual gate.
 
 The Cloudflare zone and isolated staging/production durable resources exist,
 and all 22 migrations are applied and verified on staging D1. Production is
@@ -612,19 +614,20 @@ src/artifacts.ts     src/attachments.ts src/teams.ts
 ee/src/ee.ts         ee/src/assistant.ts        (fenced, own LICENSE)
 ```
 
-**D1 migrations 0004–0019**: teams/RBAC, observations+sessions,
+**D1 migrations 0004–0022**: teams/RBAC, observations+sessions,
 artifacts+exports, webhooks, dashboards, alerts, gateway, api_keys, evals,
 annotations, playground, simulations, ee, attachments, and the durable
-account-deletion/tombstone path, and commit-time device-revocation fencing. One cron
-(`*/5 * * * *`) drives every sweep through the `scheduled` dispatcher in
-`src/index.ts`.
+account-deletion/tombstone path, terminal and commit-time device-revocation
+fencing, WorkOS session/logout state, and the workspace pre-lock device fence.
+One cron (`*/5 * * * *`) drives every sweep through the `scheduled` dispatcher
+in `src/index.ts`.
 
-### Suite counts (measured 2026-08-28, all green)
+### Suite counts (measured 2026-08-31, all green)
 
 | Suite | Command | Result |
 |---|---|---|
-| Go core | `go test ./...` | **1038 passed** (560 top-level across 29 packages); `-race` clean |
-| Hosted Worker | `cd platform && npx vitest run` | **1381 passed**, 28 files |
+| Go core | `go test ./...` | **1327 passed** across 35 packages; `-race` clean |
+| Hosted Worker | `cd platform && npx vitest run` | **1553 passed**, 37 files |
 | Debugger UI | `cd web && npx vitest run` | **129 passed**, 4 files |
 | Landing | `node --test landing/*.test.mjs` | **10 passed** |
 | Types | `cd platform && npx tsc --noEmit` | clean |
