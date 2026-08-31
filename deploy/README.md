@@ -83,6 +83,13 @@ not create an account.
    return to the environment's `/account`,
    two-device and ten-lifetime-token limits, quota rollback, and signed-out
    behavior in a browser.
+
+   Every acceptance deployment must carry the exact source identity in its
+   Cloudflare Version tag. Pass `--tag git-<SHA-prefix>` to `wrangler deploy`,
+   where `<SHA-prefix>` is the first 12 lowercase characters of the 40-character
+   commit SHA (for example, `--tag git-96117a900681`). An untagged or
+   differently tagged version is not source-pinned and must not receive
+   acceptance traffic.
 3. Install both Turnstile keys and configure reviewed Cloudflare WAF/rate-limit
    rules for auth start/callback, signup, device issuance, and
    `/v1/event-batches`; the Worker validates auth-start tokens server-side, but
