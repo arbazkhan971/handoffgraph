@@ -43,10 +43,18 @@ real-session acceptance matrix also passed against exact clean runtime commit
 counts, every preview was write-free, and native Codex, Claude Code, and Pi
 clients accepted all six recorded handoffs through MCP with exact checkpoint
 references. See `docs/releases/v0.7.0-beta.1-six-pair-acceptance.md`.
+The later evidence-only commit `e2908aa5a6464a7d2067c0422f395e8968bb8850`
+also passed all five jobs in CI run `33347192594`; it did not change the
+accepted runtime tree.
 
 The Cloudflare zone and isolated staging/production durable resources exist,
-and all 22 migrations are applied and verified on staging D1. Production is
-**not live**: the canonical GitHub organization/repository and first tag do not
+and all 22 migrations are applied and verified on staging D1. Exact runtime
+`db394098277b87d952d587509bc403b887844db2` is live only on isolated staging as
+Worker version `4525db9d-540a-4af1-9803-83de5b0c7e25`, tag
+`git-db394098277b`; its 39-file/1,611-test Platform suite and seven-check live
+preflight passed. See
+`docs/releases/v0.8.0-hosted-staging-acceptance.md`. Production is **not
+live**: the canonical GitHub organization/repository and first tag do not
 exist, production D1 is not migrated, the public domains still serve the old
 Vercel projects, and WorkOS, Turnstile, WAF/rate controls, domain cutover, and
 deployed browser/CLI acceptance remain launch gates. Production signup stays
@@ -229,7 +237,7 @@ LICENSE                    Apache-2.0
 5. **No model in the core path.** Checkpoint building is model-free. Model compression (future) must be labelled `INFERRED`.
 6. **Money/cost is a decimal string, never a float.** (`cost_amount` string in `protocol/trace.go`.)
 7. **ID format:** ULID with self-describing prefixes — `evt_`, `ws_`, `ses_`, `trc_`, `spn_`, `cp_`, `repo_`. Use `internal/ids`, never hand-roll.
-8. **Go 1.25.0** (note: `go mod tidy` bumped the `go` directive from 1.24; CI uses 1.24 — **this mismatch needs fixing**, see §8).
+8. **Go 1.25.0.** `go.mod` and CI both pin Go 1.25; dependency requirements prevented remaining on Go 1.24 (see §8).
 9. **SQLite pure-Go driver** (`modernc.org/sqlite`), WAL mode, single writer (`SetMaxOpenConns(1)`).
 
 ### Import layering (to avoid cycles)
@@ -555,7 +563,7 @@ gate it lists is now complete. Read §14 for current state.)*
 
 ### Where the parity wave landed
 
-**27 commits after `9ed8dda` (head `9bbeede`).** The parity program is
+**27 commits after `9ed8dda` (parity-wave landing commit `9bbeede`).** The parity program is
 effectively complete: **~54 of 55 matrix rows are shipped behind a tested
 gate or carry a dated re-scope rationale**, with row 55 (browser session
 replay) the one deliberate out-of-scope. `docs/competitor-analysis.md` §3 is
@@ -639,8 +647,8 @@ in `src/index.ts`.
 
 | Suite | Command | Result |
 |---|---|---|
-| Go core | `go test ./...` | **1328 passed** across 35 packages; `-race` clean |
-| Hosted Worker | `cd platform && npx vitest run` | **1553 passed**, 37 files |
+| Go core | `go test ./...` | **1,365 passed** across 35 packages; `-race` clean |
+| Hosted Worker | `cd platform && npx vitest run` | **1,611 passed**, 39 files |
 | Debugger UI | `cd web && npx vitest run` | **129 passed**, 4 files |
 | Landing | `node --test landing/*.test.mjs` | **10 passed** |
 | Types | `cd platform && npx tsc --noEmit` | clean |
@@ -706,7 +714,7 @@ Completed since the ultracode wave:
 - all 22 migrations are applied and verified on staging D1; Hosted Basic binds
   only D1 and R2, and advanced routes enable only for the exact
   `HOSTED_SURFACE="advanced"` value;
-- the latest platform run is green at 37 files / 1,553 Vitest tests, with
+- the latest platform run is green at 39 files / 1,611 Vitest tests, with
   typecheck and production/staging Wrangler dry bundles also green.
 
 Remaining launch gates:
