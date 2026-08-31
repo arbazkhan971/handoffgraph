@@ -40,7 +40,11 @@ expect_fail() {
 }
 
 expect_pass "annotated tag" "${test_root}.git" v0.8.0-beta.1 "${commit}" "${tag_object}"
-expect_fail "wrong expected commit" "${test_root}.git" v0.8.0-beta.1 "1${commit:1}" "${tag_object}"
+wrong_commit="0${commit:1}"
+if [[ "${wrong_commit}" == "${commit}" ]]; then
+  wrong_commit="1${commit:1}"
+fi
+expect_fail "wrong expected commit" "${test_root}.git" v0.8.0-beta.1 "${wrong_commit}" "${tag_object}"
 expect_fail "wrong local tag object" "${test_root}.git" v0.8.0-beta.1 "${commit}" "${commit}"
 
 git -C "${test_root}" tag v0.8.1
