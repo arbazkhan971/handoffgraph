@@ -172,47 +172,65 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify downloaded draft assets
+      - name: Verify uploaded draft assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version_without_build="${GITHUB_REF_NAME%%+*}"
-          expected_prerelease=false
-          if [[ "${version_without_build}" == *-* ]]; then
-            expected_prerelease=true
-          fi
+          release_assets="${RUNNER_TEMP}/handoffgraph-release-assets"
+          mkdir "${release_assets}"
+          cp dist/checksums.txt dist/*.tar.gz dist/*.zip "${release_assets}/"
+          bash .github/scripts/verify-release-assets.sh \
+            "${GITHUB_REF_NAME}" \
+            "${release_assets}"
 
-          draft_ready=false
+          draft_release_id=""
           for attempt in {1..10}; do
-            if release_json="$(gh api \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
-              2>/dev/null)" && \
-              jq -e \
-                --arg tag "${GITHUB_REF_NAME}" \
-                --argjson prerelease "${expected_prerelease}" \
-                '.draft == true and .prerelease == $prerelease and .tag_name == $tag' \
-                >/dev/null <<<"${release_json}"; then
-              draft_ready=true
+            if candidate_release_id="$(bash .github/scripts/verify-release-assets.sh \
+              --resolve-github-draft-id \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" 2>/dev/null)"; then
+              draft_release_id="${candidate_release_id}"
               break
             fi
             sleep 2
           done
-          if [[ "${draft_ready}" != true ]]; then
-            echo "release draft did not reach the expected state" >&2
+          if [[ -z "${draft_release_id}" ]]; then
+            bash .github/scripts/verify-release-assets.sh \
+              --resolve-github-draft-id \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" || true
+            echo "release draft did not expose one canonical numeric identity" >&2
             exit 1
           fi
+          release_id_file="${RUNNER_TEMP}/handoffgraph-release-id"
+          (umask 077 && printf '%s\n' "${draft_release_id}" >"${release_id_file}")
 
-          release_assets="${RUNNER_TEMP}/handoffgraph-release-assets"
-          mkdir "${release_assets}"
-          gh release download "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --dir "${release_assets}"
-          bash .github/scripts/verify-release-assets.sh \
-            "${GITHUB_REF_NAME}" \
-            "${release_assets}"
+          github_assets_ready=false
+          for attempt in {1..10}; do
+            if bash .github/scripts/verify-release-assets.sh \
+              --require-github-release-assets \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" \
+              "${release_assets}" \
+              draft \
+              "${draft_release_id}" 2>/dev/null; then
+              github_assets_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${github_assets_ready}" != true ]]; then
+            bash .github/scripts/verify-release-assets.sh \
+              --require-github-release-assets \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" \
+              "${release_assets}" \
+              draft \
+              "${draft_release_id}" || true
+            echo "release draft did not expose the exact canonical asset and digest contract" >&2
+            exit 1
+          fi
 
       - name: Prove two clean canonical module installs
         shell: bash
@@ -269,30 +287,54 @@ jobs:
             expected_prerelease=true
           fi
 
-          gh release edit "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --draft=false \
-            --prerelease="${expected_prerelease}" \
-            --verify-tag
+          release_assets="${RUNNER_TEMP}/handoffgraph-release-assets"
+          release_id_file="${RUNNER_TEMP}/handoffgraph-release-id"
+          IFS= read -r draft_release_id <"${release_id_file}"
+          bash .github/scripts/verify-release-assets.sh \
+            --require-github-release-assets \
+            "${GITHUB_REPOSITORY}" \
+            "${GITHUB_REF_NAME}" \
+            "${release_assets}" \
+            draft \
+            "${draft_release_id}"
 
-          release_ready=false
+          promotion_payload="$(jq -cn \
+            --argjson prerelease "${expected_prerelease}" \
+            '{draft: false, prerelease: $prerelease}')"
+          promotion_response="$(gh api --method PATCH \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/releases/${draft_release_id}" \
+            --input - <<<"${promotion_payload}")"
+          jq -e \
+            --argjson release_id "${draft_release_id}" \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --argjson prerelease "${expected_prerelease}" \
+            '.id == $release_id and .tag_name == $tag and .draft == false and .prerelease == $prerelease' \
+            >/dev/null <<<"${promotion_response}"
+
+          github_assets_ready=false
           for attempt in {1..15}; do
-            if release_json="$(gh api \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
-              2>/dev/null)" && \
-              jq -e \
-                --arg tag "${GITHUB_REF_NAME}" \
-                --argjson prerelease "${expected_prerelease}" \
-                '.draft == false and .prerelease == $prerelease and .immutable == true and .tag_name == $tag' \
-                >/dev/null <<<"${release_json}"; then
-              release_ready=true
+            if bash .github/scripts/verify-release-assets.sh \
+              --require-github-release-assets \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" \
+              "${release_assets}" \
+              published \
+              "${draft_release_id}" 2>/dev/null; then
+              github_assets_ready=true
               break
             fi
             sleep 2
           done
-          if [[ "${release_ready}" != true ]]; then
-            echo "published release did not become immutable in the expected state" >&2
+          if [[ "${github_assets_ready}" != true ]]; then
+            bash .github/scripts/verify-release-assets.sh \
+              --require-github-release-assets \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" \
+              "${release_assets}" \
+              published \
+              "${draft_release_id}" || true
+            echo "immutable release did not preserve the exact canonical asset and digest contract" >&2
             exit 1
           fi

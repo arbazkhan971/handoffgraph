@@ -182,7 +182,8 @@ function jsonResponse(status: number, body: unknown): Response {
  * unchanged requests that can succeed merely by waiting. Batch and lifetime
  * limits deliberately omit Retry-After: one needs a smaller request and the
  * other needs an entitlement change. RFC 9110 permits either a date or delay
- * seconds; delay seconds keep the CLI message deterministic and easy to test.
+ * seconds. An absolute date binds the HTTP policy to the structured reset
+ * without depending on response-generation or transport timing.
  */
 function quotaResponse(denial: QuotaDenial, nowSeconds: number): Response {
   const headers = new Headers(JSON_HEADERS);
@@ -208,7 +209,7 @@ function quotaResponse(denial: QuotaDenial, nowSeconds: number): Response {
         detail: { retryable: false },
       });
     }
-    headers.set("retry-after", String(delaySeconds));
+    headers.set("retry-after", new Date((detail.resets_at as number) * 1000).toUTCString());
   }
   return new Response(JSON.stringify(denial.body), {
     status: denial.status,

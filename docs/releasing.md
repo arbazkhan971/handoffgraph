@@ -26,7 +26,8 @@ those read-only setting checks. Use a fine-grained token restricted to
 `handoffgraph/handoffgraph` with **Administration: read** (and the automatic
 Metadata read permission); do not grant content write through this token. The
 ordinary per-run `GITHUB_TOKEN` remains the only credential used to create the
-draft, download its assets, and promote it.
+draft, authenticate its exact asset metadata, and promote its verified numeric
+release identity.
 
 Do not change `go.mod` to a temporary personal fork path. The module path is a
 durable public API and must match the long-term repository location.
@@ -101,19 +102,26 @@ non-development version. CI performs the Linux archive check automatically.
    `contents: write`, reconfirm the tag is current `main`, and ask GoReleaser
    to upload an unpublished draft with the tag-derived version and SHA-256
    checksums.
-7. The publish job downloads that draft and requires exactly six expected
-   platform archives plus `checksums.txt`. It verifies every digest and archive
-   inventory, then checks the Linux amd64 binary's exact version, help header,
-   and `doctor` result with a throwaway `HFG_DATA_DIR`.
+7. The publish job retains GoReleaser's exact uploaded bytes and requires
+   exactly six expected platform archives plus `checksums.txt`. It verifies
+   every local digest and archive inventory, then resolves the authenticated
+   draft through GitHub's release list and checks its REST view for the same
+   exact seven names, uploaded/nonzero state, canonical download URLs, and
+   `sha256:` digests matching those local bytes. The
+   Linux amd64 binary must also report the exact version and help header and
+   pass `doctor` with a throwaway `HFG_DATA_DIR`.
 8. The same job performs two independent `GOPROXY=direct` installs of
    `github.com/handoffgraph/handoffgraph/cmd/handoffgraph@v0.7.0-beta.1` with
    fresh module and build caches and `GOFLAGS=-trimpath`. Both binaries must
    report the exact tag, pass `doctor`, and have identical SHA-256 hashes.
 9. Only after another tag/main and immutable-setting check does the workflow
-   promote the draft to a prerelease. A final REST read must prove that it is
-   published, marked as a prerelease, bound to the requested tag, and
-   immutable. Independently downloading and checking an archive remains a
-   useful release-owner smoke test, but is no longer the publication gate.
+   PATCH the verified numeric draft ID to a prerelease; it never re-resolves an
+   untrusted draft by tag at that irreversible boundary. Final REST reads by
+   that same ID and by tag must agree and prove that it is published, marked as
+   a prerelease, bound to the requested tag, and immutable while preserving the
+   exact REST asset inventory, URLs, sizes, and digests proved on the draft.
+   Independently downloading and checking an archive remains a useful
+   release-owner smoke test, but is no longer the publication gate.
 
 Never move or reuse a published tag. If a release is bad, document it and ship
 a new patch tag.

@@ -74,11 +74,14 @@ first unacknowledged batch.
 
 Quota handling is explicit and does not hide a retry loop:
 
-- A monthly event/byte 429 is waitable. The platform returns `resets_at`,
-  `detail.retryable: true`, and `Retry-After`. The CLI accepts either HTTP
-  delay-seconds or an HTTP date only when it is positive and within the fixed
-  30-day entitlement window. The structured `resets_at` remains authoritative,
-  so a separate header cannot shorten or override the displayed policy.
+- A monthly event/byte 429 is waitable when its structured envelope contains
+  `resets_at` and `detail.retryable: true`. `Retry-After` may be absent. When
+  present, the CLI accepts either HTTP delay-seconds or an HTTP date only when
+  it resolves exactly to the authoritative `resets_at` boundary within the
+  fixed 30-day entitlement window. Delay-seconds are checked relative to the
+  response's HTTP `Date`, so transport time cannot create a false mismatch. A
+  shorter, longer, undated, or malformed header makes the response fail closed
+  to the fixed status-only 429 error.
 - A per-batch 429 has `detail.retryable: false`; the same body cannot succeed
   unchanged and no `Retry-After` is sent. Basic-safe batching normally keeps
   the client below this boundary.
@@ -90,9 +93,9 @@ any of these cases. It returns after the denial with that exact body and key
 still durable and never advances the cursor past it; batches accepted earlier
 in the same invocation remain committed at their validated boundary. A later
 explicit `handoffgraph sync` replays the denied pending request byte-for-byte.
-Missing, unknown, internally inconsistent, or implausibly distant structured
-quota metadata receives a fixed generic 429 error instead of being trusted as
-retry policy.
+Missing, malformed, unknown, unstructured, internally inconsistent, or
+implausibly distant quota metadata receives a fixed generic status-only 429
+error. A standalone `Retry-After` is never trusted as retry policy.
 
 Repository config cannot choose the hosted-state location. State is scoped by
 canonical API endpoint, a one-way SHA-256 fingerprint of the high-entropy

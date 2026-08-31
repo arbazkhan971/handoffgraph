@@ -38,7 +38,8 @@ const (
 	// Basic hosted workspaces accept at most 100 events per request. Keep the
 	// zero-value/default client batch within that entitlement so a normal first
 	// sync does not create an unreplayable, over-quota pending body.
-	defaultBatchSize = 100
+	defaultBatchSize      = 100
+	genericRateLimitError = "hosted API is rate-limited (429); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected"
 )
 
 // ErrPreviewAcceptanceRequired is returned after a successful, content-free
@@ -504,18 +505,12 @@ func hostedStatusError(response *http.Response, body []byte, now time.Time) erro
 			// The response declared a hosted quota contract but did not satisfy
 			// the exact policy above. Do not fall through and trust a standalone
 			// Retry-After header that could contradict the structured reset.
-			return fmt.Errorf("hosted API is rate-limited (429); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
+			return errors.New(genericRateLimitError)
 		}
-		if declaresStructuredErrorCode(body) {
-			// A coded application response that failed the strict allowlist is
-			// malformed or newer than this client. Its Retry-After cannot be
-			// treated independently without bypassing fail-closed classification.
-			return fmt.Errorf("hosted API is rate-limited (429); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
-		}
-		if seconds, ok := retryAfterSeconds(response.Header.Get("Retry-After"), now); ok {
-			return fmt.Errorf("hosted API is rate-limited (429; retry after %d seconds); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected", seconds)
-		}
-		return fmt.Errorf("hosted API is rate-limited (429); the exact pending batch was preserved, local cursor was not advanced past it, and local capture is unaffected")
+		// An empty, malformed, unknown, or unstructured response is not a
+		// retry-policy contract. Never trust a standalone Retry-After header:
+		// only a fully validated monthly quota envelope may supply guidance.
+		return errors.New(genericRateLimitError)
 	case http.StatusServiceUnavailable:
 		return fmt.Errorf("hosted quota or storage is temporarily unavailable (503); local cursor was not advanced past the pending batch and local capture is unaffected")
 	default:
@@ -550,16 +545,6 @@ func parseHostedError(body []byte) (hostedErrorEnvelope, bool) {
 	default:
 		return hostedErrorEnvelope{}, false
 	}
-}
-
-func declaresStructuredErrorCode(body []byte) bool {
-	if len(body) == 0 {
-		return false
-	}
-	var probe struct {
-		Code string `json:"code"`
-	}
-	return json.Unmarshal(body, &probe) == nil && strings.TrimSpace(probe.Code) != ""
 }
 
 func validLimitDetail(code string, detail *hostedErrorDetail, scope string, retryable bool) bool {
@@ -604,11 +589,28 @@ func responseRetryAfter(response *http.Response, resetsAt *int64, now time.Time)
 	if header == "" {
 		return resetSeconds, true
 	}
-	// resets_at is the authoritative quota boundary. Validate that a present
-	// HTTP header is itself positive and bounded, but never let its relative
-	// value override or shorten the structured reset policy.
-	headerSeconds, ok := retryAfterSeconds(header, now)
-	if !ok || headerSeconds == 0 {
+	// resets_at is the authoritative quota boundary. An absolute Retry-After
+	// date must name that exact instant. Delay-seconds are relative to the HTTP
+	// response, not to the later instant when the client decodes it, so validate
+	// them against the response's Date header. This admits transport latency
+	// without letting a shorter or longer header override the structured reset.
+	if isASCIIDigits(header) {
+		responseAt, err := http.ParseTime(strings.TrimSpace(response.Header.Get("Date")))
+		if err != nil {
+			return 0, false
+		}
+		expectedAtResponse, ok := secondsUntil(time.Unix(*resetsAt, 0), responseAt)
+		if !ok || expectedAtResponse == 0 {
+			return 0, false
+		}
+		headerSeconds, ok := retryAfterSeconds(header, responseAt)
+		if !ok || headerSeconds != expectedAtResponse {
+			return 0, false
+		}
+		return resetSeconds, true
+	}
+	retryAt, err := http.ParseTime(header)
+	if err != nil || retryAt.Unix() != *resetsAt {
 		return 0, false
 	}
 	return resetSeconds, true

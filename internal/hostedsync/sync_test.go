@@ -472,6 +472,7 @@ func TestMonthlyQuotaRetryPreservesExactPendingBatch(t *testing.T) {
 		mu.Unlock()
 		if current == 1 {
 			w.Header().Set("content-type", "application/json")
+			w.Header().Set("Date", time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC).Format(http.TimeFormat))
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -565,9 +566,10 @@ func TestRetryAfterSecondsSupportsDelayAndHTTPDate(t *testing.T) {
 	}
 }
 
-func TestResponseRetryAfterBoundsQuotaReset(t *testing.T) {
+func TestResponseRetryAfterRequiresExactQuotaResetAgreement(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	response := &http.Response{Header: make(http.Header)}
+	response.Header.Set("Date", now.Format(http.TimeFormat))
 	atBoundary := now.Unix() + maxQuotaRetryAfterSeconds
 	if got, ok := responseRetryAfter(response, &atBoundary, now); !ok || got != maxQuotaRetryAfterSeconds {
 		t.Fatalf("boundary reset = (%d, %v), want (%d, true)", got, ok, maxQuotaRetryAfterSeconds)
@@ -585,17 +587,41 @@ func TestResponseRetryAfterBoundsQuotaReset(t *testing.T) {
 	}
 
 	future := now.Unix() + 600
-	response.Header.Set("Retry-After", "60")
+	response.Header.Set("Retry-After", "600")
 	if got, ok := responseRetryAfter(response, &future, now); !ok || got != 600 {
-		t.Fatalf("contradictory shorter header = (%d, %v), want authoritative reset (600, true)", got, ok)
+		t.Fatalf("matching delay header = (%d, %v), want (600, true)", got, ok)
+	}
+	if got, ok := responseRetryAfter(response, &future, now.Add(3*time.Second)); !ok || got != 597 {
+		t.Fatalf("matching delay after transport latency = (%d, %v), want (597, true)", got, ok)
+	}
+	response.Header.Set("Retry-After", time.Unix(future, 0).UTC().Format(http.TimeFormat))
+	if got, ok := responseRetryAfter(response, &future, now); !ok || got != 600 {
+		t.Fatalf("matching date header = (%d, %v), want (600, true)", got, ok)
+	}
+	response.Header.Set("Retry-After", "60")
+	if got, ok := responseRetryAfter(response, &future, now); ok || got != 0 {
+		t.Fatalf("contradictory shorter header = (%d, %v), want (0, false)", got, ok)
+	}
+	response.Header.Set("Retry-After", "601")
+	if got, ok := responseRetryAfter(response, &future, now); ok || got != 0 {
+		t.Fatalf("contradictory longer header = (%d, %v), want (0, false)", got, ok)
+	}
+	response.Header.Set("Retry-After", now.Add(599*time.Second).Format(http.TimeFormat))
+	if got, ok := responseRetryAfter(response, &future, now); ok || got != 0 {
+		t.Fatalf("contradictory date header = (%d, %v), want (0, false)", got, ok)
 	}
 	response.Header.Set("Retry-After", "0")
 	if got, ok := responseRetryAfter(response, &future, now); ok || got != 0 {
 		t.Fatalf("zero header = (%d, %v), want fail-closed (0, false)", got, ok)
 	}
+	response.Header.Del("Date")
+	response.Header.Set("Retry-After", "600")
+	if got, ok := responseRetryAfter(response, &future, now); ok || got != 0 {
+		t.Fatalf("delay without response date = (%d, %v), want fail-closed (0, false)", got, ok)
+	}
 }
 
-func TestStructuredQuotaMetadataNeverFallsBackToContradictoryHeader(t *testing.T) {
+func TestStructuredMonthlyQuotaRequiresHeaderAgreement(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	body, err := json.Marshal(map[string]any{
 		"error":                    "hosted quota exceeded",
@@ -611,21 +637,64 @@ func TestStructuredQuotaMetadataNeverFallsBackToContradictoryHeader(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
-	response.Header.Set("Retry-After", "0")
-	got := hostedStatusError(response, body, now).Error()
-	if !strings.Contains(got, "hosted API is rate-limited") || strings.Contains(got, "retry after") {
-		t.Fatalf("hostedStatusError = %q, want status-only generic fallback", got)
+	tests := []struct {
+		name         string
+		header       string
+		responseDate string
+		wantPolicy   bool
+	}{
+		{name: "absent header", wantPolicy: true},
+		{name: "matching delay", header: "600", responseDate: now.Format(http.TimeFormat), wantPolicy: true},
+		{name: "matching date", header: now.Add(600 * time.Second).Format(http.TimeFormat), wantPolicy: true},
+		{name: "shorter delay", header: "599", responseDate: now.Format(http.TimeFormat)},
+		{name: "longer delay", header: "601", responseDate: now.Format(http.TimeFormat)},
+		{name: "delay without response date", header: "600"},
+		{name: "different date", header: now.Add(601 * time.Second).Format(http.TimeFormat)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+			if tt.responseDate != "" {
+				response.Header.Set("Date", tt.responseDate)
+			}
+			if tt.header != "" {
+				response.Header.Set("Retry-After", tt.header)
+			}
+			got := hostedStatusError(response, body, now).Error()
+			if tt.wantPolicy {
+				if !strings.Contains(got, "hosted monthly quota is exhausted") || !strings.Contains(got, "retry after 600 seconds") {
+					t.Fatalf("hostedStatusError = %q, want validated monthly policy", got)
+				}
+				return
+			}
+			if got != genericRateLimitError {
+				t.Fatalf("hostedStatusError = %q, want fixed status-only error %q", got, genericRateLimitError)
+			}
+		})
 	}
 }
 
-func TestUnknownRateLimitBodyCanUseBoundedRetryAfter(t *testing.T) {
+func TestUntrustedRateLimitBodyIgnoresStandaloneRetryAfter(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
-	response.Header.Set("Retry-After", "60")
-	got := hostedStatusError(response, []byte(`{"error":"gateway rate limit"}`), now).Error()
-	if !strings.Contains(got, "hosted API is rate-limited") || !strings.Contains(got, "retry after 60 seconds") {
-		t.Fatalf("hostedStatusError = %q, want bounded generic Retry-After guidance", got)
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "empty"},
+		{name: "malformed JSON", body: []byte(`{"error":`)},
+		{name: "unstructured JSON", body: []byte(`{"error":"gateway rate limit"}`)},
+		{name: "unknown structured code", body: []byte(`{"error":"new quota","code":"future_quota","local_capture_unaffected":true}`)},
+		{name: "plain text", body: []byte(`rate limited`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+			response.Header.Set("Retry-After", "60")
+			got := hostedStatusError(response, tt.body, now).Error()
+			if got != genericRateLimitError {
+				t.Fatalf("hostedStatusError = %q, want fixed status-only error %q", got, genericRateLimitError)
+			}
+		})
 	}
 }
 
@@ -635,8 +704,8 @@ func TestUnknownStructuredQuotaMetadataSuppressesRetryAfter(t *testing.T) {
 	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
 	response.Header.Set("Retry-After", "60")
 	got := hostedStatusError(response, body, now).Error()
-	if !strings.Contains(got, "hosted API is rate-limited") || strings.Contains(got, "retry after") {
-		t.Fatalf("hostedStatusError = %q, want status-only fallback for unknown structured metadata", got)
+	if got != genericRateLimitError {
+		t.Fatalf("hostedStatusError = %q, want fixed status-only error %q", got, genericRateLimitError)
 	}
 }
 

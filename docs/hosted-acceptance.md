@@ -150,9 +150,9 @@ npm run acceptance:hosted -- \
   --phase lifecycle \
   --environment staging \
   --expected-source-sha <40-hex-deployed-commit> \
-  --cli-archive /absolute/path/to/handoffgraph_0.8.0-beta.1_darwin_arm64.tar.gz \
+  --cli-archive /absolute/path/to/handoffgraph_0.7.0-beta.1_darwin_arm64.tar.gz \
   --checksums /absolute/path/to/checksums.txt \
-  --expected-cli-version v0.8.0-beta.1 \
+  --expected-cli-version v0.7.0-beta.1 \
   --auth-intent-a signup \
   --auth-intent-b signup
 ```
@@ -177,9 +177,9 @@ npm run acceptance:hosted -- \
   --phase deletion \
   --environment staging \
   --expected-source-sha <40-hex-deployed-commit> \
-  --cli-archive /absolute/path/to/handoffgraph_0.8.0-beta.1_darwin_arm64.tar.gz \
+  --cli-archive /absolute/path/to/handoffgraph_0.7.0-beta.1_darwin_arm64.tar.gz \
   --checksums /absolute/path/to/checksums.txt \
-  --expected-cli-version v0.8.0-beta.1 \
+  --expected-cli-version v0.7.0-beta.1 \
   --auth-intent-a signin \
   --auth-intent-b signin
 ```

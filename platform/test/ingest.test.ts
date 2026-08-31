@@ -1091,7 +1091,7 @@ describe("worker: POST /v1/event-batches", () => {
     expect(batches).toHaveLength(0);
   });
 
-  it("marks monthly quota denials retryable and emits Retry-After seconds to reset", async () => {
+  it("marks monthly quota denials retryable and emits the exact reset as Retry-After", async () => {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const periodEnd = nowSeconds + 600;
     const { db, batches } = mockDb({
@@ -1119,10 +1119,9 @@ describe("worker: POST /v1/event-batches", () => {
     );
 
     expect(response.status).toBe(429);
-    const retryAfter = Number(response.headers.get("retry-after"));
-    expect(Number.isSafeInteger(retryAfter)).toBe(true);
-    expect(retryAfter).toBeGreaterThan(0);
-    expect(retryAfter).toBeLessThanOrEqual(600);
+    const retryAfter = response.headers.get("retry-after");
+    expect(retryAfter).toBe(new Date(periodEnd * 1000).toUTCString());
+    expect(Date.parse(retryAfter as string) / 1000).toBe(periodEnd);
     expect(await response.json()).toMatchObject({
       error: "hosted quota exceeded",
       code: "monthly_events_exceeded",
