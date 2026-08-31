@@ -37,11 +37,12 @@ doctor run. The separate read-only Codex App Server listing path was exercised
 against Codex CLI 0.144.3 and returned deterministic state-DB thread metadata.
 Directed continuation and acknowledgement behavior is covered by unit and
 compiled-binary fixture flows for all three destinations. The six-pair
-real-session acceptance matrix also passed against clean commit `ca4a9b8`:
-each real source transcript was imported twice with stable counts, every
-preview was write-free, and native Codex, Claude Code, and Pi clients accepted
-all six recorded handoffs through MCP with exact checkpoint references. See
-`docs/releases/v0.7.0-beta.1-six-pair-acceptance.md`.
+real-session acceptance matrix also passed against exact clean runtime commit
+`db394098277b87d952d587509bc403b887844db2` with all five jobs green in CI run
+`33346047282`: each real source transcript was imported twice with stable
+counts, every preview was write-free, and native Codex, Claude Code, and Pi
+clients accepted all six recorded handoffs through MCP with exact checkpoint
+references. See `docs/releases/v0.7.0-beta.1-six-pair-acceptance.md`.
 
 The Cloudflare zone and isolated staging/production durable resources exist,
 and all 22 migrations are applied and verified on staging D1. Production is
