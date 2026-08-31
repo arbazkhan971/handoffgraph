@@ -67,6 +67,7 @@ export interface SignedOutPageData {
   message?: string;
   authAvailable?: boolean;
   signupAvailable?: boolean;
+  turnstileSiteKey?: string;
 }
 
 const ACCOUNT_STYLES = `
@@ -516,6 +517,8 @@ progress::-moz-progress-bar { background: var(--violet); }
 .signed-out-card h1 span { color: var(--acid); }
 .signed-out-card > p { max-width: 580px; color: #eeeaff; font-size: 1.05rem; }
 .signed-out-actions { display: flex; flex-wrap: wrap; gap: .8rem; margin-top: 1.6rem; }
+.auth-form { display: grid; gap: .8rem; min-width: min(100%, 330px); }
+.auth-form .cf-turnstile { min-height: 65px; }
 
 @media (max-width: 860px) {
   .hero { grid-template-columns: 1fr; }
@@ -1133,7 +1136,7 @@ const ACCOUNT_SCRIPT = `
 
 // Tests recompute these hashes from the exact constants above. Keep them in
 // sync whenever either inline block changes.
-const STYLE_CSP_HASH = "sha256-XadL2GtcwqU2wT3mVlcf+srMZMJTKCdUCFaMp2veTqY=";
+const STYLE_CSP_HASH = "sha256-ZTrSwzK9x/ebl1MIXKVqZhCihFHJHi/br/O0Q20I3g0=";
 const SCRIPT_CSP_HASH = "sha256-4INW7eCrv1sG5Jl/CBAi1AzoOsSZ3UxxeY1EJyT8jik=";
 
 function escapeHTML(value: unknown): string {
@@ -1245,12 +1248,22 @@ function setupRows(setup: SetupItemView[] | undefined, deviceCount: number): str
   return source.map((item) => `<li data-complete="${item.complete === true ? "true" : "false"}"><strong>${escapeHTML(text(item.label, "Setup step"))}</strong><span>${escapeHTML(text(item.detail, "Not completed yet."))}</span></li>`).join("");
 }
 
-export function accountPageCSP(includeScript: boolean): string {
-  const script = includeScript ? `'${SCRIPT_CSP_HASH}'` : "'none'";
-  return `default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'self'; img-src 'none'; font-src 'none'; media-src 'none'; worker-src 'none'; connect-src 'self'; style-src '${STYLE_CSP_HASH}'; script-src ${script}; upgrade-insecure-requests`;
+export function accountPageCSP(includeScript: boolean, includeTurnstile = false): string {
+  const turnstileOrigin = "https://challenges.cloudflare.com";
+  const frame = includeTurnstile ? turnstileOrigin : "'none'";
+  const connect = includeTurnstile ? `'self' ${turnstileOrigin}` : "'self'";
+  const script = includeScript
+    ? `'${SCRIPT_CSP_HASH}'${includeTurnstile ? ` ${turnstileOrigin}` : ""}`
+    : includeTurnstile
+      ? turnstileOrigin
+      : "'none'";
+  return `default-src 'none'; base-uri 'none'; object-src 'none'; frame-src ${frame}; form-action 'self'; img-src 'none'; font-src 'none'; media-src 'none'; worker-src 'none'; connect-src ${connect}; style-src '${STYLE_CSP_HASH}'; script-src ${script}; upgrade-insecure-requests`;
 }
 
-function documentStart(title: string, includeScript: boolean): string {
+function documentStart(title: string, includeScript: boolean, includeTurnstile = false): string {
+  const turnstileScript = includeTurnstile
+    ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>'
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1258,8 +1271,9 @@ function documentStart(title: string, includeScript: boolean): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="${accountPageCSP(includeScript)}">
+  <meta http-equiv="Content-Security-Policy" content="${accountPageCSP(includeScript, includeTurnstile)}">
   <title>${escapeHTML(title)}</title>
+  ${turnstileScript}
   <style>${ACCOUNT_STYLES}</style>
 </head>`;
 }
@@ -1411,7 +1425,7 @@ ${teamSection}
 </html>`;
 }
 
-/** Render the public signed-out state without loading or executing JavaScript. */
+/** Render the public signed-out state; Turnstile is the only optional external script. */
 export function renderSignedOutPage(data: SignedOutPageData = {}): string {
   const message = text(
     data.message,
@@ -1419,18 +1433,36 @@ export function renderSignedOutPage(data: SignedOutPageData = {}): string {
   );
   const authAvailable = data.authAvailable ?? true;
   const signupAvailable = authAvailable && (data.signupAvailable ?? true);
+  const turnstileSiteKey = authAvailable && typeof data.turnstileSiteKey === "string" && data.turnstileSiteKey.trim() !== ""
+    ? data.turnstileSiteKey.trim()
+    : null;
+  const authAction = (intent: "signin" | "signup", label: string, className: string): string => {
+    const action = `/v1/auth/start?intent=${intent}&return_to=%2Faccount`;
+    if (turnstileSiteKey === null) {
+      return `<a class="button ${className}" href="${action.replaceAll("&", "&amp;")}">${label}</a>`;
+    }
+    const turnstileAction = `auth-${intent}`;
+    return `<form class="auth-form" data-hfg-auth-intent="${intent}" method="post" action="${action.replaceAll("&", "&amp;")}">
+      <div class="cf-turnstile" data-hfg-turnstile-action="${turnstileAction}" data-action="${turnstileAction}" data-sitekey="${escapeHTML(turnstileSiteKey)}"></div>
+      <button class="button ${className}" type="submit">${label}</button>
+    </form>`;
+  };
   const signupAction = signupAvailable
-    ? '<a class="button primary" href="/v1/auth/start?intent=signup&amp;return_to=%2Faccount">Create hosted account</a>'
+    ? authAction("signup", "Create hosted account", "primary")
     : '<span class="button disabled" aria-disabled="true">New accounts closed</span>';
   const signinAction = authAvailable
-    ? '<a class="button dark" href="/v1/auth/start?intent=signin&amp;return_to=%2Faccount">Sign in</a>'
+    ? authAction("signin", "Sign in", "dark")
     : '<span class="button disabled" aria-disabled="true">Hosted identity unavailable</span>';
   const accessNote = !authAvailable
     ? "Hosted identity is not configured on this environment yet."
     : signupAvailable
-      ? "Paid tiers are preview-only. Signing in does not start a subscription."
-      : "New-account access is closed. Existing beta accounts can still sign in.";
-  return `${documentStart("Sign in · HandoffGraph", false)}
+      ? turnstileSiteKey === null
+        ? "Paid tiers are preview-only. Signing in does not start a subscription."
+        : "Complete the security check before continuing. Paid tiers are preview-only."
+      : turnstileSiteKey === null
+        ? "New-account access is closed. Existing beta accounts can still sign in."
+        : "New-account access is closed. Complete the security check before signing in.";
+  return `${documentStart("Sign in · HandoffGraph", false, turnstileSiteKey !== null)}
 <body>
 ${brandHeader(false)}
 <main id="main" class="signed-out-wrap shell">

@@ -8,6 +8,7 @@ import {
   finishAuth,
   getMe,
   hostedAuthConfigured,
+  hostedTurnstileSiteKey,
   normalizedOrigin,
   randomSecret,
   readAccountJsonBody,
@@ -229,9 +230,12 @@ describe("hosted auth start", () => {
       { WORKOS_REDIRECT_URI: "https://other.handoffgraph.dev/v1/auth/callback" },
       { WORKOS_CLIENT_ID: "" },
       { WORKOS_API_KEY: "" },
+      { TURNSTILE_SITE_KEY: "0x4AAAAAAATESTKEY" },
+      { TURNSTILE_SECRET_KEY: "turnstile_secret" },
     ]) {
       expect(hostedAuthConfigured({ ...configured, ...override })).toBe(false);
     }
+    expect(hostedTurnstileSiteKey(configured)).toBeNull();
   });
 
   it("fails closed before redirecting when WorkOS is not configured", async () => {
@@ -302,6 +306,100 @@ describe("hosted auth start", () => {
     expect(cookies).toContain("Secure");
     expect(cookies).toContain("HttpOnly");
     expect(cookies).not.toContain("Domain=");
+  });
+
+  it("requires and verifies the app-owned Turnstile token when configured", async () => {
+    const { db } = mockDb();
+    const env = {
+      ...configuredEnv(db),
+      TURNSTILE_SITE_KEY: "0x4AAAAAAATESTKEY",
+      TURNSTILE_SECRET_KEY: "turnstile_secret",
+    };
+    expect(hostedAuthConfigured(env)).toBe(true);
+    expect(hostedTurnstileSiteKey(env)).toBe("0x4AAAAAAATESTKEY");
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://challenges.cloudflare.com/turnstile/v0/siteverify");
+      expect(init?.method).toBe("POST");
+      const form = new URLSearchParams(String(init?.body ?? ""));
+      expect(form.get("secret")).toBe("turnstile_secret");
+      expect(form.get("response")).toBe("token");
+      expect(form.get("remoteip")).toBe("203.0.113.5");
+      return new Response(JSON.stringify({
+        success: true,
+        action: "auth-signup",
+        hostname: "api.handoffgraph.dev",
+      }), { status: 200 });
+    });
+    const response = await startAuth(
+      new Request(
+        "https://api.handoffgraph.dev/v1/auth/start?intent=signup",
+        {
+          method: "POST",
+          headers: {
+            origin: "https://api.handoffgraph.dev",
+            "content-type": "application/x-www-form-urlencoded",
+            "cf-connecting-ip": "203.0.113.5",
+          },
+          body: new URLSearchParams({ "cf-turnstile-response": "token" }).toString(),
+        },
+      ),
+      env,
+      fetcher,
+    );
+    expect(response.status).toBe(303);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("rejects missing, cross-origin, and mismatched Turnstile auth starts", async () => {
+    const { db } = mockDb();
+    const env = {
+      ...configuredEnv(db),
+      TURNSTILE_SITE_KEY: "0x4AAAAAAATESTKEY",
+      TURNSTILE_SECRET_KEY: "turnstile_secret",
+    };
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      action: "auth-signup",
+      hostname: "api.handoffgraph.dev",
+    }), { status: 200 }));
+    const base = {
+      method: "POST",
+      headers: {
+        origin: "https://api.handoffgraph.dev",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+    } as const;
+    const missing = await startAuth(
+      new Request("https://api.handoffgraph.dev/v1/auth/start?intent=signin", base),
+      env,
+      fetcher,
+    );
+    expect(missing.status).toBe(403);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    const crossOrigin = await startAuth(
+      new Request("https://api.handoffgraph.dev/v1/auth/start?intent=signin", {
+        ...base,
+        headers: { ...base.headers, origin: "https://attacker.example" },
+        body: "cf-turnstile-response=token",
+      }),
+      env,
+      fetcher,
+    );
+    expect(crossOrigin.status).toBe(403);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    const mismatched = await startAuth(
+      new Request("https://api.handoffgraph.dev/v1/auth/start?intent=signin", {
+        ...base,
+        body: "cf-turnstile-response=token",
+      }),
+      env,
+      fetcher,
+    );
+    expect(mismatched.status).toBe(403);
+    expect(await mismatched.json()).toMatchObject({ error: "turnstile_rejected" });
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("does not permit an arbitrary return origin", async () => {

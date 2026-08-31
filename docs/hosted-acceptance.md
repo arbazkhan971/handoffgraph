@@ -86,11 +86,12 @@ account UI and proves:
 The deletion dispatcher runs every five minutes and needs multiple passes.
 The default terminal timeout is 30 minutes.
 
-The app-origin marker observation proves only that the real HandoffGraph
-browser surface ran its challenge. It does not certify server-side Siteverify
-missing-token/replay rejection or reviewed Cloudflare WAF and rate-limit
-rules. Those remain separate fail-closed launch gates until their negative
-tests and control-plane evidence exist.
+The app-origin marker observation proves that the real HandoffGraph browser
+surface ran its challenge. When both Turnstile keys are configured, the Worker
+also performs server-side Siteverify validation (including action and hostname
+binding); negative missing-token/replay/error tests must still pass. Reviewed
+Cloudflare WAF and rate-limit rules for callback and write paths remain a
+separate fail-closed launch gate until control-plane evidence exists.
 
 ## One-time setup
 

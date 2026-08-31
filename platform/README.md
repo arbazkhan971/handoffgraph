@@ -86,6 +86,8 @@ For local development, create `platform/.dev.vars` (gitignored):
 ```dotenv
 WORKOS_CLIENT_ID=client_...
 WORKOS_API_KEY=sk_...
+TURNSTILE_SITE_KEY=0x4AAAA...
+TURNSTILE_SECRET_KEY=0x4AAAA...
 HOSTED_SIGNUP_ENABLED=true
 ```
 
@@ -95,6 +97,8 @@ environment flag; named-environment secrets are not inherited:
 ```bash
 npx wrangler secret put WORKOS_CLIENT_ID --env staging
 npx wrangler secret put WORKOS_API_KEY --env staging
+npx wrangler secret put TURNSTILE_SITE_KEY --env staging
+npx wrangler secret put TURNSTILE_SECRET_KEY --env staging
 ```
 
 For production, set both in the default environment with `wrangler secret put`;
@@ -103,6 +107,8 @@ never commit them:
 ```bash
 npx wrangler secret put WORKOS_CLIENT_ID
 npx wrangler secret put WORKOS_API_KEY
+npx wrangler secret put TURNSTILE_SITE_KEY
+npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
 Keep `HOSTED_SIGNUP_ENABLED` absent in production while staging and edge abuse
@@ -113,8 +119,12 @@ the sign-in callback is not allowed to create a new account.
 
 `APP_ORIGIN`, `LANDING_ORIGIN`, and `WORKOS_REDIRECT_URI` are non-secret,
 fixed values in `wrangler.toml`. If any auth setting is absent or malformed,
-`GET /v1/auth/start` fails closed with `503`; it never falls back to a local
-password database or an unverified identity.
+the auth start route fails closed; it never falls back to a local password
+database or an unverified identity. When both Turnstile keys are configured,
+the account page renders a form-integrated widget and only
+`POST /v1/auth/start` with a same-origin, Siteverify-validated token can begin
+the WorkOS redirect. A missing, replayed, expired, mismatched-action, or
+provider-error token is rejected with no state cookies.
 
 The AuthKit authentication response must contain an access token. HandoffGraph
 verifies its signature with the client-specific WorkOS JWKS and binds its
@@ -256,7 +266,7 @@ curl -s "localhost:8787/v1/workstreams?limit=10" -H "Authorization: Bearer $TOKE
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | GET | `/account` | browser session optional | signed-in dashboard or signed-out entry |
-| GET | `/v1/auth/start` | none | AuthKit redirect; `intent=signup\|signin` |
+| GET/POST | `/v1/auth/start` | none (+ Turnstile form when configured) | AuthKit redirect; `intent=signup\|signin` |
 | GET | `/v1/auth/callback` | state + PKCE | verified identity → Basic account/session |
 | GET | `/v1/me` | browser session | account, workspace, entitlement, usage |
 | POST | `/v1/auth/signout` | session + Origin + CSRF | revoke local session; return fixed WorkOS logout URL |

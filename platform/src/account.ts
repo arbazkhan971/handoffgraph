@@ -48,6 +48,8 @@ const AUTH_COOKIE_TTL_SECONDS = 10 * 60;
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_DEVICE_LABEL_BYTES = 80;
 const MAX_ACCOUNT_BODY_BYTES = 4_096;
+const MAX_TURNSTILE_TOKEN_BYTES = 2_048;
+const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const DELETION_RETRY_SECONDS = 5 * 60;
 // One tenant per invocation keeps the 47-statement purge plus dispatcher and
 // verification queries below Workers' tightest D1 per-invocation budget.
@@ -84,6 +86,8 @@ export interface AccountEnv {
   APP_ORIGIN?: string;
   LANDING_ORIGIN?: string;
   HOSTED_SIGNUP_ENABLED?: string;
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
 }
 
 export interface AccountDeletionEnv extends AccountEnv {
@@ -321,16 +325,51 @@ interface AuthConfig {
   redirectUri: string;
   appOrigin: string;
   landingOrigin: string | null;
+  turnstile: TurnstileConfig | null;
+}
+
+interface TurnstileConfig {
+  siteKey: string;
+  secretKey: string;
+}
+
+interface TurnstileConfigState {
+  config: TurnstileConfig | null;
+  invalid: boolean;
+}
+
+type AuthIntent = "signin" | "signup";
+
+function turnstileConfigState(env: AccountEnv): TurnstileConfigState {
+  const siteKey = env.TURNSTILE_SITE_KEY?.trim() ?? "";
+  const secretKey = env.TURNSTILE_SECRET_KEY?.trim() ?? "";
+  if (siteKey === "" && secretKey === "") return { config: null, invalid: false };
+  // Sitekeys and secrets are opaque printable credentials. Reject partial,
+  // oversized, or control-bearing values before they can affect HTML or an
+  // outbound Siteverify request.
+  if (
+    siteKey === "" ||
+    secretKey === "" ||
+    siteKey.length > 256 ||
+    secretKey.length > 512 ||
+    !/^[\x21-\x7e]+$/.test(siteKey) ||
+    !/^[\x21-\x7e]+$/.test(secretKey)
+  ) {
+    return { config: null, invalid: true };
+  }
+  return { config: { siteKey, secretKey }, invalid: false };
 }
 
 function authConfig(env: AccountEnv): AuthConfig | null {
   const appOrigin = normalizedOrigin(env.APP_ORIGIN);
   const landingOrigin = normalizedOrigin(env.LANDING_ORIGIN);
+  const turnstileState = turnstileConfigState(env);
   if (
     !env.WORKOS_CLIENT_ID ||
     !env.WORKOS_API_KEY ||
     !env.WORKOS_REDIRECT_URI ||
-    appOrigin === null
+    appOrigin === null ||
+    turnstileState.invalid
   ) {
     return null;
   }
@@ -355,6 +394,7 @@ function authConfig(env: AccountEnv): AuthConfig | null {
     redirectUri: env.WORKOS_REDIRECT_URI,
     appOrigin,
     landingOrigin,
+    turnstile: turnstileState.config,
   };
 }
 
@@ -368,6 +408,11 @@ function authConfig(env: AccountEnv): AuthConfig | null {
  */
 export function hostedAuthConfigured(env: AccountEnv): boolean {
   return authConfig(env) !== null;
+}
+
+/** Return the public widget key only when the complete Turnstile pair is safe. */
+export function hostedTurnstileSiteKey(env: AccountEnv): string | null {
+  return authConfig(env)?.turnstile?.siteKey ?? null;
 }
 
 function allowedReturnTarget(raw: string | null, config: AuthConfig): string {
@@ -384,7 +429,53 @@ function allowedReturnTarget(raw: string | null, config: AuthConfig): string {
   }
 }
 
-export async function startAuth(request: Request, env: AccountEnv): Promise<Response> {
+async function verifyTurnstileToken(
+  request: Request,
+  config: AuthConfig,
+  intent: AuthIntent,
+  token: string,
+  fetcher: Fetcher,
+): Promise<boolean> {
+  const form = new URLSearchParams({
+    secret: config.turnstile?.secretKey ?? "",
+    response: token,
+  });
+  const remoteIP = request.headers.get("cf-connecting-ip");
+  if (remoteIP !== null && remoteIP.length <= 128 && /^[\x20-\x7e]+$/.test(remoteIP)) {
+    form.set("remoteip", remoteIP);
+  }
+  let response: Response;
+  try {
+    response = await fetcher(TURNSTILE_VERIFY_URL, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: form.toString(),
+    });
+  } catch {
+    return false;
+  }
+  if (!response.ok) return false;
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return false;
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const result = payload as Record<string, unknown>;
+  return result.success === true &&
+    result.action === `auth-${intent}` &&
+    result.hostname === new URL(config.appOrigin).hostname;
+}
+
+export async function startAuth(
+  request: Request,
+  env: AccountEnv,
+  fetcher: Fetcher = fetch,
+): Promise<Response> {
   const config = authConfig(env);
   if (config === null) {
     return json(503, {
@@ -400,6 +491,32 @@ export async function startAuth(request: Request, env: AccountEnv): Promise<Resp
       error: "hosted_signup_unavailable",
       message: "Hosted signup is not open yet. Join the beta list for access.",
     });
+  }
+  if (config.turnstile !== null) {
+    if (request.method !== "POST" || request.headers.get("origin") !== config.appOrigin) {
+      return json(403, {
+        error: "turnstile_required",
+        message: "Complete the security check before signing in.",
+      });
+    }
+    const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim();
+    if (contentType !== "application/x-www-form-urlencoded") {
+      return json(400, { error: "invalid_turnstile_request" });
+    }
+    const body = await readRequestBody(request, MAX_ACCOUNT_BODY_BYTES);
+    if (!body.ok) return json(body.status, { error: "invalid_turnstile_request" });
+    const token = new URLSearchParams(body.text).get("cf-turnstile-response") ?? "";
+    if (
+      token.length === 0 ||
+      token.length > MAX_TURNSTILE_TOKEN_BYTES ||
+      !/^[\x21-\x7e]+$/.test(token) ||
+      !(await verifyTurnstileToken(request, config, intent, token, fetcher))
+    ) {
+      return json(403, {
+        error: "turnstile_rejected",
+        message: "The security check could not be verified. Please try again.",
+      });
+    }
   }
   const returnTo = allowedReturnTarget(requestUrl.searchParams.get("return_to"), config);
   const state = randomSecret();
@@ -2063,7 +2180,10 @@ export async function handleAccountRoute(
   fetcher: Fetcher = fetch,
 ): Promise<Response | null> {
   const { pathname } = new URL(request.url);
-  if (request.method === "GET" && pathname === "/v1/auth/start") return startAuth(request, env);
+  if (
+    (request.method === "GET" || request.method === "POST") &&
+    pathname === "/v1/auth/start"
+  ) return startAuth(request, env, fetcher);
   if (request.method === "GET" && pathname === "/v1/auth/callback") {
     return finishAuth(request, env, fetcher);
   }

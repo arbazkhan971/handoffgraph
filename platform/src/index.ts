@@ -35,6 +35,7 @@ import {
   accountDeletionScheduled,
   authenticateAccountSession,
   hostedAuthConfigured,
+  hostedTurnstileSiteKey,
   handleAccountRoute,
   type AccountEnv,
   type SessionAccount,
@@ -536,6 +537,7 @@ async function handleAccountPage(
   const signedIn = session !== null;
   const deletionRequested = new URL(request.url).searchParams.get("deletion") === "requested";
   const authAvailable = hostedAuthConfigured(env);
+  const turnstileSiteKey = hostedTurnstileSiteKey(env);
   const html = signedIn
     ? renderAccountPage(accountPageData(session, !advancedHostedSurfaceEnabled(env)))
     : renderSignedOutPage({
@@ -544,12 +546,16 @@ async function handleAccountPage(
         } : {}),
         authAvailable,
         signupAvailable: authAvailable && env.HOSTED_SIGNUP_ENABLED === "true",
+        turnstileSiteKey: turnstileSiteKey ?? undefined,
       });
   return new Response(html, {
     status: 200,
     headers: {
       "cache-control": "no-store",
-      "content-security-policy": `${accountPageCSP(signedIn)}; frame-ancestors 'none'`,
+      "content-security-policy": `${accountPageCSP(
+        signedIn,
+        !signedIn && turnstileSiteKey !== null,
+      )}; frame-ancestors 'none'`,
       "content-type": "text/html; charset=utf-8",
       "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
       "referrer-policy": "no-referrer",

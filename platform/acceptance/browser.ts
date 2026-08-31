@@ -274,7 +274,9 @@ export async function authenticateInteractiveAccount(input: {
     await page.goto(new URL("/account", input.origin).toString(), {
       waitUntil: "domcontentloaded",
     });
-    const authAction = page.locator(`a[href*="intent=${input.intent}"]`);
+    const authAction = page.locator(
+      `[data-hfg-auth-intent="${input.intent}"] button[type="submit"], a[href*="intent=${input.intent}"]`,
+    );
     await authAction.waitFor({ state: "visible", timeout: 30_000 });
     // Prove the challenge while HandoffGraph's exact /account page still owns
     // the top-level document. A provider-side challenge after redirect cannot
@@ -320,7 +322,9 @@ export async function reauthenticateInteractiveAccount(input: {
     await page.goto(new URL("/account", input.origin).toString(), {
       waitUntil: "domcontentloaded",
     });
-    const authAction = page.locator('a[href*="intent=signin"]');
+    const authAction = page.locator(
+      '[data-hfg-auth-intent="signin"] button[type="submit"], a[href*="intent=signin"]',
+    );
     await authAction.waitFor({ state: "visible", timeout: 30_000 });
     await turnstile.assertObserved();
     await authAction.click({ timeout: input.timeoutMs });

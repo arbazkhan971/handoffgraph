@@ -24,6 +24,10 @@ routes = [
 # checked in: set WORKOS_CLIENT_ID and WORKOS_API_KEY with `wrangler secret
 # put` (or in an ignored .dev.vars for local development). Auth fails closed
 # with 503 while either credential is absent.
+# TURNSTILE_SITE_KEY (public widget key) and TURNSTILE_SECRET_KEY are likewise
+# installed per environment with `wrangler secret put`. When both are present
+# the account page uses form-integrated Turnstile and auth start requires a
+# same-origin token accepted by the Siteverify endpoint.
 [vars]
 APP_ORIGIN = "https://api.handoffgraph.dev"
 LANDING_ORIGIN = "https://handoffgraph.dev"

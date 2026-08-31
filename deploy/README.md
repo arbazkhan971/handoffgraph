@@ -75,16 +75,18 @@ not create an account.
    ```bash
    npx wrangler secret put WORKOS_CLIENT_ID --env staging
    npx wrangler secret put WORKOS_API_KEY --env staging
+   npx wrangler secret put TURNSTILE_SITE_KEY --env staging
+   npx wrangler secret put TURNSTILE_SECRET_KEY --env staging
    ```
 2. Redeploy/auth-enable the existing anonymous staging Worker and prove the
    real PKCE callback, host-only cookies, CSRF, provider logout and final
    return to the environment's `/account`,
    two-device and ten-lifetime-token limits, quota rollback, and signed-out
    behavior in a browser.
-3. Configure Turnstile plus reviewed Cloudflare WAF/rate-limit rules for auth
-   start/callback, signup, device issuance, and `/v1/event-batches`; callback
-   abuse can otherwise amplify public traffic into WorkOS API calls even while
-   signup is closed.
+3. Install both Turnstile keys and configure reviewed Cloudflare WAF/rate-limit
+   rules for auth start/callback, signup, device issuance, and
+   `/v1/event-batches`; the Worker validates auth-start tokens server-side, but
+   callback and write-path abuse still need edge controls.
 4. Exercise CLI sync against staging. The first upload must show a complete
    content-free preview and require `--accept-redaction`; every uploaded event
    must attest `redaction.version = 1` and `redaction.status` of `clean` or
@@ -208,8 +210,9 @@ Only after every staging gate passes:
    a production D1 rollback bookmark/export. Apply all migrations remotely
    through 0022 and verify all 22 entries plus the
    `hosted_beta_capacity = 50` row while public traffic remains fenced.
-2. Install production WorkOS secrets while keeping
-   `HOSTED_SIGNUP_ENABLED` absent.
+2. Install production WorkOS and Turnstile secrets while keeping
+   `HOSTED_SIGNUP_ENABLED` absent. The public Turnstile site key is safe to
+   expose in the account page; its paired secret stays a Wrangler secret.
 3. Deploy the API and landing Workers using the already-configured custom
    domains. Replace the stale Vercel DNS records only as part of this
    controlled cutover.

@@ -301,6 +301,36 @@ describe("renderSignedOutPage", () => {
     expect(signinOnly).toContain("Existing beta accounts can still sign in.");
   });
 
+  it("renders app-owned Turnstile widgets as form-integrated auth actions", () => {
+    const html = renderSignedOutPage({
+      authAvailable: true,
+      signupAvailable: true,
+      turnstileSiteKey: "0x4AAAAAAATESTKEY",
+    });
+
+    expect(html).toContain('<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>');
+    expect(html).toContain('data-hfg-auth-intent="signup"');
+    expect(html).toContain('data-hfg-turnstile-action="auth-signup"');
+    expect(html).toContain('data-action="auth-signup"');
+    expect(html).toContain('data-sitekey="0x4AAAAAAATESTKEY"');
+    expect(html).toContain('method="post" action="/v1/auth/start?intent=signup&amp;return_to=%2Faccount"');
+    expect(html).toContain('data-hfg-turnstile-action="auth-signin"');
+    expect(html).not.toContain('href="/v1/auth/start?intent=signup&amp;return_to=%2Faccount"');
+    expect(csp(html)).toContain("frame-src https://challenges.cloudflare.com");
+    expect(csp(html)).toContain("connect-src 'self' https://challenges.cloudflare.com");
+    expect(csp(html)).toContain("script-src https://challenges.cloudflare.com");
+    expect(csp(html)).not.toContain("unsafe-inline");
+  });
+
+  it("escapes a caller-provided Turnstile site key", () => {
+    const html = renderSignedOutPage({
+      turnstileSiteKey: '" onfocus="alert(1)',
+    });
+
+    expect(html).not.toContain('data-sitekey="" onfocus=');
+    expect(html).toContain("&quot; onfocus=&quot;alert(1)");
+  });
+
   it("pins its inline style and has no external dependencies", () => {
     const html = renderSignedOutPage();
     const styleHash = sha256Source(inlineBlock(html, "style"));
