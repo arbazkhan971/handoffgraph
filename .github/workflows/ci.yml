@@ -25,6 +25,8 @@ jobs:
         run: |
           bash .github/scripts/check-action-pins.sh
           bash .github/scripts/validate-release-tag.test.sh
+          bash .github/scripts/verify-remote-release-tag.test.sh
+          bash .github/scripts/verify-public-release.test.sh
           bash .github/scripts/verify-release-assets.test.sh
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:

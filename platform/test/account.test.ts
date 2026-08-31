@@ -7,6 +7,7 @@ import {
   deleteAccount,
   finishAuth,
   getMe,
+  hostedAuthConfigured,
   normalizedOrigin,
   randomSecret,
   readAccountJsonBody,
@@ -218,6 +219,21 @@ function sessionRow(csrfHash: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe("hosted auth start", () => {
+  it("shares strict readiness with the account page", () => {
+    const { db } = mockDb();
+    const configured = configuredEnv(db);
+    expect(hostedAuthConfigured(configured)).toBe(true);
+    for (const override of [
+      { APP_ORIGIN: "https://api.handoffgraph.dev/path" },
+      { WORKOS_REDIRECT_URI: "https://api.handoffgraph.dev/v1/auth/callback?drift=1" },
+      { WORKOS_REDIRECT_URI: "https://other.handoffgraph.dev/v1/auth/callback" },
+      { WORKOS_CLIENT_ID: "" },
+      { WORKOS_API_KEY: "" },
+    ]) {
+      expect(hostedAuthConfigured({ ...configured, ...override })).toBe(false);
+    }
+  });
+
   it("fails closed before redirecting when WorkOS is not configured", async () => {
     const { db } = mockDb();
     const response = await startAuth(

@@ -64,6 +64,15 @@ https://handoffgraph-api-staging.arbaz-khan.workers.dev/v1/auth/callback
 https://api.handoffgraph.dev/v1/auth/callback
 ```
 
+Use the authenticated app origins below as the AuthKit **Homepage URL** for
+their respective environments. The public marketing homepage remains
+`https://handoffgraph.dev/`; it is not the callback or cookie origin.
+
+```text
+staging:    https://handoffgraph-api-staging.arbaz-khan.workers.dev/account
+production: https://api.handoffgraph.dev/account
+```
+
 Register both exact URLs below as WorkOS **Sign-out redirect URIs**. Callback
 registration alone is insufficient for provider logout:
 
@@ -80,7 +89,16 @@ WORKOS_API_KEY=sk_...
 HOSTED_SIGNUP_ENABLED=true
 ```
 
-For production, set both with `wrangler secret put`; never commit them:
+For staging, set environment-specific credentials with the explicit Wrangler
+environment flag; named-environment secrets are not inherited:
+
+```bash
+npx wrangler secret put WORKOS_CLIENT_ID --env staging
+npx wrangler secret put WORKOS_API_KEY --env staging
+```
+
+For production, set both in the default environment with `wrangler secret put`;
+never commit them:
 
 ```bash
 npx wrangler secret put WORKOS_CLIENT_ID
@@ -380,7 +398,7 @@ success/retry/404 behavior, grace sweeps, failure rollback/retry, pre-deletion
 D1-restore authentication blocking, session/logout commit races, R2 failure
 denial, and ETag-linearized non-refundable beta capacity.
 
-Latest launch-preflight verification (2026-08-31): 37 Vitest files and 1,553
+Latest launch-preflight verification (2026-08-31): 39 Vitest files and 1,611
 tests pass; `tsc --noEmit` and both production/staging Wrangler dry bundles are
 green. These local and dry-run results do not substitute for deployed browser
 acceptance.

@@ -45,6 +45,8 @@ jobs:
       - name: Test release tag policy
         run: |
           bash .github/scripts/validate-release-tag.test.sh
+          bash .github/scripts/verify-remote-release-tag.test.sh
+          bash .github/scripts/verify-public-release.test.sh
           bash .github/scripts/verify-release-assets.test.sh
 
       - name: Validate canonical repository, SemVer tag, and main HEAD
@@ -56,6 +58,12 @@ jobs:
             "${GITHUB_REF_NAME}" \
             "${GITHUB_SHA}" \
             origin/main
+          tag_object="$(git rev-parse --verify --end-of-options "refs/tags/${GITHUB_REF_NAME}")"
+          bash .github/scripts/verify-remote-release-tag.sh \
+            origin \
+            "${GITHUB_REF_NAME}" \
+            "${GITHUB_SHA}" \
+            "${tag_object}"
 
       - name: Require immutable releases on the canonical repository
         env:
@@ -155,6 +163,12 @@ jobs:
             "${GITHUB_REF_NAME}" \
             "${GITHUB_SHA}" \
             origin/main
+          tag_object="$(git rev-parse --verify --end-of-options "refs/tags/${GITHUB_REF_NAME}")"
+          bash .github/scripts/verify-remote-release-tag.sh \
+            origin \
+            "${GITHUB_REF_NAME}" \
+            "${GITHUB_SHA}" \
+            "${tag_object}"
 
       - name: Reconfirm immutable releases before uploading the draft
         env:
@@ -273,6 +287,12 @@ jobs:
             "${GITHUB_REF_NAME}" \
             "${GITHUB_SHA}" \
             origin/main
+          tag_object="$(git rev-parse --verify --end-of-options "refs/tags/${GITHUB_REF_NAME}")"
+          bash .github/scripts/verify-remote-release-tag.sh \
+            origin \
+            "${GITHUB_REF_NAME}" \
+            "${GITHUB_SHA}" \
+            "${tag_object}"
           bash .github/scripts/verify-release-assets.sh \
             --require-immutable-releases "${GITHUB_REPOSITORY}"
 
@@ -336,5 +356,34 @@ jobs:
               published \
               "${draft_release_id}" || true
             echo "immutable release did not preserve the exact canonical asset and digest contract" >&2
+            exit 1
+          fi
+
+          public_assets="${RUNNER_TEMP}/handoffgraph-public-release-assets"
+          mkdir "${public_assets}"
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir "${public_assets}" \
+            --pattern checksums.txt \
+            --pattern 'handoffgraph_*'
+          public_release_ready=false
+          for attempt in {1..15}; do
+            if bash .github/scripts/verify-public-release.sh \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" \
+              "${public_assets}" \
+              "${GITHUB_SHA}" 2>/dev/null; then
+              public_release_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${public_release_ready}" != true ]]; then
+            bash .github/scripts/verify-public-release.sh \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_REF_NAME}" \
+              "${public_assets}" \
+              "${GITHUB_SHA}"
+            echo "public immutable release attestation/download verification did not complete" >&2
             exit 1
           fi

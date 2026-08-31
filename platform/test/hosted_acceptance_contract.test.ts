@@ -143,6 +143,20 @@ function deletionEvidence(): HostedAcceptanceEvidence {
 }
 
 describe("hosted acceptance target contract", () => {
+  it("keeps the public apex proof production-scoped", () => {
+    expect(acceptanceEvidenceCheckContract("preflight", "staging")
+      .some((check) => check.id === "anonymous.apex_landing")).toBe(false);
+    expect(acceptanceEvidenceCheckContract("preflight", "production")
+      .find((check) => check.id === "anonymous.apex_landing"))
+      .toEqual({ id: "anonymous.apex_landing", outcome: "pass", status: 200 });
+  });
+
+  it("requires explicit signup evidence for every lifecycle phase", () => {
+    const evidence = lifecycleEvidence();
+    evidence.checks = evidence.checks.filter((check) => check.id !== "auth.signup_completed");
+    expect(() => serializeSanitizedEvidence(evidence)).toThrow("incomplete_evidence_checks");
+  });
+
   it("requires an exact lowercase 40-hex source identity", () => {
     expect(validateSourceSHA(SOURCE_SHA)).toBe(SOURCE_SHA);
     expect(() => validateSourceSHA("A".repeat(40))).toThrow("invalid_source_sha");

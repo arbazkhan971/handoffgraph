@@ -20,6 +20,7 @@ export const ACCEPTANCE_ORIGINS: Readonly<Record<AcceptanceEnvironment, string>>
     staging: "https://handoffgraph-api-staging.arbaz-khan.workers.dev",
     production: "https://api.handoffgraph.dev",
   });
+export const ACCEPTANCE_LANDING_ORIGIN = "https://handoffgraph.dev";
 
 export const ACCEPTANCE_RESOURCES = Object.freeze({
   staging: Object.freeze({
@@ -755,6 +756,7 @@ export interface AcceptanceCheck {
 
 export function acceptanceEvidenceCheckContract(
   phase: AcceptancePhase,
+  environment: AcceptanceEnvironment = "staging",
 ): AcceptanceCheck[] {
   const checks: AcceptanceCheck[] = [
     { id: "deployment.health", outcome: "pass", status: 200 },
@@ -763,11 +765,20 @@ export function acceptanceEvidenceCheckContract(
     { id: "anonymous.me_denied", outcome: "pass", status: 401 },
     { id: "anonymous.plans", outcome: "pass", status: 200 },
     { id: "anonymous.ingest_denied", outcome: "pass", status: 401 },
+    { id: "anonymous.devices_denied", outcome: "pass", status: 401 },
+    { id: "anonymous.devices_create_denied", outcome: "pass", status: 401 },
+    { id: "anonymous.workstreams_denied", outcome: "pass", status: 401 },
+    { id: "anonymous.signout_denied", outcome: "pass", status: 401 },
+    { id: "anonymous.delete_denied", outcome: "pass", status: 401 },
     { id: "hosted_basic.advanced_hidden", outcome: "pass", status: 404 },
   ];
+  if (environment === "production") {
+    checks.push({ id: "anonymous.apex_landing", outcome: "pass", status: 200 });
+  }
   if (phase !== "preflight") {
     checks.push(
       { id: "browser.two_isolated_accounts", outcome: "pass", count: 2 },
+      { id: "auth.signup_completed", outcome: "pass", count: 1 },
       { id: "browser.app_turnstile_marker_observed", outcome: "pass", count: 3 },
       { id: "device.fresh_quota_baseline", outcome: "pass", count: 2 },
       { id: "device.one_time_credential", outcome: "pass", count: 2 },
@@ -939,7 +950,7 @@ export function assertSanitizedEvidence(value: HostedAcceptanceEvidence): void {
       safeInteger(check.count, "invalid_evidence_check");
     }
   }
-  const expectedChecks = acceptanceEvidenceCheckContract(phase);
+  const expectedChecks = acceptanceEvidenceCheckContract(phase, environment);
   if (value.checks.length !== expectedChecks.length) fail("incomplete_evidence_checks");
   for (const expected of expectedChecks) {
     const actual = value.checks.find((check) => check.id === expected.id);

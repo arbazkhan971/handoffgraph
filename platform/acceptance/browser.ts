@@ -203,6 +203,53 @@ export async function launchAcceptanceBrowser(
   });
 }
 
+/**
+ * Prove the production entry journey from the public landing page through
+ * the rendered account surface. This intentionally uses a fresh in-memory
+ * context and never follows an external identity-provider redirect.
+ */
+export async function verifyApexLanding(input: {
+  browser: Browser;
+  landingOrigin: string;
+  apiOrigin: string;
+  timeoutMs: number;
+}): Promise<void> {
+  const context = await input.browser.newContext({
+    acceptDownloads: false,
+    serviceWorkers: "block",
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${input.landingOrigin}/`, {
+      waitUntil: "domcontentloaded",
+      timeout: input.timeoutMs,
+    });
+    const landingURL = new URL(page.url());
+    if (
+      landingURL.origin !== input.landingOrigin ||
+      landingURL.pathname !== "/" ||
+      landingURL.search !== "" ||
+      landingURL.hash !== ""
+    ) browserFail("landing_origin_mismatch");
+    const accountHref = `${input.apiOrigin}/account`;
+    const accountLink = page.locator(`a[href="${accountHref}"]`).first();
+    await accountLink.waitFor({ state: "visible", timeout: input.timeoutMs });
+    if ((await accountLink.textContent())?.trim() === "") browserFail("landing_account_link_empty");
+    await accountLink.click({ timeout: input.timeoutMs });
+    await page.waitForURL(accountHref, {
+      timeout: input.timeoutMs,
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("main#main").waitFor({ state: "visible", timeout: input.timeoutMs });
+    await page.locator('a[href*="intent=signin"]').waitFor({
+      state: "visible",
+      timeout: input.timeoutMs,
+    });
+  } finally {
+    await context.close();
+  }
+}
+
 export async function authenticateInteractiveAccount(input: {
   browser: Browser;
   lane: AccountLane;
@@ -394,20 +441,36 @@ export async function revokePrimaryDevice(input: {
   account: InteractiveAccount;
   deviceId: string;
 }): Promise<void> {
-  const status = await input.account.page.evaluate(async ({ deviceId }) => {
-    const csrfName = "__Host-hfg_csrf";
-    const csrf = document.cookie.split(";").map((part) => part.trim()).map((part) => {
-      const separator = part.indexOf("=");
-      if (separator < 0) return ["", ""];
-      return [decodeURIComponent(part.slice(0, separator)), decodeURIComponent(part.slice(separator + 1))];
-    }).find(([name]) => name === csrfName)?.[1] ?? "";
-    const response = await fetch(`/v1/devices/${encodeURIComponent(deviceId)}/revoke`, {
-      method: "POST",
-      headers: { accept: "application/json", "x-csrf-token": csrf },
-    });
-    return response.status;
-  }, { deviceId: input.deviceId });
-  if (status !== 200) browserFail("primary_device_revocation_failed");
+  const page = input.account.page;
+  // The launch proof must traverse the same rendered control a user sees.
+  // Cleanup helpers may use direct requests, but this primary revocation is a
+  // product journey assertion and therefore must exercise the confirmation
+  // dialog, CSRF path, response, and refreshed DOM state.
+  const button = page.locator(
+    `button.device-revoke[data-device-id="${input.deviceId}"]`,
+  );
+  await button.waitFor({ state: "visible", timeout: 30_000 });
+  const row = page.locator("li.device-item").filter({ hasText: input.deviceId }).first();
+  const responsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === `/v1/devices/${input.deviceId}/revoke` &&
+      response.request().method() === "POST";
+  });
+  const clickPromise = button.click({ timeout: 30_000 });
+  const dialog = await page.waitForEvent("dialog", { timeout: 30_000 });
+  if (dialog.type() !== "confirm") {
+    await dialog.dismiss();
+    await clickPromise.catch(() => undefined);
+    browserFail("primary_device_confirmation_missing");
+  }
+  await dialog.accept();
+  await clickPromise;
+  const response = await responsePromise;
+  if (response.status() !== 200) browserFail("primary_device_revocation_failed");
+  await row.locator(".device-meta").filter({ hasText: /^revoked$/i }).waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
 }
 
 export async function revokeAllActiveDevices(account: InteractiveAccount): Promise<number> {

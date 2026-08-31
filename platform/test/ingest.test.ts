@@ -921,6 +921,26 @@ describe("worker: routing", () => {
     expect(await auth.json()).toMatchObject({ error: "hosted_auth_unavailable" });
   });
 
+  it("does not render auth links when the callback configuration is malformed", async () => {
+    const { db } = mockDb();
+    const page = await worker.fetch(
+      request("/account"),
+      {
+        ...makeEnv(db),
+        WORKOS_CLIENT_ID: "client_test",
+        WORKOS_API_KEY: "key_test",
+        APP_ORIGIN: "https://api.handoffgraph.dev",
+        WORKOS_REDIRECT_URI: "https://api.handoffgraph.dev/v1/auth/callback?drift=1",
+      } as never,
+      CTX,
+    );
+    expect(page.status).toBe(200);
+    const pageHtml = await page.text();
+    expect(pageHtml).toContain("Hosted identity unavailable");
+    expect(pageHtml).not.toContain("intent=signup");
+    expect(pageHtml).not.toContain("intent=signin");
+  });
+
   it("publishes an honest plan catalog without enabling preview tiers", async () => {
     const { db } = mockDb();
     const response = await worker.fetch(request("/v1/plans"), makeEnv(db), CTX);

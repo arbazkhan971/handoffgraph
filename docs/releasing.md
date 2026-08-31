@@ -29,6 +29,23 @@ ordinary per-run `GITHUB_TOKEN` remains the only credential used to create the
 draft, authenticate its exact asset metadata, and promote its verified numeric
 release identity.
 
+Before the first tag, an owner should also configure and record these
+canonical-repository controls:
+
+- immutable releases enabled;
+- a protected `main` ruleset requiring the CI checks and denying force-pushes
+  and deletion;
+- a `v*` tag ruleset denying creation, update, and deletion outside the
+  release workflow;
+- `RELEASE_ADMIN_TOKEN` present with Administration: read only;
+- Actions restricted to the approved action set with SHA pinning required; and
+- an owner-reviewed release environment if the organization requires a manual
+  approval before the `contents: write` publish job.
+
+The transfer and these control-plane changes are owner actions. The workflow
+fails closed when the canonical repository or immutable-release setting is not
+available.
+
 Do not change `go.mod` to a temporary personal fork path. The module path is a
 durable public API and must match the long-term repository location.
 
@@ -70,6 +87,8 @@ goreleaser release --snapshot --clean
 test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d ' ')" = 6
 bash .github/scripts/check-action-pins.sh
 bash .github/scripts/validate-release-tag.test.sh
+bash .github/scripts/verify-remote-release-tag.test.sh
+bash .github/scripts/verify-public-release.test.sh
 bash .github/scripts/verify-release-assets.test.sh
 ```
 
@@ -99,9 +118,10 @@ non-development version. CI performs the Linux archive check automatically.
 6. The read-only `validate` job reruns the Go/web/platform gates and Worker
    dry-runs, builds and checks all six snapshot archives, and verifies action
    pins. Only after it succeeds does the minimal `publish` job receive
-   `contents: write`, reconfirm the tag is current `main`, and ask GoReleaser
-   to upload an unpublished draft with the tag-derived version and SHA-256
-   checksums.
+   `contents: write`, reconfirm the tag is current `main`, re-check the remote
+   annotated tag object and peeled commit against the approved local tag and
+   `GITHUB_SHA`, and ask GoReleaser to upload an unpublished draft with the
+   tag-derived version and SHA-256 checksums.
 7. The publish job retains GoReleaser's exact uploaded bytes and requires
    exactly six expected platform archives plus `checksums.txt`. It verifies
    every local digest and archive inventory, then resolves the authenticated
@@ -114,14 +134,19 @@ non-development version. CI performs the Linux archive check automatically.
    `github.com/handoffgraph/handoffgraph/cmd/handoffgraph@v0.7.0-beta.1` with
    fresh module and build caches and `GOFLAGS=-trimpath`. Both binaries must
    report the exact tag, pass `doctor`, and have identical SHA-256 hashes.
-9. Only after another tag/main and immutable-setting check does the workflow
+9. Only after another tag/main, remote-tag-object, and immutable-setting check does the workflow
    PATCH the verified numeric draft ID to a prerelease; it never re-resolves an
    untrusted draft by tag at that irreversible boundary. Final REST reads by
    that same ID and by tag must agree and prove that it is published, marked as
    a prerelease, bound to the requested tag, and immutable while preserving the
    exact REST asset inventory, URLs, sizes, and digests proved on the draft.
-   Independently downloading and checking an archive remains a useful
-   release-owner smoke test, but is no longer the publication gate.
+   After promotion, the job downloads all seven public assets into a fresh
+   empty directory, reruns the archive/checksum verifier, runs
+   `gh release verify` for GitHub's signed immutable-release attestation, and
+   runs `gh release verify-asset` for every downloaded asset. The published
+   tag's API object is resolved to the exact approved commit. The two clean
+   direct module installs above are the source-build/provenance proof; GitHub
+   generated source archives are not treated as a checksummed release asset.
 
 Never move or reuse a published tag. If a release is bad, document it and ship
 a new patch tag.

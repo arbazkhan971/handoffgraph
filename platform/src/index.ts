@@ -34,6 +34,7 @@ import {
   accountDeletionEnv,
   accountDeletionScheduled,
   authenticateAccountSession,
+  hostedAuthConfigured,
   handleAccountRoute,
   type AccountEnv,
   type SessionAccount,
@@ -534,8 +535,7 @@ async function handleAccountPage(
   const session = await authenticateAccountSession(request, env);
   const signedIn = session !== null;
   const deletionRequested = new URL(request.url).searchParams.get("deletion") === "requested";
-  const authAvailable = [env.WORKOS_CLIENT_ID, env.WORKOS_API_KEY, env.WORKOS_REDIRECT_URI]
-    .every((value) => typeof value === "string" && value.length > 0);
+  const authAvailable = hostedAuthConfigured(env);
   const html = signedIn
     ? renderAccountPage(accountPageData(session, !advancedHostedSurfaceEnabled(env)))
     : renderSignedOutPage({

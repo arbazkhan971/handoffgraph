@@ -66,6 +66,16 @@ not create an account.
    https://handoffgraph-api-staging.arbaz-khan.workers.dev/account
    https://api.handoffgraph.dev/account
    ```
+
+   Set the AuthKit Homepage URL to the matching authenticated `/account`
+   origin above. Keep `https://handoffgraph.dev/` as the separate public
+   marketing homepage; it is not a WorkOS callback or shared-cookie origin.
+   Install the staging credentials only in the named environment:
+
+   ```bash
+   npx wrangler secret put WORKOS_CLIENT_ID --env staging
+   npx wrangler secret put WORKOS_API_KEY --env staging
+   ```
 2. Redeploy/auth-enable the existing anonymous staging Worker and prove the
    real PKCE callback, host-only cookies, CSRF, provider logout and final
    return to the environment's `/account`,

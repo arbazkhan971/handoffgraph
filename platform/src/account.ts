@@ -358,6 +358,18 @@ function authConfig(env: AccountEnv): AuthConfig | null {
   };
 }
 
+/**
+ * Return the same strict readiness result used by every hosted auth route.
+ *
+ * The account page uses this predicate to avoid rendering links that would
+ * deterministically fail at /v1/auth/start because of a malformed origin or
+ * callback. It intentionally exposes only a boolean; secrets and normalized
+ * configuration never leave this module.
+ */
+export function hostedAuthConfigured(env: AccountEnv): boolean {
+  return authConfig(env) !== null;
+}
+
 function allowedReturnTarget(raw: string | null, config: AuthConfig): string {
   if (raw === null || raw === "") return `${config.appOrigin}/account`;
   try {

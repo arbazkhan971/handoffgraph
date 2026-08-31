@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { x as extractTar } from "tar";
 import {
   authenticateInteractiveAccount,
+  verifyApexLanding,
   browserAccountStatus,
   createPrimaryDevice,
   deleteInteractiveAccount,
@@ -36,6 +37,7 @@ import {
 } from "./browser";
 import {
   ACCEPTANCE_ORIGINS,
+  ACCEPTANCE_LANDING_ORIGIN,
   ACCEPTANCE_RESOURCES,
   ACCEPTANCE_SCHEMA,
   ACCEPTANCE_GITHUB_REPOSITORY,
@@ -210,6 +212,7 @@ Options:
   --evidence <path below platform/.acceptance>
   --auth-intent-a signin|signup
   --auth-intent-b signin|signup
+  Lifecycle/deletion runs require at least one --auth-intent-* signup flow.
   --auth-timeout-seconds <60-1800>
   --deletion-timeout-seconds <900-3600>
 `;
@@ -427,14 +430,86 @@ async function runPreflight(config: RunnerConfig): Promise<{
   const ingest = await request(new URL("/v1/event-batches", config.origin), {
     method: "POST",
     redirect: "manual",
-    headers: { "content-type": "application/json" },
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      origin: config.origin,
+    },
     body: "{}",
   });
-  if (ingest.status !== 401) runFail("anonymous_ingest_boundary_failed");
+  if (ingest.status !== 401 || ingest.headers.get("cache-control") !== "no-store") {
+    runFail("anonymous_ingest_boundary_failed");
+  }
+  const devices = await request(new URL("/v1/devices", config.origin), {
+    redirect: "manual",
+    headers: { accept: "application/json" },
+  });
+  if (devices.status !== 401 || devices.headers.get("cache-control") !== "no-store") {
+    runFail("anonymous_devices_boundary_failed");
+  }
+  const deviceCreate = await request(new URL("/v1/devices", config.origin), {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      origin: config.origin,
+    },
+    body: JSON.stringify({ label: "anonymous-probe" }),
+  });
+  if (
+    deviceCreate.status !== 401 ||
+    deviceCreate.headers.get("cache-control") !== "no-store"
+  ) runFail("anonymous_device_create_boundary_failed");
+  const workstreams = await request(new URL("/v1/workstreams", config.origin), {
+    redirect: "manual",
+    headers: { accept: "application/json" },
+  });
+  if (workstreams.status !== 401 || workstreams.headers.get("cache-control") !== "no-store") {
+    runFail("anonymous_workstreams_boundary_failed");
+  }
+  const signout = await request(new URL("/v1/auth/signout", config.origin), {
+    method: "POST",
+    redirect: "manual",
+    headers: { accept: "application/json", origin: config.origin },
+  });
+  if (signout.status !== 401 || signout.headers.get("cache-control") !== "no-store") {
+    runFail("anonymous_signout_boundary_failed");
+  }
+  const deletion = await request(new URL("/v1/account", config.origin), {
+    method: "DELETE",
+    redirect: "manual",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      origin: config.origin,
+    },
+    body: JSON.stringify({ confirmation: "anonymous-probe" }),
+  });
+  if (deletion.status !== 401 || deletion.headers.get("cache-control") !== "no-store") {
+    runFail("anonymous_delete_boundary_failed");
+  }
   const advanced = await request(new URL("/v1/analytics/summary", config.origin), {
     redirect: "manual",
   });
   if (advanced.status !== 404) runFail("hosted_basic_surface_failed");
+
+  if (config.environment === "production") {
+    // The public landing page is the user entry point for production. Exercise
+    // its rendered link into the production account surface, including the
+    // browser navigation, rather than treating the API's redirect as sufficient.
+    const landingBrowser = await launchAcceptanceBrowser(browserChildEnvironment());
+    try {
+      await verifyApexLanding({
+        browser: landingBrowser,
+        landingOrigin: ACCEPTANCE_LANDING_ORIGIN,
+        apiOrigin: ACCEPTANCE_ORIGINS.production,
+        timeoutMs: 30_000,
+      });
+    } finally {
+      await landingBrowser.close();
+    }
+  }
 
   return {
     identity,
@@ -445,7 +520,15 @@ async function runPreflight(config: RunnerConfig): Promise<{
       { id: "anonymous.me_denied", outcome: "pass", status: 401 },
       { id: "anonymous.plans", outcome: "pass", status: 200 },
       { id: "anonymous.ingest_denied", outcome: "pass", status: 401 },
+      { id: "anonymous.devices_denied", outcome: "pass", status: 401 },
+      { id: "anonymous.devices_create_denied", outcome: "pass", status: 401 },
+      { id: "anonymous.workstreams_denied", outcome: "pass", status: 401 },
+      { id: "anonymous.signout_denied", outcome: "pass", status: 401 },
+      { id: "anonymous.delete_denied", outcome: "pass", status: 401 },
       { id: "hosted_basic.advanced_hidden", outcome: "pass", status: 404 },
+      ...(config.environment === "production"
+        ? [{ id: "anonymous.apex_landing", outcome: "pass" as const, status: 200 }]
+        : []),
     ],
   };
 }
@@ -898,6 +981,9 @@ async function runLifecycle(config: RunnerConfig): Promise<LifecycleResult> {
   let credentialA: DeviceCredential | null = null;
   let credentialB: DeviceCredential | null = null;
   try {
+    if (config.authIntentA !== "signup" && config.authIntentB !== "signup") {
+      runFail("signup_journey_required");
+    }
     const announce = (lane: AccountLane, intent: AuthIntent) => {
       process.stdout.write(
         `Complete real AuthKit and Turnstile ${intent} for isolated account ${lane.toUpperCase()} in the opened browser.\n`,
@@ -1030,6 +1116,7 @@ async function runLifecycle(config: RunnerConfig): Promise<LifecycleResult> {
     return {
       checks: [
         { id: "browser.two_isolated_accounts", outcome: "pass", count: 2 },
+        { id: "auth.signup_completed", outcome: "pass", count: 1 },
         { id: "browser.app_turnstile_marker_observed", outcome: "pass", count: 3 },
         { id: "device.fresh_quota_baseline", outcome: "pass", count: 2 },
         { id: "device.one_time_credential", outcome: "pass", count: 2 },
