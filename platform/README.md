@@ -398,7 +398,7 @@ success/retry/404 behavior, grace sweeps, failure rollback/retry, pre-deletion
 D1-restore authentication blocking, session/logout commit races, R2 failure
 denial, and ETag-linearized non-refundable beta capacity.
 
-Latest launch-preflight verification (2026-08-31): 39 Vitest files and 1,611
+Latest launch-preflight verification (2026-08-31): 39 Vitest files and 1,615
 tests pass; `tsc --noEmit` and both production/staging Wrangler dry bundles are
 green. These local and dry-run results do not substitute for deployed browser
 acceptance.
