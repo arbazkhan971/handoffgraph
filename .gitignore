@@ -27,4 +27,5 @@ web/dist/
 
 # Cloudflare local emulator/cache state
 .wrangler/
+/platform/.acceptance/
 .claude/

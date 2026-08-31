@@ -6,7 +6,8 @@
   "scripts": {
     "test": "vitest run",
     "types": "wrangler types",
-    "typecheck": "wrangler types --check && tsc --noEmit",
+    "typecheck": "wrangler types --check && tsc --noEmit && tsc --noEmit -p tsconfig.acceptance.json",
+    "acceptance:hosted": "tsx acceptance/run.ts",
     "dev": "wrangler dev --env=\"\"",
     "deploy": "wrangler deploy --env=\"\"",
     "deploy:staging": "wrangler deploy --env staging",
@@ -15,6 +16,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "playwright": "^1.62.1",
+    "tar": "^7.5.22",
+    "tsx": "^4.23.13",
     "typescript": "~6.0.2",
     "vitest": "^4.0.14",
     "wrangler": "^4.125.0"

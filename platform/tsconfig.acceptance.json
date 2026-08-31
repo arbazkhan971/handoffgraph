@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "playwright"]
+  },
+  "include": [
+    "worker-configuration.d.ts",
+    "acceptance/**/*.ts"
+  ]
+}
